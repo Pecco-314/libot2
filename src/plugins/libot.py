@@ -22,6 +22,7 @@ from src.db.subscription import (
     remove_subscription,
     set_subscription,
 )
+from src.spider.wrapper import get_room_info
 
 try:
     init_manager_db()
@@ -121,6 +122,16 @@ def _parse_room_id(arg) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+async def _format_room_name(room_id: int) -> str:
+    try:
+        room_info = await get_room_info(room_id)
+    except Exception:
+        return f"房间号 {room_id}"
+
+    uname = str(room_info.get("uname") or "")
+    return uname if uname else f"房间号 {room_id}"
+
+
 @sub_show_cmd.handle()
 @group_manager_required
 async def handle_show_subscription(matcher: Matcher, event: Event):
@@ -132,7 +143,7 @@ async def handle_show_subscription(matcher: Matcher, event: Event):
     if room_id is None:
         await matcher.finish("本群尚未设置订阅")
 
-    await matcher.finish(f"当前订阅：房间号 {room_id}")
+    await matcher.finish(f"当前订阅：{await _format_room_name(room_id)}")
 
 
 @sub_set_cmd.handle()
@@ -147,7 +158,7 @@ async def handle_set_subscription(matcher: Matcher, event: Event, arg=CommandArg
         await matcher.finish("用法：/设置订阅 <房间号>")
 
     set_subscription(group_id, room_id)
-    await matcher.finish(f"订阅已设置：房间号 {room_id}")
+    await matcher.finish(f"订阅已设置：{await _format_room_name(room_id)}")
 
 
 @sub_remove_cmd.handle()
