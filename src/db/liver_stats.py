@@ -59,7 +59,7 @@ def insert_liver_stats(
     fans_num: int,
     guard_num: int,
     fan_club_num: int,
-    created_at: str | None = None,
+    created_at: str,
 ) -> None:
     with write_transaction() as conn:
         execute_write(
@@ -67,7 +67,7 @@ def insert_liver_stats(
             """
             INSERT INTO stats (
                 room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at),
         )

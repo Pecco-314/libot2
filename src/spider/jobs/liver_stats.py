@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -30,6 +31,7 @@ async def collect_liver_stats() -> None:
                 fans_num=int(stats["fans_num"]),
                 guard_num=int(stats["guard_num"]),
                 fan_club_num=int(stats["fan_club_num"]),
+                created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             )
             logger.info(
                 "liver stats room_id=%d uname=%s fans=%d guard=%d fan_club=%d",
