@@ -43,12 +43,18 @@ async def main() -> None:
     scheduler = AsyncIOScheduler()
     register_jobs(scheduler)
 
-    def _stop(_signum: int, _frame) -> None:
-        logger.info("received stop signal")
+    loop = asyncio.get_running_loop()
+
+    def _stop(signame: str) -> None:
+        logger.info("received %s signal", signame)
         stop_event.set()
 
-    signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGTERM, _stop)
+    for signame in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, signame)
+        try:
+            loop.add_signal_handler(sig, _stop, signame)
+        except (NotImplementedError, RuntimeError, ValueError):
+            signal.signal(sig, lambda _signum, _frame, name=signame: _stop(name))
 
     scheduler.start()
     logger.info("cron started with apscheduler jobs=%d", len(scheduler.get_jobs()))

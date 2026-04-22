@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -8,6 +10,8 @@ import httpx
 from src.common.env import load_env_file
 
 load_env_file()
+
+logger = logging.getLogger("spider.api")
 
 BILI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -36,10 +40,23 @@ async def request_json(
     request_headers = headers or BILI_HEADERS
     request_cookies = cookies if cookies is not None else build_cookies()
 
-    async with httpx.AsyncClient(timeout=10.0, headers=request_headers, cookies=request_cookies) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        body = resp.json()
+    body: dict[str, Any] | Any = {}
+    last_error: Exception | None = None
+    for attempt in range(5):
+        try:
+            async with httpx.AsyncClient(timeout=10.0, headers=request_headers, cookies=request_cookies) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                body = resp.json()
+            break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 4:
+                raise
+            logger.warning("request_json retry(%d/5) url=%s params=%s error=%s", attempt + 1, url, params, exc)
+            await asyncio.sleep(3)
 
     code = int(body.get("code", -1)) if isinstance(body, dict) else -1
     return {
