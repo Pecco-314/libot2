@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
 PID_DIR = LOG_DIR / ".pids"
 IS_TTY = sys.stdout.isatty()
+VENV_BIN = ROOT / ".venv" / "bin"
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -48,6 +49,13 @@ MODULES = {
         pid_file=PID_DIR / "spider.pid",
         command=(sys.executable, "-m", "src.spider.cron"),
         redirect_output=False,
+    ),
+    "monitor": ModuleSpec(
+        name="monitor",
+        log_file=LOG_DIR / "monitor.log",
+        pid_file=PID_DIR / "monitor.pid",
+        command=(sys.executable, "-m", "src.monitor.monitor"),
+        redirect_output=True,
     ),
 }
 
@@ -82,6 +90,10 @@ def _resolve_command(spec: ModuleSpec) -> list[str]:
     if spec.name == "libot":
         nb_executable = shutil.which("nb")
         if nb_executable is None:
+            nb_candidate = VENV_BIN / "nb"
+            if nb_candidate.exists():
+                nb_executable = str(nb_candidate)
+        if nb_executable is None:
             nb_candidate = Path(sys.executable).resolve().with_name("nb")
             if nb_candidate.exists():
                 nb_executable = str(nb_candidate)
@@ -89,7 +101,10 @@ def _resolve_command(spec: ModuleSpec) -> list[str]:
             raise FileNotFoundError("nb command not found in current virtual environment")
         return [nb_executable, "run"]
 
-    return [sys.executable, "-m", "src.spider.cron"]
+    python_executable = str(VENV_BIN / "python") if (VENV_BIN / "python").exists() else sys.executable
+    if len(spec.command) >= 3 and spec.command[1] == "-m":
+        return [python_executable, "-m", str(spec.command[2])]
+    return [python_executable, *map(str, spec.command[1:])]
 
 
 def _read_pid(pid_file: Path) -> int | None:

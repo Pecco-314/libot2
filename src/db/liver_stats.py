@@ -5,12 +5,18 @@ from typing import Any
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
 
 
-def init_liver_stats_db() -> None:
-    with write_transaction() as conn:
+def _table_columns(conn, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _ensure_stats_schema(conn) -> None:
+    columns = _table_columns(conn, "stats")
+    if not columns:
         execute_write(
             conn,
             """
-            CREATE TABLE IF NOT EXISTS liver_stats (
+            CREATE TABLE stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id INTEGER NOT NULL,
                 uid INTEGER NOT NULL,
@@ -18,17 +24,32 @@ def init_liver_stats_db() -> None:
                 fans_num INTEGER NOT NULL,
                 guard_num INTEGER NOT NULL,
                 fan_club_num INTEGER NOT NULL,
-                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
         )
+    elif "created_at" not in columns:
         execute_write(
             conn,
-            """
-            CREATE INDEX IF NOT EXISTS idx_liver_stats_room_time
-            ON liver_stats(room_id, recorded_at)
-            """,
+            "ALTER TABLE stats ADD COLUMN created_at TIMESTAMP",
         )
+
+    execute_write(
+        conn,
+        "DROP INDEX IF EXISTS idx_stats_room_id",
+    )
+    execute_write(
+        conn,
+        """
+        CREATE INDEX IF NOT EXISTS idx_stats_room_time
+        ON stats(room_id, created_at)
+        """,
+    )
+
+
+def init_liver_stats_db() -> None:
+    with write_transaction() as conn:
+        _ensure_stats_schema(conn)
 
 
 def insert_liver_stats(
@@ -38,16 +59,17 @@ def insert_liver_stats(
     fans_num: int,
     guard_num: int,
     fan_club_num: int,
+    created_at: str | None = None,
 ) -> None:
     with write_transaction() as conn:
         execute_write(
             conn,
             """
-            INSERT INTO liver_stats (
-                room_id, uid, uname, fans_num, guard_num, fan_club_num
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO stats (
+                room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
-            (room_id, uid, uname, fans_num, guard_num, fan_club_num),
+            (room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at),
         )
 
 
@@ -55,10 +77,10 @@ def list_liver_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
-            SELECT room_id, uid, uname, fans_num, guard_num, fan_club_num, recorded_at
-            FROM liver_stats
+            SELECT room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at, id
+            FROM stats
             WHERE room_id = ?
-            ORDER BY recorded_at DESC, id DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             (room_id, limit),
@@ -71,7 +93,8 @@ def list_liver_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
             "fans_num": int(row[3]),
             "guard_num": int(row[4]),
             "fan_club_num": int(row[5]),
-            "recorded_at": str(row[6]),
+            "created_at": str(row[6]) if row[6] is not None else "",
+            "id": int(row[7]),
         }
         for row in rows
     ]
