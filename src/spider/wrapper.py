@@ -66,10 +66,18 @@ async def get_room_info(room_id: int) -> dict[str, Any]:
 
 
 async def get_uname(uid: int) -> str:
-    response = await api.get_master_info(uid)
-    data = _body_data(response)
+    data = _body_data(await api.get_master_info(uid))
     info = data.get("info") if isinstance(data.get("info"), dict) else {}
     return str(info.get("uname") or "")
+
+
+async def get_master_info(uid: int) -> str:
+    return await get_uname(uid)
+
+
+async def get_fans_num(uid: int) -> int:
+    data = _body_data(await api.get_master_info(uid))
+    return _to_int(data.get("follower_num"))
 
 
 async def get_guard_num(room_id: int, uid: int) -> int:
@@ -83,6 +91,32 @@ async def get_activated_medal_count(target_id: int) -> int:
     response = await api.get_activated_medal_info(target_id)
     data = _body_data(response)
     return _to_int(data.get("fans_medal_count"))
+
+
+async def get_liver_stats(room_id: int) -> dict[str, Any]:
+    room_info = await get_room_info(room_id)
+    uid = _to_int(room_info.get("uid"))
+    if uid <= 0:
+        return {
+            "room_id": room_id,
+            "uid": 0,
+            "uname": str(room_info.get("uname") or ""),
+            "fans_num": 0,
+            "guard_num": 0,
+            "fan_club_num": 0,
+        }
+
+    fans_num = await get_fans_num(uid)
+    guard_num = await get_guard_num(room_id, uid)
+    fan_club_num = await get_activated_medal_count(uid)
+    return {
+        "room_id": room_id,
+        "uid": uid,
+        "uname": str(room_info.get("uname") or ""),
+        "fans_num": fans_num,
+        "guard_num": guard_num,
+        "fan_club_num": fan_club_num,
+    }
 
 
 async def get_space_history(uid: int, *, offset_dynamic_id: int = 0, need_top: int = 0) -> list[dict[str, Any]]:
@@ -125,8 +159,10 @@ async def get_space_history(uid: int, *, offset_dynamic_id: int = 0, need_top: i
 __all__ = [
     "get_room_info",
     "get_uname",
+    "get_fans_num",
     "get_master_info",
     "get_guard_num",
     "get_activated_medal_count",
+    "get_liver_stats",
     "get_space_history",
 ]
