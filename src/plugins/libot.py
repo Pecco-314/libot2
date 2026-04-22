@@ -15,10 +15,22 @@ from src.common.manager import (
     list_managers,
     remove_manager,
 )
+from src.common.subscription import (
+    get_subscription,
+    init_subscription_db,
+    list_subscribed_room_ids,
+    remove_subscription,
+    set_subscription,
+)
 from src.common.util import parse_user_id
 
 try:
     init_manager_db()
+except Exception:
+    pass
+
+try:
+    init_subscription_db()
 except Exception:
     pass
 
@@ -28,6 +40,9 @@ manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
 manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
 manager_add_cmd = on_command("添加管理员", priority=5, block=True)
 manager_remove_cmd = on_command("删除管理员", priority=5, block=True)
+sub_show_cmd = on_command("查看订阅", priority=5, block=True)
+sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, block=True)
+sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -45,6 +60,9 @@ async def handle_manager_help(event: Event):
         "/查看管理员 - 查看当前群管理员\n"
         "/添加管理员 <QQ号> - 添加群管理员\n"
         "/删除管理员 <QQ号> - 删除群管理员\n"
+        "/查看订阅 - 查看当前群订阅\n"
+        "/设置订阅 <房间号> - 设置当前群订阅\n"
+        "/删除订阅 - 删除当前群订阅\n"
     )
 
 
@@ -97,3 +115,51 @@ async def handle_manager_remove(matcher: Matcher, event: Event, arg=CommandArg()
         await matcher.finish(f"已删除群管理员：{user_id}")
     else:
         await matcher.finish(f"群管理员不存在：{user_id}")
+
+
+def _parse_room_id(arg) -> int | None:
+    text = arg.extract_plain_text().strip()
+    return int(text) if text.isdigit() else None
+
+
+@sub_show_cmd.handle()
+@group_manager_required
+async def handle_show_subscription(matcher: Matcher, event: Event):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("本群尚未设置订阅")
+
+    await matcher.finish(f"当前订阅：房间号 {room_id}")
+
+
+@sub_set_cmd.handle()
+@group_manager_required
+async def handle_set_subscription(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = _parse_room_id(arg)
+    if room_id is None:
+        await matcher.finish("用法：/设置订阅 <房间号>")
+
+    set_subscription(group_id, room_id)
+    await matcher.finish(f"订阅已设置：房间号 {room_id}")
+
+
+@sub_remove_cmd.handle()
+@group_manager_required
+async def handle_remove_subscription(matcher: Matcher, event: Event):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    removed = remove_subscription(group_id)
+    if removed:
+        await matcher.finish("已删除本群订阅")
+    else:
+        await matcher.finish("本群没有可删除的订阅")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sqlite3
 from functools import wraps
-from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from nonebot.adapters.onebot.v11 import Event
@@ -14,26 +13,13 @@ from src.common.sqlite import connect_sqlite, execute_write, write_transaction
 
 load_env_file()
 
-DB_PATH = Path(__file__).resolve().parents[2] / "data" / "libot.db"
 _ENV_MANAGER_QQ = os.getenv("MANAGER_QQ", "").strip()
 INITIAL_MANAGER_QQ = int(_ENV_MANAGER_QQ) if _ENV_MANAGER_QQ.isdigit() else None
 
 
-def _get_conn() -> sqlite3.Connection:
-    return connect_sqlite(DB_PATH)
-
-
-def _execute_write(
-    conn: sqlite3.Connection,
-    sql: str,
-    params: tuple[Any, ...] = (),
-) -> sqlite3.Cursor:
-    return execute_write(conn, sql, params)
-
-
 def init_manager_db() -> None:
-    with write_transaction(DB_PATH) as conn:
-        _execute_write(
+    with write_transaction() as conn:
+        execute_write(
             conn,
             """
             CREATE TABLE IF NOT EXISTS manager (
@@ -50,8 +36,8 @@ def ensure_initial_manager(group_id: int) -> bool:
     if INITIAL_MANAGER_QQ is None:
         return False
 
-    with write_transaction(DB_PATH) as conn:
-        _execute_write(
+    with write_transaction() as conn:
+        execute_write(
             conn,
             "INSERT OR IGNORE INTO manager (group_id, manager_qq) VALUES (?, ?)",
             (group_id, INITIAL_MANAGER_QQ),
@@ -60,7 +46,7 @@ def ensure_initial_manager(group_id: int) -> bool:
 
 
 def is_manager(group_id: int, user_id: int) -> bool:
-    with _get_conn() as conn:
+    with connect_sqlite() as conn:
         row = conn.execute(
             "SELECT 1 FROM manager WHERE group_id = ? AND manager_qq = ?",
             (group_id, user_id),
@@ -69,7 +55,7 @@ def is_manager(group_id: int, user_id: int) -> bool:
 
 
 def list_managers(group_id: int) -> list[int]:
-    with _get_conn() as conn:
+    with connect_sqlite() as conn:
         rows = conn.execute(
             "SELECT manager_qq FROM manager WHERE group_id = ? ORDER BY manager_qq ASC",
             (group_id,),
@@ -78,7 +64,7 @@ def list_managers(group_id: int) -> list[int]:
 
 
 def count_managers(group_id: int) -> int:
-    with _get_conn() as conn:
+    with connect_sqlite() as conn:
         row = conn.execute(
             "SELECT COUNT(1) FROM manager WHERE group_id = ?",
             (group_id,),
@@ -87,8 +73,8 @@ def count_managers(group_id: int) -> int:
 
 
 def add_manager(group_id: int, user_id: int) -> bool:
-    with write_transaction(DB_PATH) as conn:
-        cur = _execute_write(
+    with write_transaction() as conn:
+        cur = execute_write(
             conn,
             "INSERT OR IGNORE INTO manager (group_id, manager_qq) VALUES (?, ?)",
             (group_id, user_id),
@@ -97,8 +83,8 @@ def add_manager(group_id: int, user_id: int) -> bool:
 
 
 def remove_manager(group_id: int, user_id: int) -> bool:
-    with write_transaction(DB_PATH) as conn:
-        cur = _execute_write(
+    with write_transaction() as conn:
+        cur = execute_write(
             conn,
             "DELETE FROM manager WHERE group_id = ? AND manager_qq = ?",
             (group_id, user_id),
