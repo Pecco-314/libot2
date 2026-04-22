@@ -5,8 +5,8 @@ from nonebot.adapters.onebot.v11 import Event
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
-from src.common.manager import (
-    get_group_id,
+from src.common.nb import get_group_id, parse_user_id
+from src.db.manager import (
     group_manager_required,
     add_manager,
     count_managers,
@@ -15,14 +15,13 @@ from src.common.manager import (
     list_managers,
     remove_manager,
 )
-from src.common.subscription import (
+from src.db.subscription import (
     get_subscription,
     init_subscription_db,
     list_subscribed_room_ids,
     remove_subscription,
     set_subscription,
 )
-from src.common.util import parse_user_id
 
 try:
     init_manager_db()

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
-from typing import Any
-
-from src.common.sqlite import connect_sqlite, execute_write, write_transaction
+from src.db.sqlite import connect_sqlite, execute_write, write_transaction
 
 
 def init_subscription_db() -> None:
