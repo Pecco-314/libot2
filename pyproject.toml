@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.10, <4.0"
 dependencies = [
     "blivedm @ git+https://github.com/xfgryujk/blivedm.git@master",
+    "pillow>=10.0.0",
+    "pilmoji>=2.0.4",
     "nonebot2[fastapi]>=2.5.0",
     "nonebot-adapter-onebot>=2.4.6",
     "nonebot-plugin-apscheduler>=0.5.0",

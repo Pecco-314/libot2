@@ -49,6 +49,17 @@ def _extract_images(item: dict[str, Any]) -> list[str]:
     return image_urls
 
 
+def _extract_emoji_details(card_entry: dict[str, Any]) -> list[dict[str, Any]]:
+    display = card_entry.get("display")
+    if not isinstance(display, dict):
+        return []
+    emoji_info = display.get("emoji_info")
+    if not isinstance(emoji_info, dict):
+        return []
+    emoji_details = emoji_info.get("emoji_details")
+    return emoji_details if isinstance(emoji_details, list) else []
+
+
 async def get_room_uname(room_id: int) -> str:
     cached_name = get_name_by_roomid(room_id)
     if cached_name:
@@ -157,21 +168,34 @@ async def get_space_history(uid: int, *, offset_dynamic_id: int = 0, need_top: i
         if not isinstance(card_entry, dict):
             continue
 
+        desc = card_entry.get("desc") if isinstance(card_entry.get("desc"), dict) else {}
         card_data = _parse_json_object(card_entry.get("card"))
-        item = _parse_json_object(card_data.get("item")) if card_data.get("item") is not None else {}
-        if not item:
-            item_candidate = card_data.get("item")
-            item = item_candidate if isinstance(item_candidate, dict) else {}
+        emoji_details = _extract_emoji_details(card_entry)
+        uid_value = _to_int(card_data.get("uid"), _to_int(desc.get("uid")))
+        user_info = {}
+        user_profile = desc.get("user_profile") if isinstance(desc.get("user_profile"), dict) else {}
+        if isinstance(user_profile, dict):
+            info = user_profile.get("info")
+            if isinstance(info, dict):
+                user_info = info
 
-        description = str(item.get("description") or "")
-        upload_time = _to_int(item.get("upload_time"))
-        images = _extract_images(item)
+        card_user = card_data.get("user") if isinstance(card_data.get("user"), dict) else {}
+        uname = str(user_info.get("uname") or card_user.get("uname") or "")
+        activity_id = str(desc.get("dynamic_id_str") or desc.get("rid_str") or desc.get("dynamic_id") or "")
+
+        if not activity_id:
+            continue
 
         result.append(
             {
-                "description": description,
-                "upload_time": upload_time,
-                "images": images,
+                "activity_id": activity_id,
+                "uid": uid_value,
+                "uname": uname,
+                "timestamp": _to_int(desc.get("timestamp")),
+                "dy_type": _to_int(desc.get("type")),
+                "orig_type": _to_int(desc.get("orig_type")),
+                "card_json_str": str(card_entry.get("card") or ""),
+                "emoji_details": emoji_details,
             }
         )
 
