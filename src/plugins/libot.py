@@ -15,7 +15,7 @@ from nonebot_plugin_apscheduler import scheduler
 from src.common.nb import get_group_id, parse_user_id
 from src.common.render import render_bilibili_card
 from src.db.activity import get_max_activity_id, init_activity_db, list_activities_after
-from src.db.event import get_newest_live_event
+from src.db.event import get_newest_live_event, is_streaming_event
 from src.db.manager import (
     group_manager_required,
     add_manager,
@@ -406,6 +406,11 @@ async def watch_live_events() -> None:
     if row is None:
         return
     row_id = row.get("id")
+    room_id = row.get("room_id")
+    cmd = row.get("cmd")
+    if is_streaming_event(row_id, room_id, cmd):
+        last_event_id = int(last_event_id_str)
+        return
     last_event_id = 0
     last_event_id_str = get_state("last_event_id")
     if last_event_id_str is not None and last_event_id_str.isdigit():
@@ -416,7 +421,6 @@ async def watch_live_events() -> None:
     message = await _build_message(row)
     if message is None:
         return
-    room_id = row.get("room_id")
     await send_to_room(room_id, message)
 
 
