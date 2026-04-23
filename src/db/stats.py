@@ -47,12 +47,12 @@ def _ensure_stats_schema(conn) -> None:
     )
 
 
-def init_liver_stats_db() -> None:
+def init_stats_db() -> None:
     with write_transaction() as conn:
         _ensure_stats_schema(conn)
 
 
-def insert_liver_stats(
+def insert_stats(
     room_id: int,
     uid: int,
     uname: str,
@@ -73,7 +73,7 @@ def insert_liver_stats(
         )
 
 
-def list_liver_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
+def list_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
             """

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.db.liver import get_name_by_roomid, get_name_by_uid, upsert_liver
 from src.spider import api
 
 
@@ -48,13 +49,28 @@ def _extract_images(item: dict[str, Any]) -> list[str]:
     return image_urls
 
 
+async def get_room_uname(room_id: int) -> str:
+    cached_name = get_name_by_roomid(room_id)
+    if cached_name:
+        return cached_name
+
+    room_info = await get_room_info(room_id)
+    uname = str(room_info.get("uname") or "")
+    return uname
+
+
 async def get_room_info(room_id: int) -> dict[str, Any]:
     response = await api.get_room_info(room_id)
     data = _body_data(response)
     uid = _to_int(data.get("uid"))
     uname = str(data.get("uname") or "")
+
     if uid > 0 and not uname:
         uname = await get_uname(uid)
+
+    if uid > 0 and uname:
+        upsert_liver(room_id=room_id, uid=uid, uname=uname, nickname=None)
+
     return {
         "room_id": room_id,
         "uid": uid,
@@ -66,13 +82,19 @@ async def get_room_info(room_id: int) -> dict[str, Any]:
 
 
 async def get_uname(uid: int) -> str:
+    cached_name = get_name_by_uid(uid)
+    if cached_name:
+        return cached_name
+
     data = _body_data(await api.get_master_info(uid))
     info = data.get("info") if isinstance(data.get("info"), dict) else {}
-    return str(info.get("uname") or "")
+    uname = str(info.get("uname") or "")
+    room_id = _to_int(data.get("room_id"))
 
+    if uid > 0 and uname:
+        upsert_liver(room_id=room_id, uid=uid, uname=uname, nickname=None)
 
-async def get_master_info(uid: int) -> str:
-    return await get_uname(uid)
+    return uname
 
 
 async def get_fans_num(uid: int) -> int:
@@ -93,7 +115,7 @@ async def get_activated_medal_count(target_id: int) -> int:
     return _to_int(data.get("fans_medal_count"))
 
 
-async def get_liver_stats(room_id: int) -> dict[str, Any]:
+async def get_stats(room_id: int) -> dict[str, Any]:
     room_info = await get_room_info(room_id)
     uid = _to_int(room_info.get("uid"))
     if uid <= 0:
@@ -158,11 +180,11 @@ async def get_space_history(uid: int, *, offset_dynamic_id: int = 0, need_top: i
 
 __all__ = [
     "get_room_info",
+    "get_room_uname",
     "get_uname",
     "get_fans_num",
-    "get_master_info",
     "get_guard_num",
     "get_activated_medal_count",
-    "get_liver_stats",
+    "get_stats",
     "get_space_history",
 ]

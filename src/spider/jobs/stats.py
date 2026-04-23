@@ -6,15 +6,15 @@ from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src.db.liver_stats import init_liver_stats_db, insert_liver_stats
+from src.db.stats import init_stats_db, insert_stats
 from src.db.subscription import list_subscribed_room_ids
-from src.spider.wrapper import get_liver_stats
+from src.spider.wrapper import get_stats
 
 
-logger = logging.getLogger("spider.jobs.liver_stats")
+logger = logging.getLogger("spider.jobs.stats")
 
 
-async def collect_liver_stats() -> None:
+async def collect_stats() -> None:
     room_ids = list_subscribed_room_ids()
     if not room_ids:
         logger.info("no subscribed rooms, skip liver stats collection")
@@ -23,8 +23,8 @@ async def collect_liver_stats() -> None:
     logger.info("liver stats begin rooms=%d", len(room_ids))
     for room_id in room_ids:
         try:
-            stats = await get_liver_stats(room_id)
-            insert_liver_stats(
+            stats = await get_stats(room_id)
+            insert_stats(
                 room_id=int(stats["room_id"]),
                 uid=int(stats["uid"]),
                 uname=str(stats["uname"]),
@@ -46,12 +46,12 @@ async def collect_liver_stats() -> None:
 
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
-    init_liver_stats_db()
+    init_stats_db()
     scheduler.add_job(
-        collect_liver_stats,
+        collect_stats,
         CronTrigger(minute="0,30", second=0),
-        id="liver_stats",
-        name="liver_stats",
+        id="stats",
+        name="stats",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
