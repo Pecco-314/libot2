@@ -60,7 +60,7 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         collect_activity,
         "interval",
-        seconds=20,
+        seconds=10,
         id="activity",
         name="activity",
         replace_existing=True,
