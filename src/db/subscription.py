@@ -52,3 +52,12 @@ def list_subscribed_room_ids() -> list[int]:
     with connect_sqlite() as conn:
         rows = conn.execute("SELECT DISTINCT room_id FROM subscription ORDER BY room_id ASC").fetchall()
     return [int(row[0]) for row in rows]
+
+
+def list_subscribed_group_ids(room_id: int) -> list[int]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT group_id FROM subscription WHERE room_id = ? ORDER BY group_id ASC",
+            (room_id,),
+        ).fetchall()
+    return [int(row[0]) for row in rows]

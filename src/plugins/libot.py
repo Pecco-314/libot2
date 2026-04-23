@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from nonebot import on_command
+import logging
+
+from nonebot import get_bots, on_command
 from nonebot.adapters.onebot.v11 import Event
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
+from nonebot_plugin_apscheduler import scheduler
 
 from src.common.nb import get_group_id, parse_user_id
+from src.db.event import get_newest_live_event
 from src.db.manager import (
     group_manager_required,
     add_manager,
@@ -15,22 +19,23 @@ from src.db.manager import (
     list_managers,
     remove_manager,
 )
+from src.db.state import get_state, init_state_db, set_state
 from src.db.subscription import (
     get_subscription,
     init_subscription_db,
-    list_subscribed_room_ids,
+    list_subscribed_group_ids,
     remove_subscription,
     set_subscription,
 )
-from src.spider.wrapper import get_room_info
+from src.spider.wrapper import get_room_uname
+
+
+logger = logging.getLogger("libot.libot")
 
 try:
     init_manager_db()
-except Exception:
-    pass
-
-try:
     init_subscription_db()
+    init_state_db()
 except Exception:
     pass
 
@@ -122,14 +127,15 @@ def _parse_room_id(arg) -> int | None:
     return int(text) if text.isdigit() else None
 
 
-async def _format_room_name(room_id: int) -> str:
+async def _format_name(room_id: int | None) -> str:
+    if room_id is None:
+        return "主播"
     try:
-        room_info = await get_room_info(room_id)
+        uname = await get_room_uname(room_id)
     except Exception:
-        return f"房间号 {room_id}"
+        return f"房间{room_id}"
 
-    uname = str(room_info.get("uname") or "")
-    return uname if uname else f"房间号 {room_id}"
+    return uname if uname else f"房间{room_id}"
 
 
 @sub_show_cmd.handle()
@@ -143,7 +149,7 @@ async def handle_show_subscription(matcher: Matcher, event: Event):
     if room_id is None:
         await matcher.finish("本群尚未设置订阅")
 
-    await matcher.finish(f"当前订阅：{await _format_room_name(room_id)}")
+    await matcher.finish(f"当前订阅：{await _format_name(room_id)}")
 
 
 @sub_set_cmd.handle()
@@ -158,7 +164,7 @@ async def handle_set_subscription(matcher: Matcher, event: Event, arg=CommandArg
         await matcher.finish("用法：/设置订阅 <房间号>")
 
     set_subscription(group_id, room_id)
-    await matcher.finish(f"订阅已设置：{await _format_room_name(room_id)}")
+    await matcher.finish(f"订阅已设置：{await _format_name(room_id)}")
 
 
 @sub_remove_cmd.handle()
@@ -173,3 +179,64 @@ async def handle_remove_subscription(matcher: Matcher, event: Event):
         await matcher.finish("已删除本群订阅")
     else:
         await matcher.finish("本群没有可删除的订阅")
+
+
+async def send_to_room(room_id: int, message: str) -> None:
+    group_ids = list_subscribed_group_ids(room_id)
+    if not group_ids:
+        return
+
+    bots = list(get_bots().values())
+    if not bots:
+        logger.warning("没有可用 bot，暂不发送 room_id=%d 的消息", room_id)
+        return
+
+    bot = bots[0]
+    for group_id in group_ids:
+        try:
+            await bot.call_api("send_group_msg", group_id=group_id, message=message)
+        except Exception as exc:
+            logger.warning("发送群消息失败 room_id=%d group_id=%d: %s", room_id, group_id, exc)
+
+
+
+async def _build_message(row: dict[str, object]) -> str | None:
+    name = await _format_name(row.get("room_id"))
+    cmd = row.get("cmd")
+    if cmd == "LIVE":
+        return f"{name}开播了！"
+    if cmd == "PREPARING":
+        return f"{name}下播了..."
+    if cmd == "ROOM_CHANGE":
+        title = row.get("title")
+        if isinstance(title, str) and title.strip():
+            return f"{name}把直播标题修改为{title.strip()}"
+    return None
+
+
+@scheduler.scheduled_job(
+    "interval",
+    seconds=1,
+    id="libot_live_event_watcher",
+    name="libot_live_event_watcher",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=1,
+)
+async def watch_live_events() -> None:
+    row = get_newest_live_event()
+    if row is None:
+        return
+    row_id = row.get("id")
+    last_event_id = 0
+    last_event_id_str = get_state("last_event_id")
+    if last_event_id_str is not None and last_event_id_str.isdigit():
+        last_event_id = int(last_event_id_str)
+    if row_id <= last_event_id:
+        return
+    set_state("last_event_id", str(row_id))
+    message = await _build_message(row)
+    if message is None:
+        return
+    room_id = row.get("room_id")
+    await send_to_room(room_id, message)
