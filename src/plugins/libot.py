@@ -27,6 +27,7 @@ from src.db.subscription import (
     remove_subscription,
     set_subscription,
 )
+from src.db.liver import upsert_liver, init_liver_db
 from src.spider.wrapper import get_room_uname
 
 
@@ -36,6 +37,7 @@ try:
     init_manager_db()
     init_subscription_db()
     init_state_db()
+    init_liver_db()
 except Exception:
     pass
 
@@ -48,6 +50,7 @@ manager_remove_cmd = on_command("删除管理员", priority=5, block=True)
 sub_show_cmd = on_command("查看订阅", priority=5, block=True)
 sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, block=True)
 sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
+nickname_set_cmd = on_command("设置昵称", priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -68,6 +71,7 @@ async def handle_manager_help(event: Event):
         "/查看订阅 - 查看当前群订阅\n"
         "/设置订阅 <房间号> - 设置当前群订阅\n"
         "/删除订阅 - 删除当前群订阅\n"
+        "/设置昵称 - 修改当前订阅主播的昵称\n"
     )
 
 
@@ -165,6 +169,24 @@ async def handle_set_subscription(matcher: Matcher, event: Event, arg=CommandArg
 
     set_subscription(group_id, room_id)
     await matcher.finish(f"订阅已设置：{await _format_name(room_id)}")
+
+
+@nickname_set_cmd.handle()
+@group_manager_required
+async def handle_set_nickname(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+    
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+    
+    nickname = arg.extract_plain_text().strip()
+    if not nickname:
+        await matcher.finish("用法：/设置昵称 <昵称>")
+    upsert_liver(room_id=room_id, uid=None, uname=None, nickname=nickname)
+    await matcher.finish(f"昵称已设置：{nickname}")
 
 
 @sub_remove_cmd.handle()

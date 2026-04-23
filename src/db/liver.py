@@ -10,8 +10,8 @@ def init_liver_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS liver (
                 room_id INTEGER PRIMARY KEY,
-                uid INTEGER NOT NULL,
-                uname TEXT NOT NULL,
+                uid INTEGER,
+                uname TEXT,
                 nickname TEXT
             )
             """,
