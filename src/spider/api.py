@@ -24,9 +24,11 @@ BILI_HEADERS = {
 
 def build_cookies() -> dict[str, str]:
     cookies: dict[str, str] = {}
-    sessdata = os.getenv("BILI_SESSDATA", "").strip()
+    sessdata = os.getenv("SESSDATA", "").strip()
+    buvid3 = os.getenv("BUVID3", "").strip()
     if sessdata:
         cookies["SESSDATA"] = sessdata
+        cookies["BUVID3"] = buvid3
     return cookies
 
 

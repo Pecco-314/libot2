@@ -39,6 +39,7 @@ TRACKED_CMDS = {
 @dataclass(slots=True)
 class MonitorConfig:
     rooms: list[int]
+    rooms_from_db: bool
     database: Path
     run_seconds: int
     verbose: bool
@@ -125,12 +126,14 @@ def _load_config(config_path: Path | None, args: argparse.Namespace) -> MonitorC
         db_path = Path(str(raw.get("database", "data/libot.db")))
 
     rooms: list[int] = []
+    rooms_from_db = False
     if args.rooms:
         rooms = _parse_rooms_text(args.rooms)
     elif isinstance(raw.get("rooms"), list):
         rooms = [int(x) for x in raw.get("rooms", []) if str(x).isdigit()]
     else:
         rooms = list_subscribed_room_ids()
+        rooms_from_db = True
 
     if not rooms:
         raise ValueError("未配置直播间号。请先在 subscription 表中添加订阅，或通过 --rooms 传入")
@@ -143,11 +146,12 @@ def _load_config(config_path: Path | None, args: argparse.Namespace) -> MonitorC
     if args.verbose:
         verbose = True
 
-    sessdata = os.getenv("BILI_SESSDATA", "")
-    buvid3 = os.getenv("BILI_BUVID3", "")
+    sessdata = os.getenv("SESSDATA", "")
+    buvid3 = os.getenv("BUVID3", "")
 
     return MonitorConfig(
         rooms=rooms,
+        rooms_from_db=rooms_from_db,
         database=db_path,
         run_seconds=run_seconds,
         verbose=verbose,
@@ -172,7 +176,7 @@ class MetricsDB:
             _execute_write(
                 conn,
                 """
-                CREATE TABLE event (
+                CREATE TABLE IF NOT EXISTS event (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     room_id INTEGER NOT NULL,
                     cmd TEXT NOT NULL,
@@ -191,7 +195,7 @@ class MetricsDB:
             _execute_write(
                 conn,
                 """
-                CREATE TABLE session (
+                CREATE TABLE IF NOT EXISTS session (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     room_id INTEGER NOT NULL,
                     start_time TIMESTAMP NOT NULL,
@@ -206,21 +210,21 @@ class MetricsDB:
             _execute_write(
                 conn,
                 """
-                CREATE INDEX idx_session_room_start
+                CREATE INDEX IF NOT EXISTS idx_session_room_start
                 ON session(room_id, start_time)
                 """,
             )
             _execute_write(
                 conn,
                 """
-                CREATE INDEX idx_event_room_time
+                CREATE INDEX IF NOT EXISTS idx_event_room_time
                 ON event(room_id, created_at)
                 """,
             )
             _execute_write(
                 conn,
                 """
-                CREATE INDEX idx_event_cmd_time
+                CREATE INDEX IF NOT EXISTS idx_event_cmd_time
                 ON event(cmd, created_at)
                 """,
             )
@@ -543,13 +547,54 @@ async def run_monitor(config: MonitorConfig) -> None:
         await client.stop_and_close()
         logger.info("已停止监听 room_id=%d", room_id)
 
+    async def _sync_rooms() -> None:
+        if not config.rooms_from_db:
+            return
+
+        latest_rooms = list_subscribed_room_ids()
+        latest_room_set = set(latest_rooms)
+        current_room_set = set(clients.keys())
+
+        for room_id in sorted(latest_room_set - current_room_set):
+            await _start_room(room_id)
+
+        for room_id in sorted(current_room_set - latest_room_set):
+            await _stop_room(room_id)
+
+    async def _sync_rooms_loop() -> None:
+        if not config.rooms_from_db:
+            return
+
+        while not stop_event.is_set():
+            try:
+                await _sync_rooms()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("同步订阅房间失败: %s", exc)
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                continue
+
+    sync_task: asyncio.Task[None] | None = None
     try:
         for room_id in config.rooms:
             await _start_room(room_id)
 
+        if config.rooms_from_db:
+            sync_task = asyncio.create_task(_sync_rooms_loop())
+
         logger.info("monitor 已启动完成，共监听 %d 个房间", len(clients))
         await stop_event.wait()
     finally:
+        if sync_task is not None:
+            sync_task.cancel()
+            try:
+                await sync_task
+            except asyncio.CancelledError:
+                pass
         for room_id in list(clients.keys()):
             await _stop_room(room_id)
         await writer_task
