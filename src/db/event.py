@@ -11,7 +11,7 @@ def get_newest_live_event() -> dict[str, object] | None:
     live_cmds = ["LIVE", "PREPARING", "ROOM_CHANGE"]
     with connect_sqlite() as conn:
         row = conn.execute(
-            "SELECT id, cmd, room_id, title FROM event WHERE cmd IN (?, ?, ?) ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT id, cmd, room_id, title, created_at FROM event WHERE cmd IN (?, ?, ?) ORDER BY created_at DESC, id DESC LIMIT 1",
             tuple(live_cmds),
         ).fetchone()
     if row is None:
@@ -21,10 +21,14 @@ def get_newest_live_event() -> dict[str, object] | None:
         "cmd": str(row[1]),
         "room_id": int(row[2]),
         "title": str(row[3]) if row[3] is not None else None,
+        "created_at": str(row[4])
     }
 
-# LIVE事件可能是推流而不是开播，我们通过“上次开播是否比上次下播晚”来判断是否是真的开播
-def is_streaming_event(event_id: int, room_id: int, cmd: str) -> bool:
+def is_streaming_event(row) -> bool:
+    """判断LIVE事件是否是推流而非真的开播"""
+    cmd = row.get("cmd")
+    room_id = row.get("room_id")
+    event_id = row.get("id")
     if cmd != "LIVE":
         return False
     with connect_sqlite() as conn:
@@ -39,6 +43,30 @@ def is_streaming_event(event_id: int, room_id: int, cmd: str) -> bool:
     if row is None:
         return False
     return row[0] == "LIVE"
+
+def is_duplicate_room_change(row) -> bool:
+    """判断是否在短时间内出现重复的ROOM_CHANGE事件"""
+    room_id = row.get("room_id")
+    event_id = row.get("id")
+    cmd = row.get("cmd")
+    created_at = row.get("created_at")
+    if cmd != "ROOM_CHANGE":
+        return False
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            """
+            SELECT created_at FROM event
+            WHERE room_id = ? AND cmd = 'ROOM_CHANGE' AND id < ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (room_id, event_id),
+        ).fetchone()
+    if row is None:
+        return False
+    change_time = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+    last_change_time = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+    return (change_time - last_change_time) < timedelta(seconds=10)
+
 
 def list_superchat_events(room_id: int, from_time: str, to_time: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:

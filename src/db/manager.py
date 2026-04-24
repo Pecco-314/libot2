@@ -2,14 +2,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from functools import wraps
-from typing import Any, Callable, Coroutine
-
-from nonebot.adapters.onebot.v11 import Event
-from nonebot.matcher import Matcher
 
 from src.common.env import load_env_file
-from src.common.nb import get_group_id
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
 
 load_env_file()
@@ -91,39 +85,3 @@ def remove_manager(group_id: int, user_id: int) -> bool:
             (group_id, user_id),
         )
     return cur.rowcount > 0
-
-
-Handler = Callable[..., Coroutine[Any, Any, None]]
-
-
-def group_manager_required(func: Handler) -> Handler:
-    @wraps(func)
-    async def wrapper(*args: Any, **kwargs: Any):
-        matcher = next((arg for arg in args if isinstance(arg, Matcher)), None)
-        event = next((arg for arg in args if isinstance(arg, Event)), None)
-
-        if matcher is None:
-            matcher = kwargs.get("matcher")
-        if event is None:
-            event = kwargs.get("event")
-
-        if isinstance(matcher, Matcher) and isinstance(event, Event):
-            group_id = get_group_id(event)
-            if group_id is None:
-                await matcher.finish("请在群聊中使用该命令")
-                return
-
-            if INITIAL_MANAGER_QQ is None:
-                await matcher.finish("未配置 MANAGER_QQ，无法初始化管理员")
-                return
-
-            ensure_initial_manager(group_id)
-
-            user_id = int(event.get_user_id())
-            if not is_manager(group_id, user_id):
-                await matcher.finish("权限不足：该命令仅管理员可用")
-                return
-
-        return await func(*args, **kwargs)
-
-    return wrapper  # type: ignore[return-value]

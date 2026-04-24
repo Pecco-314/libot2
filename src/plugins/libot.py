@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -7,18 +8,18 @@ from pathlib import Path
 from functools import wraps
 
 from nonebot import get_bots, on_command
-from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment
+from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, GroupMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from nonebot_plugin_apscheduler import scheduler
 
-from src.common.nb import get_group_id, parse_user_id
+from src.common.env import load_env_file
 from src.common.render import render_bilibili_card
 from src.common.superchat import get_daily_superchat_image
 from src.db.activity import get_max_activity_id, init_activity_db, list_activities_after
-from src.db.event import get_newest_live_event, is_streaming_event
+from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
 from src.db.manager import (
-    group_manager_required,
+    ensure_initial_manager,
     add_manager,
     count_managers,
     init_manager_db,
@@ -43,6 +44,11 @@ from src.spider.wrapper import get_room_uname
 logger = logging.getLogger("libot.libot")
 ACTIVITY_IMAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "images" / "activity"
 
+load_env_file()
+
+_ENV_MANAGER_QQ = os.getenv("MANAGER_QQ", "").strip()
+INITIAL_MANAGER_QQ = int(_ENV_MANAGER_QQ) if _ENV_MANAGER_QQ.isdigit() else None
+
 try:
     init_manager_db()
     init_subscription_db()
@@ -51,6 +57,90 @@ try:
     init_activity_db()
 except Exception:
     pass
+
+
+def get_group_id(event: Event) -> int | None:
+    if isinstance(event, GroupMessageEvent):
+        return int(event.group_id)
+    group_id = getattr(event, "group_id", None)
+    return int(group_id) if group_id is not None else None
+
+
+def parse_user_id(arg: Message) -> int | None:
+    text = arg.extract_plain_text().strip()
+    return int(text) if text.isdigit() else None
+
+
+def group_manager_required(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        matcher = next((arg for arg in args if isinstance(arg, Matcher)), None)
+        event = next((arg for arg in args if isinstance(arg, Event)), None)
+
+        if matcher is None:
+            matcher = kwargs.get("matcher")
+        if event is None:
+            event = kwargs.get("event")
+
+        if isinstance(matcher, Matcher) and isinstance(event, Event):
+            group_id = get_group_id(event)
+            if group_id is None:
+                await matcher.finish("请在群聊中使用该命令")
+                return
+
+            if INITIAL_MANAGER_QQ is None:
+                await matcher.finish("未配置 MANAGER_QQ，无法初始化管理员")
+                return
+
+            ensure_initial_manager(group_id)
+
+            user_id = int(event.get_user_id())
+            if not is_manager(group_id, user_id):
+                await matcher.finish("权限不足：该命令仅管理员可用")
+                return
+
+        return await func(*args, **kwargs)
+
+    return wrapper
+
+
+def subscription_dev_required(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        matcher = next((arg for arg in args if isinstance(arg, Matcher)), None)
+        event = next((arg for arg in args if isinstance(arg, Event)), None)
+
+        if matcher is None:
+            matcher = kwargs.get("matcher")
+        if event is None:
+            event = kwargs.get("event")
+
+        if isinstance(matcher, Matcher) and isinstance(event, Event):
+            group_id = get_group_id(event)
+            if group_id is None:
+                await matcher.finish("请在群聊中使用该命令")
+                return None
+            if not is_subscription_dev_enabled(group_id):
+                await matcher.finish("本群未开启测试功能")
+                return None
+            return await func(*args, **kwargs)
+
+        room_id = kwargs.get("room_id")
+        if room_id is None and args:
+            room_id = args[0]
+
+        if isinstance(room_id, int):
+            enabled_groups = [
+                group_id
+                for group_id in list_subscribed_group_ids(room_id)
+                if is_subscription_dev_enabled(group_id)
+            ]
+            if not enabled_groups:
+                return None
+
+        return await func(*args, **kwargs)
+
+    return wrapper
 
 
 help_cmd = on_command("帮助", priority=5)
@@ -303,44 +393,6 @@ async def send_to_room(room_id: int, message: str) -> None:
             logger.warning("发送群消息失败 room_id=%d group_id=%d: %s", room_id, group_id, exc)
 
 
-def subscription_dev_required(func):
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        matcher = next((arg for arg in args if isinstance(arg, Matcher)), None)
-        event = next((arg for arg in args if isinstance(arg, Event)), None)
-
-        if matcher is None:
-            matcher = kwargs.get("matcher")
-        if event is None:
-            event = kwargs.get("event")
-
-        if isinstance(matcher, Matcher) and isinstance(event, Event):
-            group_id = get_group_id(event)
-            if group_id is None:
-                await matcher.finish("请在群聊中使用该命令")
-                return None
-            if not is_subscription_dev_enabled(group_id):
-                await matcher.finish("本群未开启测试功能")
-                return None
-            return await func(*args, **kwargs)
-
-        room_id = kwargs.get("room_id")
-        if room_id is None and args:
-            room_id = args[0]
-
-        if isinstance(room_id, int):
-            enabled_groups = [
-                group_id
-                for group_id in list_subscribed_group_ids(room_id)
-                if is_subscription_dev_enabled(group_id)
-            ]
-            if not enabled_groups:
-                return None
-
-        return await func(*args, **kwargs)
-
-    return wrapper
-
 
 async def send_activity_to_room(room_id: int, message) -> None:
     group_ids = list_subscribed_group_ids(room_id)
@@ -436,8 +488,7 @@ async def watch_live_events() -> None:
         return
     row_id = row.get("id")
     room_id = row.get("room_id")
-    cmd = row.get("cmd")
-    if is_streaming_event(row_id, room_id, cmd):
+    if is_streaming_event(row) or is_duplicate_room_change(row):
         set_state("last_event_id", str(row_id))
         return
     last_event_id = 0
