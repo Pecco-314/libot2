@@ -438,7 +438,7 @@ async def watch_live_events() -> None:
     room_id = row.get("room_id")
     cmd = row.get("cmd")
     if is_streaming_event(row_id, room_id, cmd):
-        last_event_id = int(last_event_id_str)
+        set_state("last_event_id", str(row_id))
         return
     last_event_id = 0
     last_event_id_str = get_state("last_event_id")
