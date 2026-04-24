@@ -188,11 +188,12 @@ def get_daily_superchat_image(room_id: int, day: datetime.datetime) -> Path | No
     image_dir = ROOT / "data" / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
     
-    date_str = day.strftime("%Y-%m-%d")
-    cache_path = image_dir / "superchat" / f"{room_id}_{date_str}.png"
-    
     # 判断是否为今天
     is_today = day.date() == datetime.datetime.now().date()
+    if is_today:
+        cache_path = image_dir / "superchat" / f"{room_id}_today.png"
+    else:
+        cache_path = image_dir / "superchat" / f"{room_id}_{day.strftime('%Y-%m-%d')}.png"
     
     # 如果不是今天且缓存存在，直接返回缓存图片
     if not is_today and cache_path.exists():
