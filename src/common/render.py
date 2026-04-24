@@ -326,12 +326,3 @@ def render_bilibili_card(card_json_str, dy_type, orig_type, timestamp, emoji_det
         final_image.paste(origin_canvas, (margin, curr_y), origin_canvas)
 
     return final_image
-
-if __name__ == "__main__":
-    timestamp=1776962919
-    dy_type=2
-    orig_type=0
-    card_json_str = "{\"item\":{\"id\":392340666,\"description\":\"感觉刚咂巴咂巴尝到味！\\n明天来肖申克救赎加打工了\\n有意思！！\\n\\n这段时间流感都还蛮严重的\\n池要好好休息注意防护噢！\\n\\noya🌽\\n传输好梦🍀\\n\\n\",\"pictures\":[{\"img_height\":1080,\"img_width\":1123,\"img_src\":\"http://i0.hdslb.com/bfs/new_dyn/3cb23b717d029a417f9f56b3fac7b3ed2030198123.png\",\"img_size\":1861.888}],\"pictures_count\":1,\"reply\":120,\"upload_time\":1776962919},\"user\":{\"uid\":2030198123,\"name\":\"三理Mit3uri\",\"head_url\":\"https://i2.hdslb.com/bfs/face/3dd1f948bef06a933084e7231fa0708bea6410aa.jpg\",\"vip\":{\"type\":2,\"due_date\":1803916800000,\"status\":1,\"theme_type\":0,\"label\":{\"path\":\"http://i0.hdslb.com/bfs/vip/label_annual.png\",\"text\":\"年度大会员\",\"label_theme\":\"annual_vip\",\"text_color\":\"\",\"bg_style\":0,\"bg_color\":\"\",\"border_color\":\"\"},\"avatar_subscript\":1,\"nickname_color\":\"#FB7299\",\"vip_pay_type\":1}}}"
-    img = render_bilibili_card(card_json_str, dy_type, orig_type, timestamp)
-    if img:
-        img.save("test_output.png")
