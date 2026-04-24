@@ -14,6 +14,7 @@ from nonebot_plugin_apscheduler import scheduler
 
 from src.common.nb import get_group_id, parse_user_id
 from src.common.render import render_bilibili_card
+from src.common.superchat import get_daily_superchat_image
 from src.db.activity import get_max_activity_id, init_activity_db, list_activities_after
 from src.db.event import get_newest_live_event, is_streaming_event
 from src.db.manager import (
@@ -53,6 +54,7 @@ except Exception:
 
 
 help_cmd = on_command("帮助", priority=5)
+superchat_cmd = on_command("查SC", priority=5, block=True)
 manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
 manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
 manager_add_cmd = on_command("添加管理员", priority=5, block=True)
@@ -70,7 +72,34 @@ test_status_cmd = on_command("测试状态", priority=5, block=True)
 async def handle_help():
     await help_cmd.finish(
         "/帮助 - 显示帮助信息\n"
+        "/查SC [日期] - 查看醒目留言列表，默认当天\n"
     )
+
+
+@superchat_cmd.handle()
+async def handle_superchat(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    date_str = arg.extract_plain_text().strip()
+    if date_str:
+        try:
+            day = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+    else:
+        day = datetime.now()
+
+    image = get_daily_superchat_image(room_id, day)
+    if image is None:
+        await matcher.finish("没有找到醒目留言")
+    else:
+        await matcher.finish(MessageSegment.image(file=str(image)))
 
 
 @manager_help_cmd.handle()
