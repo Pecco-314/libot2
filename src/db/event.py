@@ -45,17 +45,18 @@ def is_streaming_event(row) -> bool:
     return row[0] == "LIVE"
 
 def is_duplicate_room_change(row) -> bool:
-    """判断是否在短时间内出现重复的ROOM_CHANGE事件"""
+    """判断是否出现重复的ROOM_CHANGE事件"""
     room_id = row.get("room_id")
     event_id = row.get("id")
     cmd = row.get("cmd")
+    title = row.get("title")
     created_at = row.get("created_at")
     if cmd != "ROOM_CHANGE":
         return False
     with connect_sqlite() as conn:
         row = conn.execute(
             """
-            SELECT created_at FROM event
+            SELECT title FROM event
             WHERE room_id = ? AND cmd = 'ROOM_CHANGE' AND id < ?
             ORDER BY id DESC LIMIT 1
             """,
@@ -63,9 +64,7 @@ def is_duplicate_room_change(row) -> bool:
         ).fetchone()
     if row is None:
         return False
-    change_time = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
-    last_change_time = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-    return (change_time - last_change_time) < timedelta(seconds=10)
+    return title == row[0]
 
 
 def list_superchat_events(room_id: int, from_time: str, to_time: str) -> list[dict[str, object]]:
