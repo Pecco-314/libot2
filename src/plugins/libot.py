@@ -121,7 +121,7 @@ def subscription_dev_required(func):
                 await matcher.finish("请在群聊中使用该命令")
                 return None
             if not is_subscription_dev_enabled(group_id):
-                await matcher.finish("本群未开启测试功能")
+                await matcher.finish("此功能测试中")
                 return None
             return await func(*args, **kwargs)
 
@@ -144,7 +144,7 @@ def subscription_dev_required(func):
 
 
 help_cmd = on_command("帮助", priority=5)
-superchat_cmd = on_command("查SC", priority=5, block=True)
+superchat_cmd = on_command("查SC", aliases={"查sc", "查Sc"}, priority=5, block=True)
 manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
 manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
 manager_add_cmd = on_command("添加管理员", priority=5, block=True)
@@ -455,23 +455,24 @@ async def _render_activity_image(activity: dict[str, object]) -> Path | None:
         return image_path
 
     try:
-        image = await asyncio.to_thread(
-            render_bilibili_card,
+        image = await render_bilibili_card(
             str(activity.get("card_json_str") or ""),
             int(activity.get("dy_type") or 0),
             int(activity.get("orig_type") or 0),
             int(activity.get("timestamp") or 0),
             activity.get("emoji_details") if isinstance(activity.get("emoji_details"), list) else [],
         )
-        await asyncio.to_thread(image.save, image_path)
+        await asyncio.to_thread(image.image.save, str(image_path))
         return image_path
     except Exception as exc:
         logger.warning(
             "渲染 activity 图片失败 activity_id=%s room_id=%s: %s",
             activity.get("activity_id"),
             activity.get("room_id"),
-            exc,
+            exc
         )
+        import traceback
+        traceback.print_exc()
         return None
 
 

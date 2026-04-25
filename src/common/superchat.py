@@ -1,18 +1,18 @@
 import datetime
 import math
 import unicodedata
+from PIL import Image, ImageDraw
+
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
-from pilmoji import Pilmoji
+from nonebot_plugin_imageutils import Text2Image
 
 from src.db.event import list_superchat_event_by_day
 from src.db.liver import get_name_by_roomid
 
-# 路径配置
 ROOT = Path(__file__).resolve().parents[2]
-FONT_PATH = ROOT / "fonts" / "NotoSansCJKsc-Regular.otf"
 
 def _row_bg_color(amount: int) -> tuple[int, int, int]:
+    """根据醒目留言的金额返回对应的背景色"""
     if amount >= 2000:
         return (0xAB, 0x1A, 0x32)  # #AB1A32
     elif amount >= 1000:
@@ -30,22 +30,8 @@ def _row_bg_color(amount: int) -> tuple[int, int, int]:
     else:
         return (0xFF, 0xFF, 0xFF)  # #FFFFFF
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    lines = []
-    for paragraph in text.split('\n'):
-        current_line = ""
-        for char in paragraph:
-            if font.getlength(current_line + char) <= max_width:
-                current_line += char
-            else:
-                if current_line:
-                    lines.append(current_line)
-                current_line = char
-        if current_line:
-            lines.append(current_line)
-    return lines if lines else [""]
-
 def truncate_name(name: str, max_len: int = 18) -> str:
+    """按东亚字符宽度截断用户名，超出部分加省略号"""
     current_width = 0
     truncated_str = ""
     
@@ -69,27 +55,20 @@ def truncate_name(name: str, max_len: int = 18) -> str:
             
     return truncated_str + "..."
 
-def draw_safe_pilmoji_text(draw, pilmoji, x, y, text, fill, font, font_size, bg_color):
-    """
-    带占位符的渲染函数：解决纯 Emoji 导致的高度塌陷问题
-    """
-    dummy_char = "I"
-    dummy_width = font.getlength(dummy_char)
+def draw_text(base_image: Image.Image, x: int, y: int, text: str, fill: tuple, font_size: int, max_width: int = 0) -> int:
+    """渲染文本并粘贴到原图上，返回文本图片的高度"""
+    if not text:
+        return 0
     
-    # 向左偏移占位符的宽度
-    start_x = x - dummy_width
+    t2i = Text2Image.from_text(text, font_size, fill=fill)
     
-    # 带着占位符交给 Pilmoji 渲染，此时高度计算一定会正常
-    pilmoji.text((start_x, y), dummy_char + text, fill=fill, font=font)
+    if max_width > 0:
+        t2i.wrap(max_width) # 如果设置了最大宽度，自动折行
     
-    # 渲染完成后，用当前行的背景色画一个矩形，把占位符抹除掉
-    # 右边缘设定为 x - 1，确保不会覆盖到真正的文字或 emoji
-    draw.rectangle([
-        start_x - 1, 
-        y - 2, 
-        x - 1, 
-        y + font_size + 4
-    ], fill=bg_color)
+    text_img = t2i.to_image()
+    # paste 需要第三个参数作为 mask 保证透明背景正常
+    base_image.paste(text_img, (int(x), int(y)), text_img)
+    return text_img.height
 
 def generate_superchat_image(data_list: list, room_name: str, date_str: str, part_idx: int) -> Image.Image | None:
     if len(data_list) == 0:
@@ -98,7 +77,6 @@ def generate_superchat_image(data_list: list, room_name: str, date_str: str, par
     font_size = 14
     padding_x = 10
     padding_y = 8
-    line_spacing = 4
     header_height = 40
     
     col_widths = {
@@ -108,78 +86,88 @@ def generate_superchat_image(data_list: list, room_name: str, date_str: str, par
         'content': 350
     }
     img_width = sum(col_widths.values()) + padding_x * 2
-
-    try:
-        font = ImageFont.truetype(str(FONT_PATH), font_size)
-    except OSError:
-        font = ImageFont.load_default()
-
-    processed_rows = []
     content_max_width = col_widths['content'] - 5
-    
+
+    # 预处理行高计算
+    processed_rows = []
     total_height = header_height
     for item in data_list:
         content_str = str(item['content'])
-        wrapped_lines = wrap_text(content_str, font, content_max_width)
-        
-        text_height = len(wrapped_lines) * font_size + (len(wrapped_lines) - 1) * line_spacing
+
+        bg_color = _row_bg_color(item['price'])
+        text_color = (255, 255, 255) if item['price'] >= 30 else (0, 0, 0)
+
+        content_t2i = Text2Image.from_text(content_str, font_size, fill=text_color)
+        content_t2i.wrap(content_max_width)
+        content_img = content_t2i.to_image(bg_color=bg_color)
+
+        text_height = content_img.height
         row_height = max(30, text_height + padding_y * 2)
         
         processed_rows.append({
             'item': item,
-            'lines': wrapped_lines,
-            'row_height': row_height
+            'content_img': content_img,
+            'row_height': row_height,
+            'bg_color': bg_color,
+            'text_color': text_color
         })
         total_height += row_height
 
-    image = Image.new("RGB", (img_width, int(total_height)), (255, 255, 255))
+    image = Image.new("RGBA", (img_width, int(total_height)), (255, 255, 255, 255))
     draw = ImageDraw.Draw(image)
 
-    with Pilmoji(image) as pilmoji:
-        title_prefix = f"{room_name}的醒目留言" if room_name else "醒目留言"
-        title_text = f"{title_prefix}（{date_str}）- 第{part_idx}页"
+    # 画标题，定义标题背景色
+    title_bg = (240, 240, 240)
+    title_prefix = f"{room_name}的醒目留言" if room_name else "醒目留言"
+    title_text = f"{title_prefix}（{date_str}）- 第{part_idx}页"
+    draw.rectangle([0, 0, img_width, header_height], fill=title_bg)
+    
+    # 居中标题：使用实心背景解决灰边，并精确计算居中高度
+    title_t2i = Text2Image.from_text(title_text, font_size, fill=(0,0,0))
+    title_img = title_t2i.to_image(bg_color=title_bg)
+    title_x = (img_width - title_img.width) / 2
+    title_y = (header_height - title_img.height) / 2
+    image.paste(title_img, (int(title_x), int(title_y)))
+
+    current_y = header_height
+    for row_data in processed_rows:
+        item = row_data['item']
+        row_height = row_data['row_height']
+        content_img = row_data['content_img']
+        text_color = row_data['text_color']
+        bg_color = row_data['bg_color']
+
+        draw.rectangle([0, current_y, img_width, current_y + row_height], fill=bg_color)
         
-        title_width = font.getlength(title_text)
-        title_x = (img_width - title_width) / 2
+        time_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime("%H:%M:%S")
+        uname = truncate_name(str(item['uname']))
+        price = f"￥{item['price']}"
+
+        current_x = padding_x
         
-        draw.rectangle([0, 0, img_width, header_height], fill=(240, 240, 240))
-        pilmoji.text((title_x, (header_height - font_size) // 2), title_text, fill=(0, 0, 0), font=font)
+        # 依次渲染各列信息：使用 Text2Image 并传入本行专属的 bg_color
+        
+        # 1. 时间
+        time_img = Text2Image.from_text(time_str, font_size, fill=text_color).to_image(bg_color=bg_color)
+        image.paste(time_img, (int(current_x), int(current_y + padding_y)))
+        current_x += col_widths['time']
+        
+        # 2. 名字
+        uname_img = Text2Image.from_text(uname, font_size, fill=text_color).to_image(bg_color=bg_color)
+        image.paste(uname_img, (int(current_x), int(current_y + padding_y)))
+        current_x += col_widths['uname']
+        
+        # 3. 金额
+        price_img = Text2Image.from_text(price, font_size, fill=text_color).to_image(bg_color=bg_color)
+        image.paste(price_img, (int(current_x), int(current_y + padding_y)))
+        current_x += col_widths['price']
 
-        current_y = header_height
-        for row_data in processed_rows:
-            item = row_data['item']
-            lines = row_data['lines']
-            row_height = row_data['row_height']
-            
-            bg_color = _row_bg_color(item['price'])
-            text_color = (255, 255, 255) if item['price'] >= 30 else (0, 0, 0)
-            
-            draw.rectangle([0, current_y, img_width, current_y + row_height], fill=bg_color)
-            
-            time_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime("%H:%M:%S")
-            uname = truncate_name(str(item['uname']))
-            price = f"￥{item['price']}"
+        # 4. 内容
+        image.paste(content_img, (int(current_x), int(current_y + padding_y))) 
+        
+        current_y += row_height
 
-            current_x = padding_x
-            
-            # 使用安全函数绘制各列文字
-            draw_safe_pilmoji_text(draw, pilmoji, current_x, current_y + padding_y, time_str, text_color, font, font_size, bg_color)
-            current_x += col_widths['time']
-            
-            draw_safe_pilmoji_text(draw, pilmoji, current_x, current_y + padding_y, uname, text_color, font, font_size, bg_color)
-            current_x += col_widths['uname']
-            
-            draw_safe_pilmoji_text(draw, pilmoji, current_x, current_y + padding_y, price, text_color, font, font_size, bg_color)
-            current_x += col_widths['price']
-            
-            for i, line in enumerate(lines):
-                line_y = current_y + padding_y + i * (font_size + line_spacing)
-                # 处理多行文字中可能存在的纯 Emoji 行
-                draw_safe_pilmoji_text(draw, pilmoji, current_x, line_y, line, text_color, font, font_size, bg_color)
-
-            current_y += row_height
-
-    return image
+    return image.convert("RGB")
 
 
 def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size: int = 40) -> list[Path]:
