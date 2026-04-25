@@ -1,4 +1,5 @@
 import datetime
+import math
 import unicodedata
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -90,7 +91,7 @@ def draw_safe_pilmoji_text(draw, pilmoji, x, y, text, fill, font, font_size, bg_
         y + font_size + 4
     ], fill=bg_color)
 
-def generate_superchat_image(data_list: list, room_name: str, font_path: Path = FONT_PATH) -> Image.Image | None:
+def generate_superchat_image(data_list: list, room_name: str, date_str: str, part_idx: int) -> Image.Image | None:
     if len(data_list) == 0:
         return None
 
@@ -109,7 +110,7 @@ def generate_superchat_image(data_list: list, room_name: str, font_path: Path = 
     img_width = sum(col_widths.values()) + padding_x * 2
 
     try:
-        font = ImageFont.truetype(str(font_path), font_size)
+        font = ImageFont.truetype(str(FONT_PATH), font_size)
     except OSError:
         font = ImageFont.load_default()
 
@@ -135,8 +136,8 @@ def generate_superchat_image(data_list: list, room_name: str, font_path: Path = 
     draw = ImageDraw.Draw(image)
 
     with Pilmoji(image) as pilmoji:
-        date_str = datetime.datetime.fromtimestamp(data_list[0]['timestamp']).strftime("%Y-%m-%d")
-        title_text = f"{room_name}的醒目留言（{date_str}）" if room_name else f"醒目留言（{date_str}）"
+        title_prefix = f"{room_name}的醒目留言" if room_name else "醒目留言"
+        title_text = f"{title_prefix}（{date_str}）- 第{part_idx}页"
         
         title_width = font.getlength(title_text)
         title_x = (img_width - title_width) / 2
@@ -181,35 +182,53 @@ def generate_superchat_image(data_list: list, room_name: str, font_path: Path = 
     return image
 
 
-def get_daily_superchat_image(room_id: int, day: datetime.datetime) -> Path | None:
+def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size: int = 40) -> list[Path]:
     """
-    主接口：处理缓存逻辑并调用生成函数
+    分片缓存逻辑：处理按设定大小切分图片，返回列表
     """
-    image_dir = ROOT / "data" / "images"
+    date_str = day.strftime('%Y-%m-%d')
+    # 按房间号和日期独立建立目录
+    image_dir = ROOT / "data" / "images" / "superchat" / str(room_id) / date_str
     image_dir.mkdir(parents=True, exist_ok=True)
     
-    # 判断是否为今天
     is_today = day.date() == datetime.datetime.now().date()
-    if is_today:
-        cache_path = image_dir / "superchat" / f"{room_id}_today.png"
-    else:
-        cache_path = image_dir / "superchat" / f"{room_id}_{day.strftime('%Y-%m-%d')}.png"
-    
-    # 如果不是今天且缓存存在，直接返回缓存图片
-    if not is_today and cache_path.exists():
-        return cache_path
-        
-    # 查询数据
     data_list = list_superchat_event_by_day(room_id, day)
-
-    # 生成图片
-    room_name = get_name_by_roomid(room_id)
-    img = generate_superchat_image(data_list, room_name)
     
-    if img is None:
-        return None
+    if not data_list:
+        return []
 
-    # 保存到缓存
-    img.save(cache_path)
+    room_name = get_name_by_roomid(room_id)
+    total_chunks = max(1, math.ceil(len(data_list) / chunk_size))
+    generated_paths = []
 
-    return cache_path
+    for i in range(total_chunks):
+        part_idx = i + 1
+        chunk_data = data_list[i * chunk_size : (i + 1) * chunk_size]
+        is_full = (len(chunk_data) == chunk_size)
+        
+        # 只要满了40条或者已经不是今天，就可以用纯 part_{n}.png 永久缓存
+        if is_full or not is_today:
+            filename = f"part_{part_idx}.png"
+        else:
+            filename = f"part_{part_idx}_today.png"
+            
+        cache_path = image_dir / filename
+        
+        if cache_path.exists():
+            generated_paths.append(cache_path)
+            continue
+            
+        img = generate_superchat_image(chunk_data, room_name, date_str, part_idx)
+        if img is None:
+            continue
+            
+        img.save(cache_path)
+        generated_paths.append(cache_path)
+        
+        # 如果缓存了永久切片，清理掉因为遗留导致的 today 缓存
+        if is_full:
+            today_cache = image_dir / f"part_{part_idx}_today.png"
+            if today_cache.exists():
+                today_cache.unlink()
+
+    return generated_paths

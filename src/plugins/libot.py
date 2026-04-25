@@ -8,14 +8,14 @@ from pathlib import Path
 from functools import wraps
 
 from nonebot import get_bots, on_command
-from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment, GroupMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from nonebot_plugin_apscheduler import scheduler
 
 from src.common.env import load_env_file
 from src.common.render import render_bilibili_card
-from src.common.superchat import get_daily_superchat_image
+from src.common.superchat import get_daily_superchat_images
 from src.db.activity import get_max_activity_id, init_activity_db, list_activities_after
 from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
 from src.db.manager import (
@@ -167,7 +167,7 @@ async def handle_help():
 
 
 @superchat_cmd.handle()
-async def handle_superchat(matcher: Matcher, event: Event, arg=CommandArg()):
+async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
     group_id = get_group_id(event)
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
@@ -185,11 +185,28 @@ async def handle_superchat(matcher: Matcher, event: Event, arg=CommandArg()):
     else:
         day = datetime.now()
 
-    image = get_daily_superchat_image(room_id, day)
-    if image is None:
+    # 获得分片图片列表
+    images = get_daily_superchat_images(room_id, day, chunk_size=40)
+    if not images:
         await matcher.finish("没有找到醒目留言")
-    else:
-        await matcher.finish(MessageSegment.image(file=str(image)))
+    
+    # 构造转发消息节点列表
+    nodes = []
+    for img in images:
+        nodes.append({
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(img))
+            }
+        })
+    
+    # 调用群转发接口
+    try:
+        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+    except Exception as e:
+        logger.error("发送醒目留言群转发消息失败: %s", e)
 
 
 @manager_help_cmd.handle()
