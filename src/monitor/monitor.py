@@ -274,7 +274,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_name = msg.gift_name
             gift_num = int(msg.num)
             total_coin = int(msg.total_coin)
-            timestamp = msg.timestamp // 1000
+            timestamp = msg.timestamp
         elif cmd == "GUARD_BUY":
             msg = web_models.GuardBuyMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -282,7 +282,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_name = msg.gift_name
             gift_num = int(msg.num)
             total_coin = int(msg.price) * int(msg.num)
-            timestamp = msg.timestamp // 1000
+            timestamp = msg.start_time
         elif cmd == "SUPER_CHAT_MESSAGE":
             msg = web_models.SuperChatMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -291,7 +291,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             total_coin = int(msg.price)
             gift_name = msg.gift_name
             gift_num = 1
-            timestamp = msg.timestamp // 1000
+            timestamp = msg.start_time
         elif cmd == "LIVE":
             logger.info("房间 %d 进入直播（command=%s）", room_id, command)
             timestamp = command.get("live_time")
