@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 import aiohttp
 import blivedm
@@ -186,46 +187,23 @@ class MetricsDB:
                     gift_name TEXT,
                     gift_num INTEGER,
                     total_coin INTEGER,
-                    live_status INTEGER,
                     title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    timestamp TIMESTAMP
                 )
-                """,
-            )
-            _execute_write(
-                conn,
-                """
-                CREATE TABLE IF NOT EXISTS session (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER NOT NULL,
-                    start_time TIMESTAMP NOT NULL,
-                    end_time TIMESTAMP,
-                    title_on_start TEXT,
-                    last_title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-            )
-            _execute_write(
-                conn,
-                """
-                CREATE INDEX IF NOT EXISTS idx_session_room_start
-                ON session(room_id, start_time)
                 """,
             )
             _execute_write(
                 conn,
                 """
                 CREATE INDEX IF NOT EXISTS idx_event_room_time
-                ON event(room_id, created_at)
+                ON event(room_id, timestamp)
                 """,
             )
             _execute_write(
                 conn,
                 """
                 CREATE INDEX IF NOT EXISTS idx_event_cmd_time
-                ON event(cmd, created_at)
+                ON event(cmd, timestamp)
                 """,
             )
 
@@ -238,79 +216,13 @@ class MetricsDB:
                 """
                 INSERT INTO event (
                     room_id, cmd, uid, uname, content, gift_name, gift_num,
-                    total_coin, live_status, title
+                    total_coin, title, timestamp
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
-            self._update_sessions_from_rows(conn, rows)
 
-    def _get_open_session_id(self, conn: sqlite3.Connection, room_id: int) -> int | None:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM session
-            WHERE room_id = ? AND end_time IS NULL
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (room_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return int(row[0])
-
-    def _update_sessions_from_rows(self, conn: sqlite3.Connection, rows: list[tuple[Any, ...]]) -> None:
-        for row in rows:
-            room_id = int(row[0])
-            cmd = str(row[1])
-            live_status = row[8]
-            title = row[9]
-
-            if cmd == "LIVE" or live_status == 1:
-                if self._get_open_session_id(conn, room_id) is None:
-                    conn.execute(
-                        """
-                        INSERT INTO session (
-                            room_id, start_time, title_on_start, last_title
-                        )
-                        VALUES (?, CURRENT_TIMESTAMP, ?, ?)
-                        """,
-                        (room_id, title, title),
-                    )
-                elif title:
-                    conn.execute(
-                        """
-                        UPDATE session
-                        SET last_title = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (title, self._get_open_session_id(conn, room_id)),
-                    )
-            elif cmd == "PREPARING" or live_status == 0:
-                open_id = self._get_open_session_id(conn, room_id)
-                if open_id is not None:
-                    conn.execute(
-                        """
-                        UPDATE session
-                        SET end_time = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (open_id,),
-                    )
-            elif cmd == "ROOM_CHANGE" and title:
-                open_id = self._get_open_session_id(conn, room_id)
-                if open_id is not None:
-                    conn.execute(
-                        """
-                        UPDATE session
-                        SET last_title = ?, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                        """,
-                        (title, open_id),
-                    )
 
     def close(self) -> None:
         self.conn.close()
@@ -346,7 +258,6 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
     gift_name: str | None = None
     gift_num: int | None = None
     total_coin: int | None = None
-    live_status: int | None = None
     title: str | None = None
 
     try:
@@ -355,6 +266,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             uid = int(msg.uid)
             uname = msg.uname
             content = msg.msg
+            timestamp = msg.timestamp // 1000
         elif cmd == "SEND_GIFT":
             msg = web_models.GiftMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -362,6 +274,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_name = msg.gift_name
             gift_num = int(msg.num)
             total_coin = int(msg.total_coin)
+            timestamp = msg.timestamp // 1000
         elif cmd == "GUARD_BUY":
             msg = web_models.GuardBuyMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -369,6 +282,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_name = msg.gift_name
             gift_num = int(msg.num)
             total_coin = int(msg.price) * int(msg.num)
+            timestamp = msg.timestamp // 1000
         elif cmd == "SUPER_CHAT_MESSAGE":
             msg = web_models.SuperChatMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -377,16 +291,18 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             total_coin = int(msg.price)
             gift_name = msg.gift_name
             gift_num = 1
+            timestamp = msg.timestamp // 1000
         elif cmd == "LIVE":
-            live_status = 1
+            logger.info("房间 %d 进入直播（command=%s）", room_id, command)
+            timestamp = command.get("live_time")
         elif cmd == "PREPARING":
-            live_status = 0
+            logger.info("房间 %d 结束直播（command=%s）", room_id, command)
+            timestamp = command.get("send_time") // 1000
         elif cmd == "ROOM_CHANGE":
+            logger.info("房间 %d 变更标题（command=%s）", room_id, command)
             data = command.get("data")
-            if isinstance(data, dict):
-                t = data.get("title")
-                if isinstance(t, str) and t:
-                    title = t
+            title = data.get("title")
+            timestamp = int(datetime.now().timestamp())
     except Exception:
         pass
 
@@ -399,8 +315,8 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
         gift_name,
         gift_num,
         total_coin,
-        live_status,
         title,
+        timestamp,
     )
 
 

@@ -135,7 +135,7 @@ def generate_superchat_image(data_list: list, room_name: str, font_path: Path = 
     draw = ImageDraw.Draw(image)
 
     with Pilmoji(image) as pilmoji:
-        date_str = data_list[0]['created_at'].strftime("%Y-%m-%d")
+        date_str = datetime.datetime.fromtimestamp(data_list[0]['timestamp']).strftime("%Y-%m-%d")
         title_text = f"{room_name}的醒目留言（{date_str}）" if room_name else f"醒目留言（{date_str}）"
         
         title_width = font.getlength(title_text)
@@ -155,7 +155,7 @@ def generate_superchat_image(data_list: list, room_name: str, font_path: Path = 
             
             draw.rectangle([0, current_y, img_width, current_y + row_height], fill=bg_color)
             
-            time_str = item['created_at'].strftime("%H:%M:%S")
+            time_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime("%H:%M:%S")
             uname = truncate_name(str(item['uname']))
             price = f"￥{item['price']}"
 
