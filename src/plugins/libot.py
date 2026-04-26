@@ -14,8 +14,8 @@ from nonebot.params import CommandArg
 from nonebot_plugin_apscheduler import scheduler
 
 from src.common.env import load_env_file
-from src.common.render import render_bilibili_card
-from src.common.superchat import get_daily_superchat_images
+from src.render.activity import render_bilibili_card
+from src.render.superchat import get_daily_superchat_images
 from src.db.activity import get_max_activity_id, init_activity_db, list_activities_after
 from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
 from src.db.manager import (

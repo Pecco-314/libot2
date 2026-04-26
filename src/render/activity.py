@@ -1,12 +1,10 @@
 import json
 import re
 import math
-import asyncio
 import httpx
 from io import BytesIO
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional
 
 from nonebot.log import logger
 from nonebot_plugin_imageutils import BuildImage, Text2Image
@@ -72,14 +70,14 @@ def extract_dynamic_info(data_dict: dict, dy_type: int) -> dict:
 
 async def render_text_and_images(text: str, pic_urls: list, width: int, font_size: int, emoji_dict: dict, text_color: tuple, bg_color: tuple) -> Optional[BuildImage]:
     """渲染正文：处理文字、自定义表情和配图"""
-    if not text and not pic_urls: return None
+    if not text and not pic_urls:
+        return None
 
     # 预估行高和布局
     line_height = int(font_size * 1.5)
     emoji_size = int(font_size * 1.4)
     
     # 构建文字和表情的分块逻辑
-    tokens = []
     if emoji_dict:
         pattern = re.compile('(' + '|'.join(map(re.escape, emoji_dict.keys())) + ')')
         raw_tokens = [t for t in pattern.split(text) if t] if text else []
@@ -94,21 +92,25 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
         if emoji_dict and token in emoji_dict:
             w = emoji_size + 8
             if curr_x + w > width and curr_line:
-                lines.append(curr_line); curr_line = []; curr_x = 0
+                lines.append(curr_line)
+                curr_line = []
+                curr_x = 0
             curr_line.append({'type': 'emoji', 'url': emoji_dict[token], 'w': w, 'x': curr_x})
             curr_x += w
         else:
             for char in token:
-                # 关键：直接通过 Text2Image 测量宽度，不依赖外部字体文件
                 char_w = Text2Image.from_text(char, font_size).width
                 if curr_x + char_w > width and curr_line:
-                    lines.append(curr_line); curr_line = []; curr_x = 0
+                    lines.append(curr_line)
+                    curr_line = []
+                    curr_x = 0
                 if curr_line and curr_line[-1]['type'] == 'text':
                     curr_line[-1]['content'] += char
                 else:
                     curr_line.append({'type': 'text', 'content': char, 'x': curr_x})
                 curr_x += char_w
-    if curr_line: lines.append(curr_line)
+    if curr_line:
+        lines.append(curr_line)
 
     text_h = len(lines) * line_height
     # 计算配图高度
@@ -197,40 +199,20 @@ async def render_bilibili_card(card_json: str, dy_type: int, orig_type: int, tim
 
     # 4. 组装
     h_total = margin + 100 + 20
-    if content_canvas: h_total += content_canvas.height + 20
-    if origin_canvas: h_total += origin_canvas.height + 20
+    if content_canvas:
+        h_total += content_canvas.height + 20
+    if origin_canvas:
+        h_total += origin_canvas.height + 20
     h_total += margin
 
     final = BuildImage.new("RGBA", (width, h_total), bg_color)
     y = margin
-    final.paste(header, (margin, y), alpha=True); y += 120
+    final.paste(header, (margin, y), alpha=True)
+    y += 120
     if content_canvas:
-        final.paste(content_canvas, (margin, y), alpha=True); y += content_canvas.height + 20
+        final.paste(content_canvas, (margin, y), alpha=True)
+        y += content_canvas.height + 20
     if origin_canvas:
         final.paste(origin_canvas, (margin, y), alpha=True)
 
     return final
-
-# --- 调用方代码 ---
-async def _render_activity_image(activity: dict) -> Path | None:
-    image_path = _activity_image_path(activity)
-    if image_path.exists(): return image_path
-
-    try:
-        # 直接 await 异步渲染函数，没有 Path 负担
-        image = await render_bilibili_card(
-            str(activity.get("card_json_str") or ""),
-            int(activity.get("dy_type") or 0),
-            int(activity.get("orig_type") or 0),
-            int(activity.get("timestamp") or 0),
-            activity.get("emoji_details", [])
-        )
-        
-        # 保存时使用 str(path) 以防万一，但现在的 image 是 BuildImage 对象
-        if image:
-            # BuildImage.save 内部封装了转 RGB 和保存
-            await asyncio.to_thread(image.save, str(image_path))
-            return image_path
-    except Exception as e:
-        logger.error(f"渲染失败: {e}", exc_info=True)
-    return None
