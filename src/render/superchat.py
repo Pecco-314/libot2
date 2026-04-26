@@ -194,14 +194,7 @@ def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size:
         chunk_data = data_list[i * chunk_size : (i + 1) * chunk_size]
         is_full = (len(chunk_data) == chunk_size)
         
-        # 只要满了40条或者已经不是今天，就可以用纯 part_{n}.png 永久缓存
-        if is_full or not is_today:
-            filename = f"part_{part_idx}.png"
-        else:
-            filename = f"part_{part_idx}_today.png"
-            
-        cache_path = image_dir / filename
-        
+        cache_path = image_dir / f"part_{part_idx}.png"        
         if cache_path.exists():
             generated_paths.append(cache_path)
             continue
@@ -210,13 +203,23 @@ def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size:
         if img is None:
             continue
             
-        img.save(cache_path)
-        generated_paths.append(cache_path)
+        # 只要满了40条或者已经不是今天，就可以用纯 part_{n}.png 永久缓存
+        if is_full or not is_today:
+            filename = cache_path
+        else:
+            filename = image_dir / f"today.png"
+
+        img.save(filename)
+        generated_paths.append(filename)
         
         # 如果缓存了永久切片，清理掉因为遗留导致的 today 缓存
         if is_full:
-            today_cache = image_dir / f"part_{part_idx}_today.png"
+            today_cache = image_dir / f"today.png"
             if today_cache.exists():
                 today_cache.unlink()
 
     return generated_paths
+
+if __name__ == "__main__":
+    l = get_daily_superchat_images(1967216004, datetime.datetime(2026, 4, 26))
+    print(l)
