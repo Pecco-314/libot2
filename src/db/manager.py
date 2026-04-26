@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 from src.common.env import load_env_file
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction

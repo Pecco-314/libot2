@@ -14,6 +14,7 @@ from src.db.manager import (
     count_managers,
     list_managers,
     remove_manager,
+    is_manager,
 )
 from src.db.subscription import (
     get_subscription,

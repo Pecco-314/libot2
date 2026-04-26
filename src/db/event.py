@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.db.sqlite import connect_sqlite
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 local_tz = ZoneInfo("Asia/Shanghai")
@@ -90,8 +90,3 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     start_of_day = int(day.replace(hour=0, minute=0, second=0).timestamp())
     end_of_day = int(day.replace(hour=23, minute=59, second=59).timestamp())
     return list_superchat_events(room_id, start_of_day, end_of_day)
-
-
-if __name__ == "__main__":
-    d = list_superchat_event_by_day(1967216004, datetime.now(local_tz) - timedelta(days=2))
-    print(d)

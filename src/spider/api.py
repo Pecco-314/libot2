@@ -43,7 +43,6 @@ async def request_json(
     request_cookies = cookies if cookies is not None else build_cookies()
 
     body: dict[str, Any] | Any = {}
-    last_error: Exception | None = None
     for attempt in range(5):
         try:
             async with httpx.AsyncClient(timeout=10.0, headers=request_headers, cookies=request_cookies) as client:
@@ -54,7 +53,6 @@ async def request_json(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            last_error = exc
             if attempt >= 4:
                 raise
             logger.warning("request_json retry(%d/5) url=%s params=%s error=%s", attempt + 1, url, params, exc)
