@@ -6,7 +6,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.db.activity import init_activity_db, insert_activity
 from src.db.subscription import list_subscribed_room_ids
-from src.db.liver import get_uid_by_roomid, get_name_by_roomid
+from src.db.liver import get_uid_by_roomid
 from src.spider.wrapper import get_space_history
 
 
@@ -23,8 +23,7 @@ async def collect_activity() -> None:
     for room_id in room_ids:
         try:
             uid = get_uid_by_roomid(room_id)
-            uname = get_name_by_roomid(room_id)
-            if uid <= 0:
+            if uid is None:
                 logger.info("activity sync skip room_id=%d because uid missing", room_id)
                 continue
 
@@ -34,22 +33,22 @@ async def collect_activity() -> None:
 
             for item in reversed(history_items):
                 inserted = insert_activity(
-                    activity_id=str(item.get("activity_id") or ""),
+                    activity_id=item.activity_id,
                     room_id=room_id,
-                    uid=int(item.get("uid") or uid),
-                    uname=str(item.get("uname") or uname),
-                    timestamp=int(item.get("timestamp") or 0),
-                    dy_type=int(item.get("dy_type") or 0),
-                    orig_type=int(item.get("orig_type") or 0),
-                    card_json_str=str(item.get("card_json_str") or ""),
-                    emoji_details=item.get("emoji_details") if isinstance(item.get("emoji_details"), list) else [],
+                    uid=item.uid,
+                    uname=item.uname,
+                    timestamp=item.timestamp,
+                    dy_type=item.dy_type,
+                    orig_type=item.orig_type,
+                    card=item.card,
+                    emoji_details=item.emoji_details,
                 )
                 if inserted:
                     logger.info(
                         "activity inserted room_id=%d activity_id=%s uname=%s",
                         room_id,
-                        item.get("activity_id"),
-                        item.get("uname") or uname,
+                        item.activity_id,
+                        item.uname,
                     )
         except Exception as exc:
             logger.warning("activity sync failed room_id=%d: %s", room_id, exc)

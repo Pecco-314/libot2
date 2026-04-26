@@ -7,7 +7,7 @@ from nonebot.matcher import Matcher
 
 from src.db.manager import ensure_initial_manager, is_manager
 from src.db.subscription import list_subscribed_group_ids, is_subscription_dev_enabled
-from src.spider.wrapper import get_room_uname
+from src.spider.wrapper import get_name_by_roomid
 
 from .config import INITIAL_MANAGER_QQ
 
@@ -29,7 +29,7 @@ async def _format_name(room_id: int | None) -> str:
     if room_id is None:
         return "主播"
     try:
-        uname = await get_room_uname(room_id)
+        uname = await get_name_by_roomid(room_id)
     except Exception:
         return f"房间{room_id}"
 

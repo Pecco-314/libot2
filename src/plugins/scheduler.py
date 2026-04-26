@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
@@ -71,12 +72,12 @@ async def _ensure_last_activity_id_initialized() -> None:
     set_state("last_activity_id", str(get_max_activity_id()))
 
 
-def _activity_image_path(activity: dict[str, object]) -> Path:
+def _activity_image_path(activity: dict[str, Any]) -> Path:
     activity_id = str(activity.get("activity_id") or activity.get("id") or "activity")
     return ACTIVITY_IMAGE_DIR / f"{activity_id}.png"
 
 
-async def _render_activity_image(activity: dict[str, object]) -> Path | None:
+async def _render_activity_image(activity: dict[str, Any]) -> Path | None:
     image_path = _activity_image_path(activity)
     image_path.parent.mkdir(parents=True, exist_ok=True)
     if image_path.exists():
@@ -84,7 +85,7 @@ async def _render_activity_image(activity: dict[str, object]) -> Path | None:
 
     try:
         image = await render_bilibili_card(
-            str(activity.get("card_json_str") or ""),
+            str(activity.get("card") or ""),
             int(activity.get("dy_type") or 0),
             int(activity.get("orig_type") or 0),
             int(activity.get("timestamp") or 0),
@@ -104,7 +105,7 @@ async def _render_activity_image(activity: dict[str, object]) -> Path | None:
         return None
 
 
-async def _build_message(row: dict[str, object]) -> str | None:
+async def _build_message(row: dict[str, Any]) -> str | None:
     name = await _format_name(row.get("room_id"))
     cmd = row.get("cmd")
     if cmd == "LIVE":
@@ -131,8 +132,8 @@ async def watch_live_events() -> None:
     row = get_newest_live_event()
     if row is None:
         return
-    row_id = row.get("id")
-    room_id = row.get("room_id")
+    row_id = int(row.get("id"))
+    room_id = int(row.get("room_id"))
     if is_streaming_event(row) or is_duplicate_room_change(row):
         set_state("last_event_id", str(row_id))
         return

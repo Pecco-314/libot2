@@ -7,7 +7,7 @@ from pathlib import Path
 from nonebot_plugin_imageutils import Text2Image
 
 from src.db.event import list_superchat_event_by_day
-from src.db.liver import get_name_by_roomid
+from src.spider.wrapper import get_name_by_roomid
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -170,7 +170,7 @@ def generate_superchat_image(data_list: list, room_name: str, date_str: str, par
     return image.convert("RGB")
 
 
-def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size: int = 40) -> list[Path]:
+async def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size: int = 40) -> list[Path]:
     """
     分片缓存逻辑：处理按设定大小切分图片，返回列表
     """
@@ -185,7 +185,7 @@ def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size:
     if not data_list:
         return []
 
-    room_name = get_name_by_roomid(room_id)
+    room_name = await get_name_by_roomid(room_id)
     total_chunks = max(1, math.ceil(len(data_list) / chunk_size))
     generated_paths = []
 
@@ -198,7 +198,8 @@ def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size:
         if cache_path.exists():
             generated_paths.append(cache_path)
             continue
-            
+
+        today = image_dir / "today.png"
         img = generate_superchat_image(chunk_data, room_name, date_str, part_idx)
         if img is None:
             continue
@@ -207,19 +208,14 @@ def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk_size:
         if is_full or not is_today:
             filename = cache_path
         else:
-            filename = image_dir / f"today.png"
+            filename = today
 
         img.save(filename)
         generated_paths.append(filename)
         
         # 如果缓存了永久切片，清理掉因为遗留导致的 today 缓存
         if is_full:
-            today_cache = image_dir / f"today.png"
-            if today_cache.exists():
-                today_cache.unlink()
+            if today.exists():
+                today.unlink()
 
     return generated_paths
-
-if __name__ == "__main__":
-    l = get_daily_superchat_images(1967216004, datetime.datetime(2026, 4, 26))
-    print(l)

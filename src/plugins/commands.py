@@ -77,7 +77,7 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
     else:
         day = datetime.now()
 
-    images = get_daily_superchat_images(room_id, day, chunk_size=40)
+    images = await get_daily_superchat_images(room_id, day, chunk_size=40)
     if not images:
         await matcher.finish("没有找到醒目留言")
     

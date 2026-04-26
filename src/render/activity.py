@@ -22,7 +22,7 @@ def get_bili_optimized_url(url: str, suffix: str) -> str:
         return url
     return f"{url.split('@')[0]}@{suffix}"
 
-async def download_image(url: str, suffix: str = None) -> BuildImage:
+async def download_image(url: str, suffix: str | None = None) -> BuildImage:
     """异步下载并缓存图片，返回 BuildImage 对象"""
     if not url:
         return BuildImage.new("RGBA", (100, 100), (200, 200, 200, 255))

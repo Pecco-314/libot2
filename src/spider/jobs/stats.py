@@ -8,7 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.db.stats import init_stats_db, insert_stats
 from src.db.subscription import list_subscribed_room_ids
-from src.spider.wrapper import get_stats
+from spider.wrapper import get_stats
 
 
 logger = logging.getLogger("spider.jobs.stats")
@@ -25,21 +25,21 @@ async def collect_stats() -> None:
         try:
             stats = await get_stats(room_id)
             insert_stats(
-                room_id=int(stats["room_id"]),
-                uid=int(stats["uid"]),
-                uname=str(stats["uname"]),
-                fans_num=int(stats["fans_num"]),
-                guard_num=int(stats["guard_num"]),
-                fan_club_num=int(stats["fan_club_num"]),
+                room_id=room_id,
+                uid=stats.uid,
+                uname=stats.uname,
+                fans_num=stats.fans_num,
+                guard_num=stats.guard_num,
+                fan_club_num=stats.fan_club_num,
                 created_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             )
             logger.info(
                 "liver stats room_id=%d uname=%s fans=%d guard=%d fan_club=%d",
-                int(stats["room_id"]),
-                stats["uname"],
-                int(stats["fans_num"]),
-                int(stats["guard_num"]),
-                int(stats["fan_club_num"]),
+                stats.room_id,
+                stats.uname,
+                stats.fans_num,
+                stats.guard_num,
+                stats.fan_club_num,
             )
         except Exception as exc:
             logger.warning("liver stats failed room_id=%d: %s", room_id, exc)

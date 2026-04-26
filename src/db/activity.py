@@ -20,7 +20,7 @@ def init_activity_db() -> None:
                 timestamp INTEGER NOT NULL,
                 dy_type INTEGER NOT NULL,
                 orig_type INTEGER NOT NULL,
-                card_json_str TEXT NOT NULL,
+                card TEXT NOT NULL,
                 emoji_details TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -44,7 +44,7 @@ def insert_activity(
     timestamp: int,
     dy_type: int,
     orig_type: int,
-    card_json_str: str,
+    card: dict[str, Any],
     emoji_details: list[dict[str, Any]] | None,
 ) -> bool:
     emoji_details_json = json.dumps(emoji_details or [], ensure_ascii=False)
@@ -54,7 +54,7 @@ def insert_activity(
             """
             INSERT OR IGNORE INTO activity (
                 activity_id, room_id, uid, uname, timestamp, dy_type,
-                orig_type, card_json_str, emoji_details
+                orig_type, card, emoji_details
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -65,7 +65,7 @@ def insert_activity(
                 timestamp,
                 dy_type,
                 orig_type,
-                card_json_str,
+                card,
                 emoji_details_json,
             ),
         )
@@ -85,7 +85,7 @@ def get_newest_activity() -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT id, activity_id, room_id, uid, uname, timestamp, dy_type,
-                   orig_type, card_json_str, emoji_details, created_at
+                   orig_type, card, emoji_details, created_at
             FROM activity
             ORDER BY id DESC
             LIMIT 1
@@ -101,7 +101,7 @@ def list_activities_after(last_id: int, limit: int = 100) -> list[dict[str, Any]
         rows = conn.execute(
             """
             SELECT id, activity_id, room_id, uid, uname, timestamp, dy_type,
-                   orig_type, card_json_str, emoji_details, created_at
+                   orig_type, card, emoji_details, created_at
             FROM activity
             WHERE id > ?
             ORDER BY id ASC
@@ -132,7 +132,7 @@ def _row_to_dict(row) -> dict[str, Any]:
         "timestamp": int(row[5]),
         "dy_type": int(row[6]),
         "orig_type": int(row[7]),
-        "card_json_str": str(row[8]),
+        "card": str(row[8]),
         "emoji_details": emoji_details,
         "created_at": str(row[10]) if row[10] is not None else "",
     }
