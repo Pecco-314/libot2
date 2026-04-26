@@ -26,5 +26,5 @@ nonebot-adapter-onebot = [
 "@local" = []
 
 [tool.nonebot.plugins]
-"@local" = ["src.plugins.libot"]
+"@local" = ["src.plugins.config", "src.plugins.utils", "src.plugins.commands", "src.plugins.scheduler"]
 nonebot-plugin-apscheduler = ["nonebot_plugin_apscheduler"]
