@@ -87,6 +87,8 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
     lines = []
     curr_line = []
     curr_x = 0
+
+    char_width_cache = {}
     
     for token in raw_tokens:
         if emoji_dict and token in emoji_dict:
@@ -99,20 +101,32 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
             curr_x += w
         else:
             for char in token:
-                char_w = Text2Image.from_text(char, font_size).width
+                if char == '\n':
+                    lines.append(curr_line)
+                    curr_line = []
+                    curr_x = 0
+                    continue
+
+                if char not in char_width_cache:
+                    char_width_cache[char] = Text2Image.from_text(char, font_size).width
+                char_w = char_width_cache[char]
+                
                 if curr_x + char_w > width and curr_line:
                     lines.append(curr_line)
                     curr_line = []
                     curr_x = 0
+                    
                 if curr_line and curr_line[-1]['type'] == 'text':
                     curr_line[-1]['content'] += char
                 else:
                     curr_line.append({'type': 'text', 'content': char, 'x': curr_x})
                 curr_x += char_w
+                
     if curr_line:
         lines.append(curr_line)
 
     text_h = len(lines) * line_height
+    
     # 计算配图高度
     img_h = 0
     img_layout = []
@@ -135,15 +149,15 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
                 img_layout.append((p_img, (i%cols)*(sz+spacing), (i//cols)*(sz+spacing)))
 
     canvas_h = text_h + img_h + (20 if text_h and img_h else 0)
-    # 创建带有实心背景的画布，彻底解决灰边
+    # 创建带有实心背景的画布
     canvas = BuildImage.new("RGBA", (width, canvas_h), bg_color)
 
     # 绘制文字
     y = 0
     for line in lines:
+        # 即使 line 是因为纯换行产生的空列表，内层循环会跳过，但外层依旧会加上 line_height，完美实现空行占位
         for el in line:
             if el['type'] == 'text':
-                # 直接通过 draw_on_image 绘制到有颜色的 canvas 上，抗锯齿会很清晰
                 t2i = Text2Image.from_text(el['content'], font_size, fill=text_color)
                 t2i.draw_on_image(canvas.image, (el['x'], y))
             else:
