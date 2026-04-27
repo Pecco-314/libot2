@@ -24,7 +24,7 @@ from src.db.subscription import (
     is_subscription_dev_enabled,
 )
 from src.db.liver import upsert_liver
-from src.db.event import list_name_history_by_name
+from src.db.event import list_name_history_by_name_or_uid
 
 from .utils import (
     get_group_id,
@@ -57,7 +57,7 @@ async def handle_help(matcher: Matcher):
     await matcher.finish(
         "/帮助 - 显示帮助信息\n"
         "/查SC [日期] - 查看醒目留言列表，默认当天\n"
-        "/曾用名 <用户名> - 查询曾用过某名字的用户及其曾用名\n"
+        "/曾用名 <UID/用户名> - 查询用户的曾用名\n"
     )
 
 
@@ -269,15 +269,16 @@ async def handle_remove_subscription(matcher: Matcher, event: Event):
 
 
 @name_history_cmd.handle()
+# @subscription_dev_required
 async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
-    name = arg.extract_plain_text().strip()
-    if not name:
-        await matcher.finish("用法：/曾用名 <用户名>")
-    history = list_name_history_by_name(name)
+    query = arg.extract_plain_text().strip()
+    if not query:
+        await matcher.finish("用法：/曾用名 <UID/用户名>")
+    history = list_name_history_by_name_or_uid(query)
     if not history:
-        await matcher.finish(f"没有找到使用过名字 '{name}' 的用户")
+        await matcher.finish(f"没有找到符合条件的用户")
     result = f"找到{len(history)}个用户：\n"
     for (i, entry) in enumerate(history, start=1):
-        names = [h["uname"] for h in entry["history"]]
+        names = entry["history"]
         result += f"{i}. {names[-1]} ({', '.join(names)})\n"
     await matcher.finish(result)

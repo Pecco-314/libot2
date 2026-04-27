@@ -92,7 +92,7 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     return list_superchat_events(room_id, start_of_day, end_of_day)
 
 
-def get_user_name_history(uid: int) -> list[str]:
+def list_name_history_by_uid(uid: int) -> list[str]:
     """
     根据 uid 查询用户的所有曾用名，按出现时间先后排序。
     """
@@ -107,7 +107,13 @@ def get_user_name_history(uid: int) -> list[str]:
             (uid,),
         ).fetchall()
 
-    return [row[0] for row in rows]
+    if not rows:
+        return []
+    else:
+        return [{
+            "uid": uid,
+            "history": [row[0] for row in rows],
+        }]
 
 
 def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
@@ -118,7 +124,7 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
-            SELECT uid, uname, MIN(timestamp) as first_seen
+            SELECT uid, uname
             FROM event
             WHERE uid IN (
                 SELECT DISTINCT uid 
@@ -126,7 +132,7 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
                 WHERE uname = ?
             )
             GROUP BY uid, uname
-            ORDER BY uid ASC, first_seen ASC
+            ORDER BY uid ASC, timestamp ASC
             """,
             (target_name,),
         ).fetchall()
@@ -136,7 +142,7 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     current_uid = None
     user_entry = None
 
-    for uid, uname, first_seen in rows:
+    for uid, uname in rows:
         if uid != current_uid:
             if user_entry:
                 result.append(user_entry)
@@ -147,18 +153,23 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
                 "history": []
             }
 
-        user_entry["history"].append({
-            "uname": uname,
-            "first_seen": first_seen
-        })
+        user_entry["history"].append(uname)
 
     if user_entry:
         result.append(user_entry)
 
     return result
 
+
+def list_name_history_by_name_or_uid(query: str) -> list[dict[str, object]]:
+    if query.isdigit():
+        return list_name_history_by_uid(int(query))
+    else:
+        return list_name_history_by_name(query)
+
+
 if __name__ == "__main__":
-    # 测试获取用户曾用名历史
-    uid = 5498942
-    name_history = list_name_history_by_name("_Misuzu")
+    # name_history = list_name_history_by_name("_Misuzu")
+    name_history = list_name_history_by_name_or_uid("1")
+    
     print(f"曾用名历史：{name_history}")
