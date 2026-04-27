@@ -90,3 +90,75 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     start_of_day = int(day.replace(hour=0, minute=0, second=0).timestamp())
     end_of_day = int(day.replace(hour=23, minute=59, second=59).timestamp())
     return list_superchat_events(room_id, start_of_day, end_of_day)
+
+
+def get_user_name_history(uid: int) -> list[str]:
+    """
+    根据 uid 查询用户的所有曾用名，按出现时间先后排序。
+    """
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT uname 
+            FROM event 
+            WHERE uid = ? 
+            ORDER BY timestamp ASC
+            """,
+            (uid,),
+        ).fetchall()
+
+    return [row[0] for row in rows]
+
+
+def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
+    """
+    通过一个曾用名（或当前名）查询所有使用过该名字的用户及其完整的改名历史。
+    由于可能存在重名情况，返回一个包含多个用户信息的列表。
+    """
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT uid, uname, MIN(timestamp) as first_seen
+            FROM event
+            WHERE uid IN (
+                SELECT DISTINCT uid 
+                FROM event 
+                WHERE uname = ?
+            )
+            GROUP BY uid, uname
+            ORDER BY uid ASC, first_seen ASC
+            """,
+            (target_name,),
+        ).fetchall()
+
+    # 将结果按 uid 分组处理
+    result = []
+    current_uid = None
+    user_entry = None
+
+    for uid, uname, first_seen in rows:
+        if uid != current_uid:
+            if user_entry:
+                result.append(user_entry)
+            
+            current_uid = uid
+            user_entry = {
+                "uid": uid,
+                "history": []
+            }
+
+        user_entry["history"].append({
+            "uname": uname,
+            "first_seen": first_seen
+        })
+
+    if user_entry:
+        result.append(user_entry)
+
+    return result
+
+if __name__ == "__main__":
+    # 测试获取用户曾用名历史
+    uid = 5498942
+    name_history = list_name_history_by_name("_Misuzu")
+    print(f"曾用名历史：{name_history}")

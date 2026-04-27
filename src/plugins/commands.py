@@ -24,6 +24,7 @@ from src.db.subscription import (
     is_subscription_dev_enabled,
 )
 from src.db.liver import upsert_liver
+from src.db.event import list_name_history_by_name
 
 from .utils import (
     get_group_id,
@@ -48,6 +49,7 @@ nickname_set_cmd = on_command("设置昵称", priority=5, block=True)
 test_enable_cmd = on_command("开启测试", priority=5, block=True)
 test_disable_cmd = on_command("关闭测试", priority=5, block=True)
 test_status_cmd = on_command("测试状态", priority=5, block=True)
+name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -55,6 +57,7 @@ async def handle_help(matcher: Matcher):
     await matcher.finish(
         "/帮助 - 显示帮助信息\n"
         "/查SC [日期] - 查看醒目留言列表，默认当天\n"
+        "/曾用名 <用户名> - 查询曾用过某名字的用户及其曾用名\n"
     )
 
 
@@ -263,3 +266,18 @@ async def handle_remove_subscription(matcher: Matcher, event: Event):
         await matcher.finish("已删除本群订阅")
     else:
         await matcher.finish("本群没有可删除的订阅")
+
+
+@name_history_cmd.handle()
+async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
+    name = arg.extract_plain_text().strip()
+    if not name:
+        await matcher.finish("用法：/曾用名 <用户名>")
+    history = list_name_history_by_name(name)
+    if not history:
+        await matcher.finish(f"没有找到使用过名字 '{name}' 的用户")
+    result = f"找到{len(history)}个用户：\n"
+    for (i, entry) in enumerate(history, start=1):
+        names = [h["uname"] for h in entry["history"]]
+        result += f"{i}. {names[-1]} ({', '.join(names)})\n"
+    await matcher.finish(result)
