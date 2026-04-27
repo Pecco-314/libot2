@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="5">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { margin: 0; padding: 5px; text-align: center; background: white; font-family: sans-serif; }
+        img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+        button { 
+            width: 100%; 
+            padding: 15px 0; 
+            margin-top: 10px; 
+            background: #e74c3c; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .info { font-size: 12px; color: #666; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <img src="/get_qrcode_img?t={{ range(1, 9999) | random }}" alt="登录二维码">
+    
+    <button onclick="restartService()">重启 Napcat</button>
+
+    <script>
+        const socket = io();
+        function restartService() {
+            socket.emit('restart_service');
+        }
+    </script>
+</body>
+</html>

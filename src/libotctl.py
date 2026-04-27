@@ -10,7 +10,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from src.common.utils import load_env_file
 
+load_env_file()
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
@@ -18,6 +20,9 @@ DATA_DIR = ROOT / "data"
 PID_DIR = DATA_DIR / ".pids"
 IS_TTY = sys.stdout.isatty()
 VENV_BIN = ROOT / ".venv" / "bin"
+NAPCAT_PATH = Path(os.environ.get("NAPCAT_PATH"))
+BOT_QQ = os.environ.get("BOT_QQ")
+NAPCAT_CMD = f"stdbuf -oL -eL xvfb-run -a opt/QQ/qq --no-sandbox -q {BOT_QQ}"
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -34,6 +39,7 @@ class ModuleSpec:
     pid_file: Path
     command: Sequence[str]
     redirect_output: bool
+    cwd: Path | None = None
 
 
 MODULES = {
@@ -48,15 +54,30 @@ MODULES = {
         name="spider",
         log_file=LOG_DIR / "spider.log",
         pid_file=PID_DIR / "spider.pid",
-        command=(sys.executable, "-m", "src.spider.cron"),
+        command=("python", "-m", "src.spider.cron"),
         redirect_output=False,
     ),
     "monitor": ModuleSpec(
         name="monitor",
         log_file=LOG_DIR / "monitor.log",
         pid_file=PID_DIR / "monitor.pid",
-        command=(sys.executable, "-m", "src.monitor.monitor"),
+        command=("python", "-m", "src.monitor.monitor"),
         redirect_output=True,
+    ),
+    "web": ModuleSpec(
+        name="web",
+        log_file=LOG_DIR / "web.log",
+        pid_file=PID_DIR / "web.pid",
+        command=("python", "-m", "src.web.app"),
+        redirect_output=True,
+    ),
+    "napcat": ModuleSpec(
+        name="napcat",
+        log_file=LOG_DIR / "napcat.log",
+        pid_file=PID_DIR / "napcat.pid",
+        command=("bash", "-c", NAPCAT_CMD),
+        redirect_output=True,
+        cwd=NAPCAT_PATH,
     ),
 }
 
@@ -88,7 +109,12 @@ def _bad(text: str) -> str:
 
 
 def _resolve_command(spec: ModuleSpec) -> list[str]:
-    if spec.name == "libot":
+    cmd = list(spec.command)
+    if not cmd:
+        return cmd
+
+    # 处理 nb 命令
+    if cmd[0] == "nb":
         nb_executable = shutil.which("nb")
         if nb_executable is None:
             nb_candidate = VENV_BIN / "nb"
@@ -100,12 +126,16 @@ def _resolve_command(spec: ModuleSpec) -> list[str]:
                 nb_executable = str(nb_candidate)
         if nb_executable is None:
             raise FileNotFoundError("nb command not found in current virtual environment")
-        return [nb_executable, "run"]
+        cmd[0] = nb_executable
+        return cmd
 
-    python_executable = str(VENV_BIN / "python") if (VENV_BIN / "python").exists() else sys.executable
-    if len(spec.command) >= 3 and spec.command[1] == "-m":
-        return [python_executable, "-m", str(spec.command[2])]
-    return [python_executable, *map(str, spec.command[1:])]
+    # 处理 python 命令
+    if cmd[0] == "python":
+        python_executable = str(VENV_BIN / "python") if (VENV_BIN / "python").exists() else sys.executable
+        cmd[0] = python_executable
+        return cmd
+
+    return cmd
 
 
 def _read_pid(pid_file: Path) -> int | None:
@@ -158,10 +188,13 @@ def _start(spec: ModuleSpec) -> int:
     _ensure_parent(spec.log_file)
 
     log_handle = spec.log_file.open("a", encoding="utf-8") if spec.redirect_output else None
+
+    work_dir = spec.cwd if spec.cwd else ROOT
+
     try:
         process = subprocess.Popen(
             _resolve_command(spec),
-            cwd=ROOT,
+            cwd=work_dir,
             stdin=subprocess.DEVNULL,
             stdout=log_handle if spec.redirect_output else subprocess.DEVNULL,
             stderr=log_handle if spec.redirect_output else subprocess.DEVNULL,
@@ -174,7 +207,7 @@ def _start(spec: ModuleSpec) -> int:
         return 1
 
     spec.pid_file.write_text(str(process.pid), encoding="utf-8")
-    print(f"started {spec.name} (pid={process.pid})")
+    print(f"started {spec.name} (pid={process.pid}) at {work_dir}")
     if log_handle is not None:
         log_handle.close()
     return 0

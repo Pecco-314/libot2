@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Napcat Log Monitor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://unpkg.com/ansi_up@5.1.0/ansi_up.js"></script>
+    <style>
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: 'Courier New', Courier, monospace; margin: 20px; }
+        #terminal { 
+            background-color: #000; 
+            border: 1px solid #444; 
+            padding: 15px; 
+            height: 500px; 
+            overflow-y: scroll; 
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            border-radius: 5px;
+        }
+        .controls { margin-bottom: 20px; }
+        button { 
+            background-color: #e74c3c; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            cursor: pointer; 
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        button:hover { background-color: #c0392b; }
+        .status { margin-left: 15px; font-size: 0.9em; color: #888; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button onclick="restartService()">重启 Napcat 进程</button>
+        <span class="status">实时监控运行中...</span>
+    </div>
+
+    <div id="terminal"></div>
+
+<script>
+    const socket = io();
+    const terminal = document.getElementById('terminal');
+    
+    // 确保 ansi_up 已加载
+    let ansi_up;
+    try {
+        ansi_up = new AnsiUp();
+        console.log("AnsiUp 插件初始化成功");
+    } catch (e) {
+        console.error("AnsiUp 初始化失败，请检查网络是否能访问 CDN:", e);
+    }
+
+    socket.on('connect', () => {
+        console.log("WebSocket 已连接，ID:", socket.id);
+    });
+
+    socket.on('connect_error', (err) => {
+        console.error("连接错误:", err);
+    });
+
+    socket.on('log_message', function(msg) {
+        if (msg && msg.data) {
+            try {
+                let rawData = msg.data;
+                
+                let content;
+                if (typeof AnsiUp !== 'undefined') {
+                    if (!window.ansi_up_inst) window.ansi_up_inst = new AnsiUp();
+                    // 渲染 ANSI 颜色
+                    content = window.ansi_up_inst.ansi_to_html(rawData);
+                } else {
+                    content = rawData.replace(/\033\[[0-9;]*m/g, ''); 
+                }
+                
+                // 插入 HTML
+                terminal.insertAdjacentHTML('beforeend', content);
+                
+                // 滚动到底部
+                terminal.scrollTop = terminal.scrollHeight;
+            } catch (err) {
+                console.error("渲染出错:", err);
+            }
+        }
+    });
+
+    function restartService() {
+        if(confirm("确定要杀死当前 Screen 并重启吗？")) {
+            socket.emit('restart_service');
+            terminal.innerHTML += '<div style="color: #f1c40f;">\n>>> 正在向后端发送重启指令...\n</div>';
+        }
+    }
+</script>
+</body>
+</html>
