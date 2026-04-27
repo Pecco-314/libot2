@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.db.liver import init_liver_db, upsert_liver
 from src.db.subscription import list_subscribed_room_ids
-from spider.wrapper import get_master_info
+from spider.wrapper import get_master_info, get_room_info
 
 
 logger = logging.getLogger("spider.jobs.liver")
@@ -22,10 +22,11 @@ async def collect_liver() -> None:
     logger.info("liver sync begin rooms=%d", len(room_ids))
     for room_id in room_ids:
         try:
-            master_info = await get_master_info(room_id)
+            room_info = await get_room_info(room_id)
+            master_info = await get_master_info(room_info.uid)
             upsert_liver(
                 room_id=room_id,
-                uid=master_info.uid,
+                uid=room_info.uid,
                 uname=master_info.uname,
                 nickname=None,
             )
