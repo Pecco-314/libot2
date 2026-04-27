@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -43,3 +46,22 @@ def init_logger(name: str) -> logging.Logger:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
+
+def send_notification_email(subject: str, content: str) -> None:
+    load_env_file()
+    sender = os.environ.get("EMAIL_SENDER")
+    receiver = os.environ.get("EMAIL_RECEIVER")
+    auth_code = os.environ.get("EMAIL_AUTH_CODE")
+    smtp_server = os.environ.get("SMTP_SERVER")
+    smtp_port = os.environ.get("SMTP_PORT")
+
+    # 构造邮件内容
+    message = MIMEText(content, "plain", "utf-8")
+    message["From"] = Header(sender)
+    message["To"] = Header(receiver)
+    message["Subject"] = Header(subject, "utf-8")
+
+    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+        server.login(sender, auth_code)
+        server.sendmail(sender, [receiver], message.as_string())

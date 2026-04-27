@@ -14,7 +14,8 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
-PID_DIR = LOG_DIR / ".pids"
+DATA_DIR = ROOT / "data"
+PID_DIR = DATA_DIR / ".pids"
 IS_TTY = sys.stdout.isatty()
 VENV_BIN = ROOT / ".venv" / "bin"
 
