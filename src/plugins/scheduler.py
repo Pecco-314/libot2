@@ -10,6 +10,7 @@ from nonebot import get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot_plugin_apscheduler import scheduler
 
+from src.common.utils import send_notification_email, ROOT
 from src.render.activity import render_bilibili_card
 from src.db.activity import get_max_activity_id, list_activities_after
 from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
@@ -20,6 +21,7 @@ from .config import ACTIVITY_IMAGE_DIR
 from .utils import _format_name
 
 logger = logging.getLogger("libot.scheduler")
+LOCK_FILE = ROOT / "data" / ".bot_offline.lock"
 
 
 async def send_to_room(room_id: int, message: str) -> None:
@@ -187,3 +189,36 @@ async def watch_activities() -> None:
         ])
         await send_activity_to_room(int(row.get("room_id") or 0), message)
         set_state("last_activity_id", activity_id)
+
+
+@scheduler.scheduled_job(
+    "cron",
+    minute="*",
+    id="libot_bot_monitor",
+    name="libot_bot_monitor",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=30,
+)
+async def check_bot_status() -> None:
+    try:
+        bots = get_bots()
+
+        if not bots:
+            if not LOCK_FILE.exists():
+                logger.warning("Bot is offline, triggering email notification")
+                send_notification_email(
+                    subject="[警告] 机器人掉线通知",
+                    content="检测到 NoneBot 与 QQ 客户端（Napcat）的连接已断开！\n当前没有任何活跃的 Bot 实例，请及时登录后台检查服务状态。"
+                )
+                LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LOCK_FILE.touch()
+            else:
+                logger.debug("Bot is still offline, skipped sending email due to lock file")
+        else:
+            if LOCK_FILE.exists():
+                logger.info("Bot connection recovered, removing lock file")
+                LOCK_FILE.unlink(missing_ok=True)
+                
+    except Exception as exc:
+        logger.error("failed to check bot status: %s", exc)
