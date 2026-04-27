@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from src.common.env import load_env_file
+from src.common.utils import load_env_file
 
 load_env_file()
 

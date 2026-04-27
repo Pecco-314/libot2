@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import os
-
-from src.common.env import load_env_file
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
-
-load_env_file()
-
-_ENV_MANAGER_QQ = os.getenv("MANAGER_QQ", "").strip()
-INITIAL_MANAGER_QQ = int(_ENV_MANAGER_QQ) if _ENV_MANAGER_QQ.isdigit() else None
 
 
 def init_manager_db() -> None:
@@ -26,15 +18,12 @@ def init_manager_db() -> None:
         )
 
 
-def ensure_initial_manager(group_id: int) -> bool:
-    if INITIAL_MANAGER_QQ is None:
-        return False
-
+def ensure_initial_manager(group_id: int, initial_manager_qq: int) -> bool:
     with write_transaction() as conn:
         execute_write(
             conn,
             "INSERT OR IGNORE INTO manager (group_id, manager_qq) VALUES (?, ?)",
-            (group_id, INITIAL_MANAGER_QQ),
+            (group_id, initial_manager_qq),
         )
     return True
 

@@ -19,7 +19,8 @@ async def collect_activity() -> None:
         logger.info("no subscribed rooms, skip activity sync")
         return
 
-    logger.info("activity sync begin rooms=%d", len(room_ids))
+    rooms = ", ".join(str(rid) for rid in room_ids)
+    logger.info("activity sync begin rooms=%s", rooms)
     for room_id in room_ids:
         try:
             uid = get_uid_by_roomid(room_id)

@@ -56,7 +56,7 @@ def group_manager_required(func):
                 await matcher.finish("未配置 MANAGER_QQ，无法初始化管理员")
                 return
 
-            ensure_initial_manager(group_id)
+            ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
 
             user_id = int(event.get_user_id())
             if not is_manager(group_id, user_id):

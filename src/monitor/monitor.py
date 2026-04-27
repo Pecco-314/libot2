@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import http.cookies
 import json
-import logging
 import os
 import signal
 import sqlite3
@@ -17,15 +16,13 @@ from datetime import datetime
 import aiohttp
 import blivedm
 from blivedm import handlers
-from src.common.env import load_env_file
+from src.common.utils import load_env_file, init_logger
 from src.db.sqlite import connect_sqlite, write_transaction
 from src.db.subscription import list_subscribed_room_ids
 
 import blivedm.models.web as web_models
 
-logger = logging.getLogger("live-monitor")
-ROOT = Path(__file__).resolve().parents[2]
-LOG_PATH = ROOT / "logs" / "monitor.log"
+logger = init_logger("monitor")
 TRACKED_CMDS = {
     "DANMU_MSG",
     "SEND_GIFT",
@@ -46,19 +43,6 @@ class MonitorConfig:
     verbose: bool
     sessdata: str
     buvid3: str
-
-
-def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s | %(message)s")
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(level)
-
-    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
 
 
 def _execute_write(
@@ -267,6 +251,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             uname = msg.uname
             content = msg.msg
             timestamp = msg.timestamp // 1000
+            logger.info("房间 %d 收到弹幕，uid=%d uname=%s content=%s", room_id, uid, uname, content)
         elif cmd == "SEND_GIFT":
             msg = web_models.GiftMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -275,6 +260,8 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_num = int(msg.num)
             total_coin = int(msg.total_coin)
             timestamp = msg.timestamp
+            logger.info("房间 %d 收到礼物，uid=%d uname=%s gift_name=%s gift_num=%d total_coin=%d",
+                        room_id, uid, uname, gift_name, gift_num, total_coin)
         elif cmd == "GUARD_BUY":
             msg = web_models.GuardBuyMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -283,6 +270,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_num = int(msg.num)
             total_coin = int(msg.price) * int(msg.num)
             timestamp = msg.start_time
+            logger.info("房间 %d 收到大航海（command=%s）", room_id, command)
         elif cmd == "SUPER_CHAT_MESSAGE":
             msg = web_models.SuperChatMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -292,17 +280,18 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             gift_name = msg.gift_name
             gift_num = 1
             timestamp = msg.start_time
+            logger.info("房间 %d 收到醒目留言（command=%s）", room_id, command)
         elif cmd == "LIVE":
-            logger.info("房间 %d 进入直播（command=%s）", room_id, command)
             timestamp = command.get("live_time")
+            logger.info("房间 %d 进入直播", room_id)
         elif cmd == "PREPARING":
-            logger.info("房间 %d 结束直播（command=%s）", room_id, command)
             timestamp = command.get("send_time") // 1000
+            logger.info("房间 %d 结束直播", room_id)
         elif cmd == "ROOM_CHANGE":
-            logger.info("房间 %d 变更标题（command=%s）", room_id, command)
             data = command.get("data")
             title = data.get("title")
             timestamp = int(datetime.now().timestamp())
+            logger.info("房间 %d 房间标题变更，title=%s", room_id, title)
     except Exception:
         pass
 
@@ -398,7 +387,6 @@ async def _writer_loop(
                     await asyncio.sleep(0.5)
                     continue
                 raise
-            logger.info("已写入事件批次=%d", len(buffer))
             buffer.clear()
             last_flush = now
 
@@ -549,7 +537,6 @@ def main() -> None:
     args = _parse_args()
     config_path = Path(args.config) if args.config else None
     config = _load_config(config_path, args)
-    _setup_logging(config.verbose)
 
     logger.info("启动 monitor，rooms=%s db=%s", config.rooms, config.database)
     logger.info(
