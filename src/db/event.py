@@ -92,73 +92,90 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     return list_superchat_events(room_id, start_of_day, end_of_day)
 
 
-def list_name_history_by_uid(uid: int) -> list[str]:
-    """
-    根据 uid 查询用户的所有曾用名，按出现时间先后排序。
-    """
-    with connect_sqlite() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT uname 
-            FROM event 
-            WHERE uid = ? 
-            ORDER BY timestamp ASC
-            """,
-            (uid,),
-        ).fetchall()
-
-    if not rows:
-        return []
-    else:
-        return [{
+def _merge_and_sort_histories(history_rows: list, event_rows: list) -> list[dict[str, object]]:
+    user_data = {}  # 结构: {uid: {uname: min_timestamp}}
+    
+    # 融合并保留每个名字的最早时间戳
+    for uid, uname, ts in history_rows + event_rows:
+        if uid not in user_data:
+            user_data[uid] = {}
+            
+        # 如果名字没出现过，或者这次的时间更早，则更新
+        if uname not in user_data[uid] or ts < user_data[uid][uname]:
+            user_data[uid][uname] = ts
+            
+    # 格式化输出
+    result = []
+    for uid, name_ts_map in user_data.items():
+        # 将每个用户的曾用名按时间戳升序排序
+        sorted_names = [name for name, _ in sorted(name_ts_map.items(), key=lambda x: x[1])]
+        result.append({
             "uid": uid,
-            "history": [row[0] for row in rows],
-        }]
+            "history": sorted_names
+        })
+        
+    # 按 uid 排序返回
+    result.sort(key=lambda x: x["uid"])
+    return result
+
+
+def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
+    with connect_sqlite() as conn:
+        cur = conn.cursor()
+
+        # name_history是从外部导入的表
+        cur.execute("SELECT uid, uname, first_seen FROM name_history WHERE uid = ?", (uid,))
+        history_rows = cur.fetchall()
+        
+        cur.execute("SELECT uid, uname, timestamp FROM event WHERE uid = ?", (uid,))
+        event_rows = cur.fetchall()
+        
+    if not history_rows and not event_rows:
+        return []
+        
+    return _merge_and_sort_histories(history_rows, event_rows)
 
 
 def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
-    """
-    通过一个曾用名（或当前名）查询所有使用过该名字的用户及其完整的改名历史。
-    由于可能存在重名情况，返回一个包含多个用户信息的列表。
-    """
     with connect_sqlite() as conn:
-        rows = conn.execute(
-            """
-            SELECT uid, uname
-            FROM event
-            WHERE uid IN (
-                SELECT DISTINCT uid 
-                FROM event 
-                WHERE uname = ?
-            )
-            GROUP BY uid, uname
-            ORDER BY uid ASC, timestamp ASC
-            """,
-            (target_name,),
-        ).fetchall()
-
-    # 将结果按 uid 分组处理
-    result = []
-    current_uid = None
-    user_entry = None
-
-    for uid, uname in rows:
-        if uid != current_uid:
-            if user_entry:
-                result.append(user_entry)
+        cur = conn.cursor()
+        
+        # 第一步：极速锁定所有用过该名字的 UID (利用覆盖索引)
+        cur.execute("SELECT uid FROM name_history WHERE uname = ?", (target_name,))
+        uids_nh = {r[0] for r in cur.fetchall()}
+        
+        cur.execute("SELECT uid FROM event WHERE uname = ?", (target_name,))
+        uids_ev = {r[0] for r in cur.fetchall()}
+        
+        target_uids = list(uids_nh | uids_ev)
+        
+        if not target_uids:
+            return []
             
-            current_uid = uid
-            user_entry = {
-                "uid": uid,
-                "history": []
-            }
-
-        user_entry["history"].append(uname)
-
-    if user_entry:
-        result.append(user_entry)
-
-    return result
+        # 第二步：获取这些 UID 的所有轨迹
+        history_rows = []
+        event_rows = []
+        
+        # SQLite 默认绑定变量上限通常是 999，这里按 900 切片防止报错
+        chunk_size = 900
+        for i in range(0, len(target_uids), chunk_size):
+            chunk = target_uids[i:i+chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            
+            cur.execute(
+                f"SELECT uid, uname, first_seen FROM name_history WHERE uid IN ({placeholders})", 
+                chunk
+            )
+            history_rows.extend(cur.fetchall())
+            
+            cur.execute(
+                f"SELECT uid, uname, timestamp FROM event WHERE uid IN ({placeholders})", 
+                chunk
+            )
+            event_rows.extend(cur.fetchall())
+            
+    # 第三步：交由 Python 进行去重和排序
+    return _merge_and_sort_histories(history_rows, event_rows)
 
 
 def list_name_history_by_name_or_uid(query: str) -> list[dict[str, object]]:
@@ -166,10 +183,3 @@ def list_name_history_by_name_or_uid(query: str) -> list[dict[str, object]]:
         return list_name_history_by_uid(int(query))
     else:
         return list_name_history_by_name(query)
-
-
-if __name__ == "__main__":
-    # name_history = list_name_history_by_name("_Misuzu")
-    name_history = list_name_history_by_name_or_uid("1")
-    
-    print(f"曾用名历史：{name_history}")
