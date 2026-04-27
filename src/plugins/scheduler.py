@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from .utils import _format_name
 
 logger = logging.getLogger("libot.scheduler")
 LOCK_FILE = ROOT / "data" / ".bot_offline.lock"
+NAPCAT_PID = ROOT / "data" / ".pids" / "napcat.pid"
 
 
 async def send_to_room(room_id: int, message: str) -> None:
@@ -200,25 +202,59 @@ async def watch_activities() -> None:
     coalesce=True,
     misfire_grace_time=30,
 )
+@scheduler.scheduled_job(
+    "cron",
+    minute="*",  # 每 1 分钟执行一次
+    id="libot_bot_monitor",
+    name="libot_bot_monitor",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=30,
+)
 async def check_bot_status() -> None:
     try:
         bots = get_bots()
+        is_offline = False
 
+        # 第一重检查：本地 WebSocket 连接是否彻底断开（Napcat 进程死亡或重启）
         if not bots:
+            is_offline = True
+        else:
+            # 第二重检查：获取第一个 bot 实例，查验其与腾讯服务器的真实连接状态
+            bot = list(bots.values())[0]
+            try:
+                # 调用 OneBot 标准 API 获取真实状态，无消息打扰
+                status = await bot.get_status()
+                if not status.get("online"):
+                    is_offline = True
+            except Exception as api_exc:
+                # 如果 API 调用超时或报错，说明 Napcat 内部已经卡死或无响应
+                logger.warning("Bot status API check failed: %s", api_exc)
+                is_offline = True
+
+        # 状态判定与邮件发送逻辑
+        if is_offline:
+            if NAPCAT_PID.exists():
+                uptime = time.time() - NAPCAT_PID.stat().st_mtime
+                if uptime < 120:
+                    logger.info("Bot offline but Napcat is warming up (uptime: %.1fs), skipping alert", uptime)
+                    return
+
             if not LOCK_FILE.exists():
-                logger.warning("Bot is offline, triggering email notification")
+                logger.warning("Bot is offline from QQ, triggering email notification")
                 send_notification_email(
                     subject="[警告] 机器人掉线通知",
-                    content="检测到 NoneBot 与 QQ 客户端（Napcat）的连接已断开！\n当前没有任何活跃的 Bot 实例，请及时登录后台检查服务状态。"
+                    content="检测到机器人与 QQ 服务器的连接已断开。"
                 )
                 LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
                 LOCK_FILE.touch()
             else:
                 logger.debug("Bot is still offline, skipped sending email due to lock file")
         else:
+            logger.debug("Bot is online")
             if LOCK_FILE.exists():
-                logger.info("Bot connection recovered, removing lock file")
                 LOCK_FILE.unlink(missing_ok=True)
+                logger.info("Bot connection recovered, removing lock file")
                 
     except Exception as exc:
         logger.error("failed to check bot status: %s", exc)
