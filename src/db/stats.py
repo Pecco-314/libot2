@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timedelta
 
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
 
@@ -95,6 +96,36 @@ def list_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
             "fan_club_num": int(row[5]),
             "created_at": str(row[6]) if row[6] is not None else "",
             "id": int(row[7]),
+        }
+        for row in rows
+    ]
+
+
+def list_stats(room_id: int, days: int) -> list[dict[str, Any]]:
+    now_local = datetime.now()
+    start_local = (now_local - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT 
+                fans_num, 
+                guard_num, 
+                fan_club_num, 
+                datetime(created_at, '+8 hours') as local_time
+            FROM stats
+            WHERE room_id = ? AND local_time >= ?
+            ORDER BY local_time ASC
+            """,
+            (room_id, start_local),
+        ).fetchall()
+        
+    return [
+        {
+            "fans_num": row[0],
+            "guard_num": row[1],
+            "fan_club_num": row[2],
+            "created_at": row[3],
         }
         for row in rows
     ]

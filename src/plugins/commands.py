@@ -4,11 +4,14 @@ import logging
 from datetime import datetime
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment, Message
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
+from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
+from src.spider.wrapper import get_name_by_roomid
+from src.common.utils import ROOT
 from src.db.manager import (
     add_manager,
     count_managers,
@@ -50,6 +53,9 @@ test_enable_cmd = on_command("开启测试", priority=5, block=True)
 test_disable_cmd = on_command("关闭测试", priority=5, block=True)
 test_status_cmd = on_command("测试状态", priority=5, block=True)
 name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5, block=True)
+fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
+guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
+club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -58,6 +64,9 @@ async def handle_help(matcher: Matcher):
         "/帮助 - 显示帮助信息\n"
         "/查SC [日期] - 查看醒目留言列表，默认当天\n"
         "/曾用名 <UID/用户名> - 查询用户的曾用名\n"
+        "/查粉丝 [天数] - 查询订阅主播粉丝数趋势，默认1天\n"
+        "/查舰长 [天数] - 查询订阅主播大航海数趋势，默认1天\n"
+        "/查粉丝团 [天数] - 查询订阅主播粉丝团人数趋势，默认1天\n"
     )
 
 
@@ -282,3 +291,73 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
         names = entry["history"]
         result += f"{i}. {names[-1]} ({', '.join(names)})\n"
     await matcher.finish(result)
+
+
+async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegment, stat_type: str):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    # 获取本群订阅的房间号
+    room_id = get_subscription(group_id)
+    if not room_id:
+        await matcher.finish("本群未设置订阅，请先订阅后再查询")
+
+    # 提取参数中的天数，如果没写默认查过去 1 天
+    query_text = arg.extract_plain_text().strip().rstrip("天日")
+    days = 1
+    if query_text.isdigit():
+        days = int(query_text)
+        if not (1 <= days <= 7):
+            await matcher.finish("查询天数请限制在 1 到 7 天以内")
+
+    uname = await get_name_by_roomid(room_id) or str(room_id)
+
+    # 路由到对应的渲染逻辑
+    if stat_type == "fans":
+        img, before, now = await render_fans_trend(room_id, days, uname)
+    elif stat_type == "guards":
+        img, before, now = await render_guards_trend(room_id, days, uname)
+    else:
+        img, before, now = await render_fan_club_trend(room_id, days, uname)
+
+    if not img:
+        await matcher.finish("该时间段内没有足够的数据用于绘制折线图")
+
+    # 确保图片保存目录存在
+    save_dir = ROOT / "data" / "images" / "stats"
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # 拼接文件名并保存
+    file_path = save_dir / f"{room_id}_{stat_type}_{days}d.png"
+    img.save(file_path, format="PNG")
+
+    stat_name = ""
+    if stat_type == "fans":
+        stat_name = "粉丝"
+    elif stat_type == "guards":
+        stat_name = "大航海"
+    else:
+        stat_name = "粉丝团"
+
+    message = Message([
+        MessageSegment.text(f"{uname}的{stat_name}数：{now} ({now - before:+})"),
+        MessageSegment.image(file=str(file_path)),
+    ])
+    
+    await matcher.finish(message)
+
+
+@fans_trend_cmd.handle()
+async def handle_fans_trend(matcher: Matcher, event: Event, arg=CommandArg()):
+    await _handle_stats_query(matcher, event, arg, "fans")
+
+
+@guards_trend_cmd.handle()
+async def handle_guards_trend(matcher: Matcher, event: Event, arg=CommandArg()):
+    await _handle_stats_query(matcher, event, arg, "guards")
+
+
+@club_trend_cmd.handle()
+async def handle_club_trend(matcher: Matcher, event: Event, arg=CommandArg()):
+    await _handle_stats_query(matcher, event, arg, "club")

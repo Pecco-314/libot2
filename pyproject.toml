@@ -9,6 +9,7 @@ dependencies = [
     "flask>=3.0.0",
     "flask-socketio>=5.3.0",
     "eventlet>=0.33.0",
+    "scipy>=1.17.0",
     "nonebot2[fastapi]>=2.5.0",
     "nonebot-adapter-onebot>=2.4.6",
     "nonebot-plugin-apscheduler>=0.5.0",
