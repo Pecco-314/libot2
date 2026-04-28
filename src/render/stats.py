@@ -1,4 +1,3 @@
-import io
 import json
 import os
 import datetime
@@ -10,7 +9,7 @@ import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
 from scipy.interpolate import make_interp_spline
 
-from pathlib import Path
+from typing import Any
 
 from src.db.stats import list_stats
 from src.common.utils import ROOT, load_env_file
@@ -36,8 +35,8 @@ if fonts_dir.exists():
 plt.rcParams['font.sans-serif'] = font_names
 plt.rcParams['axes.unicode_minus'] = False
 
-def _base_render(times: list[datetime.datetime], values: list[int], label: str, color: str, title: str) -> Image.Image | None:
-    # 过滤无效数据 (-1)
+
+def _filter_invalid_data(times: list[datetime.datetime], values: list[int]) -> tuple[list[datetime.datetime], list[int]]:
     clean_t = []
     clean_v = []
     for t, v in zip(times, values):
@@ -46,13 +45,16 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
         if not clean_t or t > clean_t[-1]:
             clean_t.append(t)
             clean_v.append(v)
+    return clean_t, clean_v
 
-    if len(clean_t) < 2:
+def _base_render(times: list[datetime.datetime], values: list[int], label: str, color: str, title: str) -> dict[str, Any] | None:
+    times, values = _filter_invalid_data(times, values)
+    if len(times) < 2:
         return None
 
     fig, ax = plt.subplots(figsize=(10, 4))
-    x = mdates.date2num(clean_t)
-    y = np.array(clean_v)
+    x = mdates.date2num(times)
+    y = np.array(values)
 
     # 动态计算 Y 轴的合理上下限
     y_min, y_max = y.min(), y.max()
@@ -103,33 +105,42 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
         ticks[-1].label1.set_horizontalalignment('right')
     
     plt.tight_layout()
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=120)
+    filename = f"{label}_{times[0].strftime('%Y%m%d%H%M%S')}_{times[-1].strftime('%Y%m%d%H%M%S')}.png"
+    save_path = ROOT / "data" / "images" / "stats" / filename
+    plt.savefig(save_path, format='png', dpi=120)
     plt.close(fig)
-    buf.seek(0)
-    return Image.open(buf).convert("RGB")
 
-async def render_fans_trend(room_id: int, days: int, room_name: str) -> tuple[Image.Image, int, int] | None:
+    return {
+        "path": save_path,
+        "label": label,
+        "begin_time": times[0],
+        "end_time": times[-1],
+        "begin_value": values[0],
+        "end_value": values[-1],
+    }
+    
+
+async def render_fans_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
     data = list_stats(room_id, days)
     if not data:
         return None
     times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
     values = [d['fans_num'] for d in data]
-    return _base_render(times, values, "粉丝数", "#E54D4D", f"{room_name} 粉丝数趋势 (近{days}天)"), values[0], values[-1]
+    times, values = _filter_invalid_data(times, values)
+    return _base_render(times, values, "粉丝数", "#E54D4D", f"{room_name} 粉丝数趋势 (近{days}天)")
 
-async def render_guards_trend(room_id: int, days: int, room_name: str) -> tuple[Image.Image, int, int] | None:
+async def render_guards_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
     data = list_stats(room_id, days)
     if not data:
         return None
     times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
     values = [d['guard_num'] for d in data]
-    return _base_render(times, values, "舰长数", "#E2B52B", f"{room_name} 大航海数趋势 (近{days}天)"), values[0], values[-1]
+    return _base_render(times, values, "舰长数", "#E2B52B", f"{room_name} 大航海数趋势 (近{days}天)")
 
-async def render_fan_club_trend(room_id: int, days: int, room_name: str) -> tuple[Image.Image, int, int] | None:
+async def render_fan_club_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
     data = list_stats(room_id, days)
     if not data:
         return None
     times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
     values = [d['fan_club_num'] for d in data]
-    return _base_render(times, values, "粉丝团", "#427D9E", f"{room_name} 粉丝团人数趋势 (近{days}天)"), values[0], values[-1]
+    return _base_render(times, values, "粉丝团", "#427D9E", f"{room_name} 粉丝团人数趋势 (近{days}天)")

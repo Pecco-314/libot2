@@ -315,22 +315,18 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
 
     # 路由到对应的渲染逻辑
     if stat_type == "fans":
-        img, before, now = await render_fans_trend(room_id, days, uname)
+        data = await render_fans_trend(room_id, days, uname)
     elif stat_type == "guards":
-        img, before, now = await render_guards_trend(room_id, days, uname)
+        data = await render_guards_trend(room_id, days, uname)
     else:
-        img, before, now = await render_fan_club_trend(room_id, days, uname)
+        data = await render_fan_club_trend(room_id, days, uname)
 
-    if not img:
-        await matcher.finish("该时间段内没有足够的数据用于绘制折线图")
+    if not data:
+        await matcher.finish("数据不足，生成失败")
 
-    # 确保图片保存目录存在
-    save_dir = ROOT / "data" / "images" / "stats"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    # 拼接文件名并保存
-    file_path = save_dir / f"{room_id}_{stat_type}_{days}d.png"
-    img.save(file_path, format="PNG")
+    now = data["end_value"]
+    delta = data["end_value"] - data["begin_value"]
+    image_path = data["path"]
 
     stat_name = ""
     if stat_type == "fans":
@@ -341,8 +337,8 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
         stat_name = "粉丝团"
 
     message = Message([
-        MessageSegment.text(f"{uname}的{stat_name}数：{now} ({now - before:+})"),
-        MessageSegment.image(file=str(file_path)),
+        MessageSegment.text(f"{uname}的{stat_name}数：{now} ({delta:+})"),
+        MessageSegment.image(file=str(image_path)),
     ])
     
     await matcher.finish(message)
