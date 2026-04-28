@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from src.db.sqlite import connect_sqlite
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
-local_tz = ZoneInfo("Asia/Shanghai")
-
+def _table_exists(conn, table_name: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+    return cur.fetchone() is not None
 
 def get_newest_live_event() -> dict[str, object] | None:
     live_cmds = ["LIVE", "PREPARING", "ROOM_CHANGE"]
@@ -123,9 +124,11 @@ def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
         cur = conn.cursor()
 
-        # name_history是从外部导入的表
-        cur.execute("SELECT uid, uname, first_seen FROM name_history WHERE uid = ?", (uid,))
-        history_rows = cur.fetchall()
+        history_rows = []
+        # 可以从本项目外导入曾用名数据到 name_history 表
+        if _table_exists(conn, "name_history"):
+            cur.execute("SELECT uid, uname, first_seen FROM name_history WHERE uid = ?", (uid,))
+            history_rows = cur.fetchall()
         
         cur.execute("SELECT uid, uname, timestamp FROM event WHERE uid = ?", (uid,))
         event_rows = cur.fetchall()
@@ -140,9 +143,10 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
         cur = conn.cursor()
         
-        # 第一步：极速锁定所有用过该名字的 UID (利用覆盖索引)
-        cur.execute("SELECT uid FROM name_history WHERE uname = ?", (target_name,))
-        uids_nh = {r[0] for r in cur.fetchall()}
+        uids_nh = set()
+        if _table_exists(conn, "name_history"):
+            cur.execute("SELECT uid FROM name_history WHERE uname = ?", (target_name,))
+            uids_nh = {r[0] for r in cur.fetchall()}
         
         cur.execute("SELECT uid FROM event WHERE uname = ?", (target_name,))
         uids_ev = {r[0] for r in cur.fetchall()}
@@ -152,21 +156,20 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
         if not target_uids:
             return []
             
-        # 第二步：获取这些 UID 的所有轨迹
         history_rows = []
         event_rows = []
         
-        # SQLite 默认绑定变量上限通常是 999，这里按 900 切片防止报错
         chunk_size = 900
         for i in range(0, len(target_uids), chunk_size):
             chunk = target_uids[i:i+chunk_size]
             placeholders = ",".join("?" * len(chunk))
             
-            cur.execute(
-                f"SELECT uid, uname, first_seen FROM name_history WHERE uid IN ({placeholders})", 
-                chunk
-            )
-            history_rows.extend(cur.fetchall())
+            if _table_exists(conn, "name_history"):
+                cur.execute(
+                    f"SELECT uid, uname, first_seen FROM name_history WHERE uid IN ({placeholders})", 
+                    chunk
+                )
+                history_rows.extend(cur.fetchall())
             
             cur.execute(
                 f"SELECT uid, uname, timestamp FROM event WHERE uid IN ({placeholders})", 
