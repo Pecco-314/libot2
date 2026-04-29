@@ -177,7 +177,6 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
             )
             event_rows.extend(cur.fetchall())
             
-    # 第三步：交由 Python 进行去重和排序
     return _merge_and_sort_histories(history_rows, event_rows)
 
 

@@ -10,7 +10,7 @@ from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
-from src.spider.wrapper import get_name_by_roomid
+from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
 from src.common.utils import ROOT
 from src.db.manager import (
     add_manager,
@@ -278,7 +278,6 @@ async def handle_remove_subscription(matcher: Matcher, event: Event):
 
 
 @name_history_cmd.handle()
-# @subscription_dev_required
 async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
     query = arg.extract_plain_text().strip()
     if not query:
@@ -289,7 +288,12 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
     result = f"找到{len(history)}个用户：\n"
     for (i, entry) in enumerate(history, start=1):
         names = entry["history"]
-        result += f"{i}. {names[-1]} ({', '.join(names)})\n"
+        try:
+            current_name = await get_name_by_uid(entry["uid"])
+        except Exception:
+            logger.warning(f"查询用户 {entry['uid']} 的当前名称失败")
+            current_name = names[-1]
+        result += f"{i}. {current_name} ({', '.join(names)})\n"
     await matcher.finish(result)
 
 
