@@ -10,6 +10,7 @@ from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
+from src.render.song import render_song
 from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
 from src.common.utils import ROOT
 from src.db.manager import (
@@ -56,6 +57,7 @@ name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5,
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
+song_search_cmd = on_command("查歌曲", priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -67,6 +69,7 @@ async def handle_help(matcher: Matcher):
         "/查粉丝 [天数] - 查询订阅主播粉丝数趋势，默认1天\n"
         "/查舰长 [天数] - 查询订阅主播大航海数趋势，默认1天\n"
         "/查粉丝团 [天数] - 查询订阅主播粉丝团人数趋势，默认1天\n"
+        "/查歌曲 <歌名> - 查询歌曲的演唱记录\n"
     )
 
 
@@ -361,3 +364,62 @@ async def handle_guards_trend(matcher: Matcher, event: Event, arg=CommandArg()):
 @club_trend_cmd.handle()
 async def handle_club_trend(matcher: Matcher, event: Event, arg=CommandArg()):
     await _handle_stats_query(matcher, event, arg, "club")
+
+
+@song_search_cmd.handle()
+async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=CommandArg()):
+    keyword = arg.extract_plain_text().strip()
+    if not keyword:
+        await matcher.finish("用法：/查歌曲 <歌名>")
+
+    try:
+        results = await render_song(keyword)
+    except Exception as e:
+        logger.error(f"渲染歌曲卡片失败: {e}")
+        await matcher.finish("图片渲染失败")
+
+    if not results:
+        await matcher.finish(f"未找到与“{keyword}”相关的演唱记录")
+
+    # 1. 准备合并转发的消息节点
+    forward_nodes = []
+    
+    # 第一条节点：文字汇总提示
+    maxsize = 5
+    if len(results) < maxsize:
+        content = f"找到 {len(results)} 首与“{keyword}”相关的歌曲："
+    else:
+        content = f"找到 {len(results)} 首与“{keyword}”相关的歌曲（已达到搜索上限）："
+    forward_nodes.append({
+        "type": "node",
+        "data": {
+            "name": "LiBot",
+            "uin": bot.self_id,
+            "content": content
+        }
+    })
+    
+    # 后续节点：每首歌一张图片
+    for res in results:
+        forward_nodes.append({
+            "type": "node",
+            "data": {
+                "name": "LiBot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(res["image_path"]))
+            }
+        })
+
+    group_id = getattr(event, "group_id", None)
+
+    try:
+        if group_id:
+            await bot.call_api(
+                "send_group_forward_msg",
+                group_id=group_id,
+                messages=forward_nodes
+            )
+        else:
+            await matcher.finish("请在群聊中使用该命令")
+    except Exception as e:
+        logger.error(f"发送合并转发消息失败: {e}")

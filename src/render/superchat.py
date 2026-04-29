@@ -1,6 +1,5 @@
 import datetime
 import math
-import unicodedata
 from PIL import Image, ImageDraw
 
 from pathlib import Path
@@ -8,8 +7,8 @@ from nonebot_plugin_imageutils import Text2Image
 
 from src.db.event import list_superchat_event_by_day
 from src.spider.wrapper import get_name_by_roomid
+from src.common.utils import ROOT, truncate_name
 
-ROOT = Path(__file__).resolve().parents[2]
 
 def _row_bg_color(amount: int) -> tuple[int, int, int]:
     """根据醒目留言的金额返回对应的背景色"""
@@ -30,30 +29,6 @@ def _row_bg_color(amount: int) -> tuple[int, int, int]:
     else:
         return (0xFF, 0xFF, 0xFF)  # #FFFFFF
 
-def truncate_name(name: str, max_len: int = 18) -> str:
-    """按东亚字符宽度截断用户名，超出部分加省略号"""
-    current_width = 0
-    truncated_str = ""
-    
-    # 预留出省略号 "..." 的宽度
-    limit = max_len - 3
-    
-    # 首先检查总宽度，如果没超限直接返回
-    total_width = sum(2 if unicodedata.east_asian_width(c) in 'WFA' else 1 for c in name)
-    if total_width <= max_len:
-        return name
-
-    for char in name:
-        # 判断当前字符宽度
-        width = 2 if unicodedata.east_asian_width(char) in 'WFA' else 1
-        
-        if current_width + width <= limit:
-            truncated_str += char
-            current_width += width
-        else:
-            break
-            
-    return truncated_str + "..."
 
 def draw_text(base_image: Image.Image, x: int, y: int, text: str, fill: tuple, font_size: int, max_width: int = 0) -> int:
     """渲染文本并粘贴到原图上，返回文本图片的高度"""

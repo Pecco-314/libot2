@@ -7,6 +7,7 @@ from src.spider.jobs.liver import register_jobs as register_liver_jobs
 from src.spider.jobs.stats import register_jobs as register_stats_jobs
 from src.spider.jobs.backup import register_jobs as register_backup_jobs
 from src.spider.jobs.cookie_monitor import register_jobs as register_cookie_monitor_jobs
+from src.spider.jobs.song_list import register_jobs as register_song_list_jobs
 
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
@@ -15,3 +16,4 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     register_stats_jobs(scheduler)
     register_backup_jobs(scheduler)
     register_cookie_monitor_jobs(scheduler)
+    register_song_list_jobs(scheduler)
