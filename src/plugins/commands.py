@@ -400,13 +400,14 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
     })
     
     # 后续节点：每首歌一张图片
-    for res in results:
+    for i, res in enumerate(results, start=1):
         forward_nodes.append({
             "type": "node",
             "data": {
                 "name": "LiBot",
                 "uin": bot.self_id,
-                "content": MessageSegment.image(file=str(res["image_path"]))
+                "content": [MessageSegment.text(f"{i}. {res['data']['title']}"),
+                            MessageSegment.image(file=str(res["image_path"]))]
             }
         })
 
