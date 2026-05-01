@@ -10,7 +10,7 @@ from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
-from src.render.song import render_song
+from src.render.song import render_songs_by_keyword, render_random_song
 from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
 from src.common.utils import ROOT
 from src.db.manager import (
@@ -58,6 +58,7 @@ fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
+random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -70,6 +71,7 @@ async def handle_help(matcher: Matcher):
         "/查舰长 [天数] - 查询订阅主播大航海数趋势，默认1天\n"
         "/查粉丝团 [天数] - 查询订阅主播粉丝团人数趋势，默认1天\n"
         "/查歌曲 <歌名> - 查询歌曲的演唱记录\n"
+        "/随机歌曲 [最少演唱次数] - 随机抽取一首演唱过的歌曲，可设置最少演唱次数，默认3次\n"
     )
 
 
@@ -373,7 +375,7 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
         await matcher.finish("用法：/查歌曲 <歌名>")
 
     try:
-        results = await render_song(keyword)
+        results = await render_songs_by_keyword(keyword)
     except Exception as e:
         logger.error(f"渲染歌曲卡片失败: {e}")
         await matcher.finish("图片渲染失败")
@@ -424,3 +426,27 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
             await matcher.finish("请在群聊中使用该命令")
     except Exception as e:
         logger.error(f"发送合并转发消息失败: {e}")
+
+
+@random_search_cmd.handle()
+async def handle_random_song(matcher: Matcher, arg=CommandArg()):
+    count = arg.extract_plain_text().strip()
+    lowest_count = 3
+    if count.isdigit():
+        lowest_count = int(count)
+    
+    try:
+        result = await render_random_song(lowest_count)
+    except Exception as e:
+        logger.error(f"渲染歌曲卡片失败: {e}")
+        await matcher.finish("图片渲染失败")
+
+    if not result:
+        await matcher.finish(f"未找到演唱次数大于等于{lowest_count}的歌曲")
+
+    message = Message([
+        MessageSegment.text(f"随机抽取到歌曲：{result['data']['title']}"),
+        MessageSegment.image(file=str(result["image_path"])),
+    ])
+    
+    await matcher.finish(message)

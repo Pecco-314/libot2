@@ -95,3 +95,30 @@ def search_songs_by_title(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
             "count": row[5]
         })
     return results
+
+def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            """
+            SELECT id, title, title_trans, original_singer, records, count
+            FROM song_list
+            WHERE count >= ?
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (lowest_count,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        records_list = json.loads(row[4]) if row[4] else []
+    except Exception:
+        records_list = []
+    return {
+        "id": row[0],
+        "title": row[1],
+        "title_trans": row[2],
+        "original_singer": row[3],
+        "records": records_list,
+        "count": row[5]
+    }
