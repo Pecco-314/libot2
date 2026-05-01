@@ -122,3 +122,38 @@ def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
         "records": records_list,
         "count": row[5]
     }
+
+
+def list_songs_without_lyrics(limit: int | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT id, title, original_singer
+        FROM song_list
+        WHERE lyrics IS NULL OR lyrics = ''
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    with connect_sqlite() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "original_singer": row[2],
+        }
+        for row in rows
+    ]
+
+
+def update_song_lyrics(song_id: int, lyrics: str) -> None:
+    with write_transaction() as conn:
+        execute_write(
+            conn,
+            """
+            UPDATE song_list
+            SET lyrics = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (lyrics, song_id),
+        )
