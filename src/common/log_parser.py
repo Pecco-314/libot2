@@ -8,6 +8,7 @@ ANSI_ESCAPE_RE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 CUSTOM_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}),\d{3}\s+-\s+(.*?)\s+-\s+([A-Z]+)\s+-\s+(.*)$')
 NONEBOT_RE = re.compile(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})\s+\[(.*?)\]\s+nonebot\s*\|\s*(.*)$')
 NAPCAT_RE = re.compile(r'^(\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})\s+\[(.*?)\]\s+(.*?)\s*\|\s*(.*)$')
+LYRICS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}),\d{3}\s+-\s+([A-Z]+)\s+-\s+(.*)$')
 
 def clean_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub('', text)
@@ -44,6 +45,10 @@ class LogStreamParser:
         match = NAPCAT_RE.match(line)
         if match:
             return self._flush_and_start_new(format_timestamp(match.group(1)), match.group(3), match.group(2).upper(), match.group(4), "napcat")
+
+        match = LYRICS_RE.match(line)
+        if match:
+            return self._flush_and_start_new(format_timestamp(match.group(1)), "lyrics", match.group(2), match.group(3), "lyrics")
 
         if self.current_log:
             self.current_log["message"] += f"\n{line}"

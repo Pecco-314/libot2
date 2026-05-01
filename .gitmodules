@@ -1,0 +1,3 @@
+[submodule "third_party/LrcApi"]
+	path = third_party/LrcApi
+	url = https://github.com/HisAtri/LrcApi

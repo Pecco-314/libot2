@@ -79,6 +79,14 @@ MODULES = {
         redirect_output=True,
         cwd=NAPCAT_PATH,
     ),
+    "lyrics": ModuleSpec(
+        name="lyrics",
+        log_file=LOG_DIR / "lyrics.log",
+        pid_file=PID_DIR / "lyrics.pid",
+        command=("python", "app.py"),
+        redirect_output=True,
+        cwd=ROOT / "third_party" / "LrcApi",
+    ),
 }
 
 

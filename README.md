@@ -11,3 +11,4 @@
 3. spider：通过Bilibili API定时获取动态、粉丝数等信息。
 4. monitor：通过blivedm监控直播间并实时记录弹幕等信息。
 5. web: Web管理界面，提供日志查看和服务重启等功能。
+6. lyrics: 歌词服务器，提供查询歌词服务。
