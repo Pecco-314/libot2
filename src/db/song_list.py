@@ -21,40 +21,54 @@ def init_song_list_db() -> None:
                 count INTEGER,
                 clips TEXT,
                 tags TEXT,
+                lyrics TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
         )
 
 def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
+    sql = """
+    INSERT INTO song_list (
+        id, title, title_trans, original_singer, records, 
+        notes, language, count, clips, tags, lyrics, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET
+        title = COALESCE(excluded.title, title),
+        title_trans = COALESCE(excluded.title_trans, title_trans),
+        original_singer = COALESCE(excluded.original_singer, original_singer),
+        records = COALESCE(excluded.records, records),
+        notes = COALESCE(excluded.notes, notes),
+        language = COALESCE(excluded.language, language),
+        count = COALESCE(excluded.count, count),
+        clips = COALESCE(excluded.clips, clips),
+        tags = COALESCE(excluded.tags, tags),
+        lyrics = COALESCE(excluded.lyrics, lyrics),
+        updated_at = CURRENT_TIMESTAMP
+    """
+    
     with write_transaction() as conn:
         for song in songs:
             execute_write(
                 conn,
-                """
-                INSERT OR REPLACE INTO song_list (
-                    id, title, title_trans, original_singer, records, 
-                    notes, language, count, clips, tags, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,
+                sql,
                 (
                     song.get("id"),
-                    song.get("title", ""),
-                    song.get("title_trans", ""),
-                    song.get("original_singer", ""),
-                    song.get("records", ""),
-                    song.get("notes", ""),
-                    song.get("language", ""),
-                    song.get("count", ""),
-                    song.get("clips", ""),
-                    song.get("tags", ""),
+                    song.get("title"),
+                    song.get("title_trans"),
+                    song.get("original_singer"),
+                    song.get("records"),
+                    song.get("notes"),
+                    song.get("language"),
+                    song.get("count"),
+                    song.get("clips"),
+                    song.get("tags"),
+                    song.get("lyrics"),
                 ),
             )
 
-
 def search_songs_by_title(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
-        # 假设 title 或 title_trans 匹配关键字
         rows = conn.execute(
             """
             SELECT id, title, title_trans, original_singer, records, count
