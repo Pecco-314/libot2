@@ -22,6 +22,7 @@ def init_song_list_db() -> None:
                 clips TEXT,
                 tags TEXT,
                 lyrics TEXT,
+                lyrics_cleaned TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -31,8 +32,8 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
     sql = """
     INSERT INTO song_list (
         id, title, title_trans, original_singer, records, 
-        notes, language, count, clips, tags, lyrics, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        notes, language, count, clips, tags, lyrics, lyrics_cleaned, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
         title = COALESCE(excluded.title, title),
         title_trans = COALESCE(excluded.title_trans, title_trans),
@@ -44,6 +45,7 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
         clips = COALESCE(excluded.clips, clips),
         tags = COALESCE(excluded.tags, tags),
         lyrics = COALESCE(excluded.lyrics, lyrics),
+        lyrics_cleaned = COALESCE(excluded.lyrics_cleaned, lyrics_cleaned),
         updated_at = CURRENT_TIMESTAMP
     """
     
@@ -64,6 +66,7 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
                     song.get("clips"),
                     song.get("tags"),
                     song.get("lyrics"),
+                    song.get("lyrics_cleaned"),
                 ),
             )
 
@@ -157,3 +160,43 @@ def update_song_lyrics(song_id: int, lyrics: str) -> None:
             """,
             (lyrics, song_id),
         )
+
+
+def list_songs_without_cleaned_lyrics(limit: int | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT id, title, original_singer, lyrics
+        FROM song_list
+        WHERE (lyrics_cleaned IS NULL OR lyrics_cleaned = '')
+          AND lyrics IS NOT NULL AND lyrics != ''
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    with connect_sqlite() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "original_singer": row[2],
+            "lyrics": row[3],
+        }
+        for row in rows
+    ]
+
+
+def update_song_cleaned_lyrics(song_id: int, lyrics_cleaned: str) -> None:
+    with write_transaction() as conn:
+        execute_write(
+            conn,
+            """
+            UPDATE song_list
+            SET lyrics_cleaned = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (lyrics_cleaned, song_id),
+        )
+
+if __name__ == "__main__":
+    init_song_list_db()

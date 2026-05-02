@@ -53,7 +53,7 @@ async def sync_song_list() -> None:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(CSV_RAW_URL)
             resp.raise_for_status()
-            csv_text = resp.read().decode("utf-8-sig")
+            csv_text = resp.read().decode("utf-8-sig").lstrip("\ufeff")
 
         reader = csv.DictReader(StringIO(csv_text))
         songs: list[dict] = []

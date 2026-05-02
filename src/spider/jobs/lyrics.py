@@ -10,7 +10,13 @@ from typing import Any
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from src.db.song_list import init_song_list_db, list_songs_without_lyrics, update_song_lyrics
+from src.db.song_list import (
+    init_song_list_db,
+    list_songs_without_lyrics,
+    update_song_lyrics,
+    list_songs_without_cleaned_lyrics,
+    update_song_cleaned_lyrics,
+)
 
 
 logger = logging.getLogger("spider.jobs.lyrics")
@@ -29,6 +35,29 @@ def _similarity(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
     return SequenceMatcher(None, _normalize(left), _normalize(right)).ratio()
+
+
+def _clean_lyrics(lyrics: str) -> str:
+    if not lyrics:
+        return ""
+    text = lyrics.replace("\r", "")
+    lines = text.split("\n")
+    cleaned_lines: list[str] = []
+    meta_pattern = re.compile(r"\[.*?\]")
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        line = meta_pattern.sub("", line)
+        line = line.strip()
+        if not line:
+            continue
+        cleaned_lines.append(line)
+
+    merged = " ".join(cleaned_lines)
+    merged = re.sub(r"\s+", " ", merged).strip()
+    return merged
 
 
 def _pick_best_match(title: str, artist: str, results: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, float, float]:
@@ -134,10 +163,45 @@ async def sync_lyrics() -> None:
             )
 
 
+def clean_lyrics() -> None:
+    songs = list_songs_without_cleaned_lyrics()
+    if not songs:
+        logger.info("lyrics clean skip: no pending rows")
+        return
+
+    logger.info("lyrics clean begin, pending=%d", len(songs))
+    for song in songs:
+        song_id = song.get("id")
+        title = song.get("title") or ""
+        artist = song.get("original_singer") or ""
+        lyrics = song.get("lyrics") or ""
+        cleaned = _clean_lyrics(lyrics)
+        if not cleaned:
+            logger.info(
+                "lyrics clean empty id=%s title=%s artist=%s",
+                song_id,
+                title,
+                artist,
+            )
+            continue
+        update_song_cleaned_lyrics(song_id, cleaned)
+        logger.info(
+            "lyrics clean updated id=%s title=%s artist=%s",
+            song_id,
+            title,
+            artist,
+        )
+
+
+async def sync_and_clean_lyrics() -> None:
+    await sync_lyrics()
+    clean_lyrics()
+
+
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
     init_song_list_db()
     scheduler.add_job(
-        sync_lyrics,
+        sync_and_clean_lyrics,
         "cron",
         hour=5,
         minute=0,
@@ -152,4 +216,4 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(sync_lyrics())
+    asyncio.run(sync_and_clean_lyrics())
