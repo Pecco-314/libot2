@@ -25,6 +25,50 @@ def get_newest_live_event() -> dict[str, object] | None:
         "timestamp": int(row[4])
     }
 
+
+def get_latest_live_cmd(room_id: int) -> str | None:
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            """
+            SELECT cmd FROM event
+            WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (room_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0])
+
+
+def list_live_events_after(room_ids: list[int], last_id: int) -> list[dict[str, object]]:
+    if not room_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in room_ids)
+    sql = (
+        "SELECT id, cmd, room_id, title, timestamp "
+        "FROM event "
+        "WHERE cmd IN ('LIVE', 'PREPARING') "
+        f"AND room_id IN ({placeholders}) "
+        "AND id > ? "
+        "ORDER BY id ASC"
+    )
+    params: list[object] = list(room_ids) + [last_id]
+    with connect_sqlite() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    return [
+        {
+            "id": int(row[0]),
+            "cmd": str(row[1]),
+            "room_id": int(row[2]),
+            "title": str(row[3]) if row[3] is not None else None,
+            "timestamp": int(row[4]) if row[4] is not None else 0,
+        }
+        for row in rows
+    ]
+
 def is_streaming_event(row) -> bool:
     """判断LIVE事件是否是推流而非真的开播"""
     cmd = row.get("cmd")
