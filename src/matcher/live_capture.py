@@ -105,7 +105,7 @@ class LiveCapture:
         frame_dir = root / "frames" / room_id
         audio_dir.mkdir(parents=True, exist_ok=True)
         frame_dir.mkdir(parents=True, exist_ok=True)
-        audio_pattern = audio_dir / "%Y%m%d_%H%M%S.m4a"
+        audio_pattern = audio_dir / "audio_%Y%m%d_%H%M%S.m4a"
         frame_pattern = frame_dir / "frame_%Y%m%d_%H%M%S.jpg"
         return audio_pattern, frame_pattern
 
@@ -155,9 +155,11 @@ class LiveCapture:
             "-strict",
             "-2",
             "-vf",
-            f"fps={fps_value},scale=in_range=full:out_range=full,format=yuvj420p",
+            f"fps={fps_value},crop=452:140:664:554,format=yuv420p",
             "-pix_fmt",
-            "yuvj420p",
+            "yuv420p",
+            "-color_range",
+            "2",
             "-strftime",
             "1",
             str(frame_pattern),
