@@ -63,17 +63,24 @@ class BilibiliLiveStreamResolver:
             return None
 
         try:
-            stream_data: dict[str, Any] = (
-                payload["data"]["playurl_info"]["playurl"]["stream"][0]["format"][0]["codec"][0]
-            )
-            base_url = stream_data["base_url"]
-            url_info = stream_data["url_info"][0]
-            host = url_info["host"]
-            extra = url_info["extra"]
+            streams = payload["data"]["playurl_info"]["playurl"]["stream"]
         except Exception:
             return None
 
-        return f"{host}{base_url}{extra}"
+        for stream in streams:
+            for fmt in stream.get("format", []):
+                for codec in fmt.get("codec", []):
+                    base_url = codec.get("base_url")
+                    url_info = codec.get("url_info") or []
+                    if not base_url or not url_info:
+                        continue
+                    for info in url_info:
+                        host = info.get("host")
+                        extra = info.get("extra")
+                        if host and extra:
+                            return f"{host}{base_url}{extra}"
+
+        return None
 
 
 class LiveCapture:
@@ -85,6 +92,7 @@ class LiveCapture:
         )
         self._processes: dict[int, subprocess.Popen] = {}
         self._last_cmd_by_room: dict[int, str] = {}
+        self._last_restart_at: dict[int, float] = {}
 
     def _resolve_output_root(self) -> Path:
         if self._config.output_root:
@@ -97,7 +105,7 @@ class LiveCapture:
         frame_dir = root / "frames" / room_id
         audio_dir.mkdir(parents=True, exist_ok=True)
         frame_dir.mkdir(parents=True, exist_ok=True)
-        audio_pattern = audio_dir / "audio_%Y%m%d_%H%M%S.m4a"
+        audio_pattern = audio_dir / "%Y%m%d_%H%M%S.m4a"
         frame_pattern = frame_dir / "frame_%Y%m%d_%H%M%S.jpg"
         return audio_pattern, frame_pattern
 
@@ -143,9 +151,13 @@ class LiveCapture:
             "1",
             str(audio_pattern),
             "-map",
-            "0:v",
+            "0:v?",
+            "-strict",
+            "-2",
             "-vf",
-            f"fps={fps_value},scale=in_range=full:out_range=full,format=yuv420p",
+            f"fps={fps_value},scale=in_range=full:out_range=full,format=yuvj420p",
+            "-pix_fmt",
+            "yuvj420p",
             "-strftime",
             "1",
             str(frame_pattern),
@@ -155,12 +167,15 @@ class LiveCapture:
         if room_id in self._processes:
             return
         url = self._resolver.get_stream_url(str(room_id), qn=self._config.qn)
+        if not url and self._config.qn > 150:
+            url = self._resolver.get_stream_url(str(room_id), qn=150)
         if not url:
             print(f"failed to resolve live stream url for room_id={room_id}", file=sys.stderr)
             return
         audio_pattern, frame_pattern = self._build_output_paths(str(room_id))
         command = self._build_ffmpeg_command(url, audio_pattern, frame_pattern)
         self._processes[room_id] = subprocess.Popen(command)
+        self._last_restart_at[room_id] = time.monotonic()
 
     def _stop_capture(self, room_id: int) -> None:
         process = self._processes.pop(room_id, None)
@@ -171,6 +186,20 @@ class LiveCapture:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
+        self._last_restart_at.pop(room_id, None)
+
+    def _restart_if_needed(self) -> None:
+        now = time.monotonic()
+        for room_id, process in list(self._processes.items()):
+            if process.poll() is None:
+                continue
+            self._processes.pop(room_id, None)
+            if self._last_cmd_by_room.get(room_id) != "LIVE":
+                continue
+            last_restart = self._last_restart_at.get(room_id, 0.0)
+            if now - last_restart < 3:
+                continue
+            self._start_capture(room_id)
 
     def _fetch_events_since(self, last_id: int) -> list[dict[str, Any]]:
         return list_live_events_after(self._config.room_ids, last_id)
@@ -187,6 +216,7 @@ class LiveCapture:
             while True:
                 rows = self._fetch_events_since(last_id)
                 if not rows:
+                    self._restart_if_needed()
                     time.sleep(1)
                     continue
 
@@ -202,6 +232,7 @@ class LiveCapture:
                     elif cmd == "PREPARING":
                         self._last_cmd_by_room[room_id] = "PREPARING"
                         self._stop_capture(room_id)
+                self._restart_if_needed()
         except KeyboardInterrupt:
             pass
         finally:
