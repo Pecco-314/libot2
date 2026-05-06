@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,13 +13,14 @@ from typing import Any
 
 import httpx
 
-from src.common.utils import load_env_file
+from src.common.utils import load_env_file, init_logger
 from src.db.subscription import list_subscribed_room_ids
 from src.db.event import is_streaming_event, get_latest_live_cmd, list_live_events_after
 from src.spider.api import BILI_HEADERS, build_cookies
 
 
 DEFAULT_USER_AGENT = BILI_HEADERS["User-Agent"]
+logger = init_logger("capture")
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,7 @@ class LiveCapture:
         self._processes: dict[int, subprocess.Popen] = {}
         self._last_cmd_by_room: dict[int, str] = {}
         self._last_restart_at: dict[int, float] = {}
+        self._ffmpeg_threads: dict[int, threading.Thread] = {}
 
     def _resolve_output_root(self) -> Path:
         if self._config.output_root:
@@ -172,12 +175,17 @@ class LiveCapture:
         if not url and self._config.qn > 150:
             url = self._resolver.get_stream_url(str(room_id), qn=150)
         if not url:
-            print(f"failed to resolve live stream url for room_id={room_id}", file=sys.stderr)
+            logger.warning("failed to resolve live stream url for room_id=%s", room_id)
             return
         audio_pattern, frame_pattern = self._build_output_paths(str(room_id))
-        command = self._build_ffmpeg_command(url, audio_pattern, frame_pattern)
-        self._processes[room_id] = subprocess.Popen(command)
+        try:
+            command = self._build_ffmpeg_command(url, audio_pattern, frame_pattern)
+        except RuntimeError as exc:
+            logger.error("ffmpeg unavailable for room_id=%s: %s", room_id, exc)
+            return
+        self._processes[room_id] = self._spawn_ffmpeg(room_id, command)
         self._last_restart_at[room_id] = time.monotonic()
+        logger.info("started ffmpeg capture for room_id=%s", room_id)
 
     def _stop_capture(self, room_id: int) -> None:
         process = self._processes.pop(room_id, None)
@@ -189,6 +197,39 @@ class LiveCapture:
         except subprocess.TimeoutExpired:
             process.kill()
         self._last_restart_at.pop(room_id, None)
+        self._ffmpeg_threads.pop(room_id, None)
+        logger.info("stopped ffmpeg capture for room_id=%s", room_id)
+
+    def _spawn_ffmpeg(self, room_id: int, command: list[str]) -> subprocess.Popen:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        thread = threading.Thread(
+            target=self._stream_ffmpeg_output,
+            args=(room_id, process),
+            daemon=True,
+        )
+        thread.start()
+        self._ffmpeg_threads[room_id] = thread
+        return process
+
+    def _stream_ffmpeg_output(self, room_id: int, process: subprocess.Popen) -> None:
+        if process.stdout is None:
+            return
+        try:
+            for line in process.stdout:
+                logger.info("ffmpeg[%s] %s", room_id, line.rstrip())
+        except Exception as exc:
+            logger.warning("ffmpeg[%s] log stream stopped: %s", room_id, exc)
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
 
     def _restart_if_needed(self) -> None:
         now = time.monotonic()
@@ -207,6 +248,7 @@ class LiveCapture:
         return list_live_events_after(self._config.room_ids, last_id)
 
     def run(self) -> int:
+        logger.info("capture service starting")
         last_id = 0
         for room_id in self._config.room_ids:
             latest_cmd = get_latest_live_cmd(room_id)
@@ -240,6 +282,7 @@ class LiveCapture:
         finally:
             for room_id in list(self._processes.keys()):
                 self._stop_capture(room_id)
+        logger.info("capture service stopped")
 
         return 0
 

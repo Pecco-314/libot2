@@ -87,6 +87,13 @@ MODULES = {
         redirect_output=True,
         cwd=ROOT / "third_party" / "LrcApi",
     ),
+    "capture": ModuleSpec(
+        name="capture",
+        log_file=LOG_DIR / "capture.log",
+        pid_file=PID_DIR / "capture.pid",
+        command=("python", "-m", "src.capture.capture"),
+        redirect_output=False,
+    ),
 }
 
 
