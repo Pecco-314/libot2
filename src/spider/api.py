@@ -56,6 +56,7 @@ async def request_json(
             if attempt >= 4:
                 raise
             logger.warning("request_json retry(%d/5) url=%s params=%s error=%s", attempt + 1, url, params, exc)
+            logger.warning("response text: %s", resp.text if 'resp' in locals() else "N/A")
             await asyncio.sleep(3)
 
     code = int(body.get("code", -1)) if isinstance(body, dict) else -1
