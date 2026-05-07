@@ -5,7 +5,7 @@ from typing import Any
 
 from nonebot_plugin_imageutils import BuildImage, Text2Image
 
-from src.db.song_list import search_songs_by_title, random_song
+from src.db.song_list import search_songs_by_title, random_song, list_songs_by_singer
 from src.common.utils import ROOT, truncate_name
 
 def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
@@ -163,3 +163,71 @@ async def render_random_song(limit: int = 3) -> dict[str, Any] | None:
         return None
     else:
         return save_song_card(song)
+
+
+def _draw_singer_song_list(singer: str, songs: list[dict[str, Any]]) -> BuildImage:
+    width = 720
+    padding = 40
+    max_text_width = width - padding * 2
+    bg_color = (255, 255, 255, 255)
+
+    safe_singer = truncate_name(singer, max_len=32)
+    title_t2i = Text2Image.from_text(f"歌手：{safe_singer}", 36, weight="bold", fill=(34, 34, 34))
+    count_t2i = Text2Image.from_text(f"共 {len(songs)} 首", 24, fill=(80, 80, 80))
+
+    line_items: list[Text2Image] = []
+    for index, song in enumerate(songs, start=1):
+        line = f"{index}. {song['title']}（{song.get('count', 0)}）"
+        wrapped = _smart_wrap(line, 24, max_text_width)
+        line_items.append(Text2Image.from_text(wrapped, 24, fill=(50, 50, 50)))
+
+    footer_text = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
+    footer_t2i = Text2Image.from_text(footer_text, 18, fill=(180, 180, 180))
+
+    content_h = (
+        padding +
+        title_t2i.height + 12 +
+        count_t2i.height + 24 +
+        sum(item.height + 10 for item in line_items) +
+        20 +
+        footer_t2i.height +
+        padding
+    )
+
+    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
+    curr_y = padding
+    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
+    curr_y += title_t2i.height + 12
+    count_t2i.draw_on_image(canvas.image, (padding, curr_y))
+    curr_y += count_t2i.height + 24
+    for item in line_items:
+        item.draw_on_image(canvas.image, (padding, curr_y))
+        curr_y += item.height + 10
+    curr_y += 20
+    footer_t2i.draw_on_image(canvas.image, (width - footer_t2i.width - padding, curr_y))
+
+    return canvas
+
+
+def _save_singer_song_list(singer: str, songs: list[dict[str, Any]]) -> str:
+    save_dir = ROOT / "data" / "images" / "song_list"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    canvas = _draw_singer_song_list(singer, songs)
+    file_name = f"singer_{uuid.uuid4().hex[:8]}.png"
+    save_path = save_dir / file_name
+    canvas.image.save(save_path)
+    return str(save_path)
+
+
+async def render_songs_by_singer(singer: str) -> dict[str, Any] | None:
+    songs = list_songs_by_singer(singer)
+    if not songs:
+        return None
+    image_path = _save_singer_song_list(singer, songs)
+    return {
+        "image_path": image_path,
+        "data": {
+            "singer": singer,
+            "count": len(songs),
+        },
+    }

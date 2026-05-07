@@ -127,6 +127,28 @@ def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
     }
 
 
+def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, original_singer, count
+            FROM song_list
+            WHERE original_singer LIKE ?
+            ORDER BY count DESC, id ASC
+            """,
+            (f"%{singer}%",),
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "original_singer": row[2],
+            "count": row[3],
+        }
+        for row in rows
+    ]
+
+
 def list_songs_without_lyrics(limit: int | None = None) -> list[dict[str, Any]]:
     sql = """
         SELECT id, title, original_singer
