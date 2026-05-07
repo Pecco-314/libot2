@@ -5,3 +5,5 @@ data/
 logs/
 .env.prod
 *.egg-info/
+models/
+build/

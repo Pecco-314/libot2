@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -8,15 +9,16 @@ import time
 import threading
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from src.common.utils import load_env_file, init_logger
+from src.capture.transcribe import SenseVoiceEngine
 from src.db.subscription import list_subscribed_room_ids
 from src.db.event import is_streaming_event, get_latest_live_cmd, get_latest_live_event_id, list_live_events_after
+from src.db.transcript import init_transcript_db, insert_transcript
 from src.spider.api import BILI_HEADERS, build_cookies
 
 
@@ -26,13 +28,13 @@ RETRYABLE_HTTP_ERRORS = re.compile(r"HTTP error (?:401|403|404|410)|Server retur
 BASE_RESTART_BACKOFF = 2.0
 MAX_RESTART_BACKOFF = 60.0
 FAST_FAIL_SECONDS = 8.0
+LIVE_GRACE_SECONDS = 180.0
 
 
 @dataclass(frozen=True)
 class LiveCaptureConfig:
     room_ids: list[int]
     qn: int = 150
-    audio_segment_seconds: int = 300
     frame_interval_seconds: int = 10
     output_root: Path | None = None
     cookies: dict[str, str] | None = None
@@ -100,28 +102,32 @@ class LiveCapture:
         self._processes: dict[int, subprocess.Popen] = {}
         self._last_cmd_by_room: dict[int, str] = {}
         self._last_restart_at: dict[int, float] = {}
-        self._ffmpeg_threads: dict[int, threading.Thread] = {}
+        
+        self._stderr_threads: dict[int, threading.Thread] = {}
+        self._stdout_threads: dict[int, threading.Thread] = {}
+        
         self._force_restart_at: dict[int, float] = {}
         self._restart_backoff: dict[int, float] = {}
         self._next_start_at: dict[int, float] = {}
+        self._live_start_at: dict[int, float] = {}
         self._lock = threading.Lock()
+        
+        # 初始化数据库及 SenseVoice 引擎
+        init_transcript_db()
+        self._asr_engine = SenseVoiceEngine()
 
     def _resolve_output_root(self) -> Path:
         if self._config.output_root:
             return self._config.output_root
         return Path(__file__).resolve().parents[2] / "data" / "live"
 
-    def _build_output_paths(self, room_id: str) -> tuple[Path, Path]:
+    def _build_frame_path(self, room_id: str) -> Path:
         root = self._resolve_output_root()
-        audio_dir = root / "audio" / room_id
         frame_dir = root / "frames" / room_id
-        audio_dir.mkdir(parents=True, exist_ok=True)
         frame_dir.mkdir(parents=True, exist_ok=True)
-        audio_pattern = audio_dir / "audio_%Y%m%d_%H%M%S.m4a"
-        frame_pattern = frame_dir / "frame_%Y%m%d_%H%M%S.jpg"
-        return audio_pattern, frame_pattern
+        return frame_dir / "frame_%Y%m%d_%H%M%S.jpg"
 
-    def _build_ffmpeg_command(self, url: str, audio_pattern: Path, frame_pattern: Path) -> list[str]:
+    def _build_ffmpeg_command(self, url: str, frame_pattern: Path) -> list[str]:
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg is not available in PATH")
 
@@ -136,45 +142,32 @@ class LiveCapture:
             if cookie_value:
                 header_parts.append(f"Cookie: {cookie_value}")
         headers_value = "\r\n".join(header_parts) + "\r\n"
+        
         return [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_delay_max",
-            "2",
-            "-headers",
-            headers_value,
-            "-i",
-            url,
-            "-map",
-            "0:a",
-            "-c:a",
-            "copy",
-            "-f",
-            "segment",
-            "-segment_time",
-            str(self._config.audio_segment_seconds),
-            "-strftime",
-            "1",
-            str(audio_pattern),
-            "-map",
-            "0:v?",
-            "-strict",
-            "-2",
-            "-vf",
-            f"fps={fps_value},crop=452:140:664:554,format=yuv420p",
-            "-pix_fmt",
-            "yuv420p",
-            "-color_range",
-            "2",
-            "-strftime",
-            "1",
-            str(frame_pattern),
+            "-loglevel", "warning",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "2",
+            "-headers", headers_value,
+            "-i", url,
+            
+            # --- 原汁原味的截图逻辑保留 ---
+            "-map", "0:v?",
+            "-strict", "-2",
+            "-vf", f"fps={fps_value},crop=452:140:664:554,format=yuv420p",
+            "-pix_fmt", "yuv420p",
+            "-color_range", "2",
+            "-strftime", "1", str(frame_pattern),
+            
+            # --- 音频管道输出 ---
+            "-map", "0:a",
+            "-c:a", "pcm_s16le",
+            "-f", "s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            "pipe:1"
         ]
 
     def _start_capture(self, room_id: int) -> None:
@@ -186,6 +179,7 @@ class LiveCapture:
             wait_seconds = max(0.0, next_allowed - now)
             logger.warning("skip start for room_id=%s, backoff %.1fs", room_id, wait_seconds)
             return
+            
         url = self._resolver.get_stream_url(str(room_id), qn=self._config.qn)
         if not url and self._config.qn > 150:
             url = self._resolver.get_stream_url(str(room_id), qn=150)
@@ -193,17 +187,19 @@ class LiveCapture:
             logger.warning("failed to resolve live stream url for room_id=%s", room_id)
             self._register_failure(room_id, "resolve url failed")
             return
-        audio_pattern, frame_pattern = self._build_output_paths(str(room_id))
+            
+        frame_pattern = self._build_frame_path(str(room_id))
         try:
-            command = self._build_ffmpeg_command(url, audio_pattern, frame_pattern)
+            command = self._build_ffmpeg_command(url, frame_pattern)
         except RuntimeError as exc:
             logger.error("ffmpeg unavailable for room_id=%s: %s", room_id, exc)
             self._register_failure(room_id, "ffmpeg unavailable")
             return
+            
         self._processes[room_id] = self._spawn_ffmpeg(room_id, command)
         self._last_restart_at[room_id] = time.monotonic()
         self._restart_backoff.setdefault(room_id, BASE_RESTART_BACKOFF)
-        logger.info("started ffmpeg capture for room_id=%s", room_id)
+        logger.info("started ffmpeg capture & stream for room_id=%s", room_id)
 
     def _stop_capture(self, room_id: int) -> None:
         process = self._processes.pop(room_id, None)
@@ -214,8 +210,10 @@ class LiveCapture:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
+            
         self._last_restart_at.pop(room_id, None)
-        self._ffmpeg_threads.pop(room_id, None)
+        self._stderr_threads.pop(room_id, None)
+        self._stdout_threads.pop(room_id, None)
         self._force_restart_at.pop(room_id, None)
         self._next_start_at.pop(room_id, None)
         logger.info("stopped ffmpeg capture for room_id=%s", room_id)
@@ -224,30 +222,79 @@ class LiveCapture:
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            stderr=subprocess.PIPE,
+            bufsize=10**6
         )
-        thread = threading.Thread(
-            target=self._stream_ffmpeg_output,
+        
+        stderr_thread = threading.Thread(
+            target=self._stream_ffmpeg_stderr,
             args=(room_id, process),
             daemon=True,
         )
-        thread.start()
-        self._ffmpeg_threads[room_id] = thread
+        stderr_thread.start()
+        self._stderr_threads[room_id] = stderr_thread
+        
+        stdout_thread = threading.Thread(
+            target=self._stream_ffmpeg_stdout_audio,
+            args=(room_id, process),
+            daemon=True,
+        )
+        stdout_thread.start()
+        self._stdout_threads[room_id] = stdout_thread
+        
         return process
 
-    def _stream_ffmpeg_output(self, room_id: int, process: subprocess.Popen) -> None:
-        if process.stdout is None:
+    def _stream_ffmpeg_stderr(self, room_id: int, process: subprocess.Popen) -> None:
+        if process.stderr is None:
             return
         try:
-            for line in process.stdout:
-                text = line.rstrip()
-                logger.info("ffmpeg[%s] %s", room_id, text)
-                if RETRYABLE_HTTP_ERRORS.search(text):
-                    self._force_restart(room_id, process, reason=text)
+            for line_bytes in process.stderr:
+                try:
+                    text = line_bytes.decode('utf-8', errors='replace').rstrip()
+                    if text:
+                        if "Error" in text or "warning" in text.lower():
+                            pass # 忽略常规的音视频解码警告
+                        if RETRYABLE_HTTP_ERRORS.search(text):
+                            self._force_restart(room_id, process, reason=text)
+                except Exception:
+                    pass
         except Exception as exc:
-            logger.warning("ffmpeg[%s] log stream stopped: %s", room_id, exc)
+            logger.warning("ffmpeg[%s] stderr stream stopped: %s", room_id, exc)
+        finally:
+            try:
+                process.stderr.close()
+            except Exception:
+                pass
+
+    def _stream_ffmpeg_stdout_audio(self, room_id: int, process: subprocess.Popen) -> None:
+        if process.stdout is None:
+            return
+            
+        # 为当前直播间创建一个包含 VAD 状态的处理器
+        room_stream = self._asr_engine.create_room_stream()
+        
+        # 每次读取 0.25 秒的数据: 16000(采样率) * 2(16bit) * 1(声道) = 8000 bytes
+        CHUNK_SIZE = 8000 
+        
+        try:
+            while True:
+                raw_bytes = process.stdout.read(CHUNK_SIZE)
+                if not raw_bytes:
+                    break
+                    
+                # 将这 1 秒音频喂给 VAD，它会自动分段丢给 SenseVoice 并返回文字列表
+                texts = room_stream.process_audio_chunk(raw_bytes)
+                
+                for text in texts:
+                    if text:
+                        logger.info("ASR[%s]: %s", room_id, text)
+                        insert_transcript(
+                            room_id=room_id,
+                            content=text,
+                            timestamp=int(time.time()),
+                        )
+        except Exception as exc:
+            logger.warning("ffmpeg[%s] stdout error: %s", room_id, exc)
         finally:
             try:
                 process.stdout.close()
@@ -268,11 +315,22 @@ class LiveCapture:
             pass
 
     def _register_failure(self, room_id: int, reason: str) -> None:
-        backoff = self._restart_backoff.get(room_id, BASE_RESTART_BACKOFF)
-        backoff = min(backoff * 2, MAX_RESTART_BACKOFF) if backoff > 0 else BASE_RESTART_BACKOFF
+        now = time.monotonic()
+        live_started_at = self._live_start_at.get(room_id)
+        in_grace = live_started_at is not None and (now - live_started_at) < LIVE_GRACE_SECONDS
+
+        if in_grace:
+            backoff = BASE_RESTART_BACKOFF
+        else:
+            backoff = self._restart_backoff.get(room_id, BASE_RESTART_BACKOFF)
+            backoff = min(backoff * 2, MAX_RESTART_BACKOFF) if backoff > 0 else BASE_RESTART_BACKOFF
+
         self._restart_backoff[room_id] = backoff
-        self._next_start_at[room_id] = time.monotonic() + backoff
-        logger.warning("room_id=%s backoff %.1fs due to %s", room_id, backoff, reason)
+        self._next_start_at[room_id] = now + backoff
+        if in_grace:
+            logger.warning("room_id=%s retrying in %.1fs (live grace) due to %s", room_id, backoff, reason)
+        else:
+            logger.warning("room_id=%s backoff %.1fs due to %s", room_id, backoff, reason)
 
     def _restart_if_needed(self) -> None:
         now = time.monotonic()
@@ -295,13 +353,15 @@ class LiveCapture:
         return list_live_events_after(self._config.room_ids, last_id)
 
     def run(self) -> int:
-        logger.info("capture service starting")
+        logger.info("capture service starting (SenseVoice + VAD)")
+        
         last_id = get_latest_live_event_id(self._config.room_ids)
         for room_id in self._config.room_ids:
             latest_cmd = get_latest_live_cmd(room_id)
             if latest_cmd:
                 self._last_cmd_by_room[room_id] = latest_cmd
                 if latest_cmd == "LIVE":
+                    self._live_start_at[room_id] = time.monotonic()
                     self._start_capture(room_id)
         try:
             while True:
@@ -319,9 +379,11 @@ class LiveCapture:
                         if is_streaming_event(row):
                             continue
                         self._last_cmd_by_room[room_id] = "LIVE"
+                        self._live_start_at[room_id] = time.monotonic()
                         self._start_capture(room_id)
                     elif cmd == "PREPARING":
                         self._last_cmd_by_room[room_id] = "PREPARING"
+                        self._live_start_at.pop(room_id, None)
                         self._stop_capture(room_id)
                 self._restart_if_needed()
         except KeyboardInterrupt:
@@ -335,14 +397,8 @@ class LiveCapture:
 
 
 def _parse_args(argv: list[str]) -> LiveCaptureConfig:
-    parser = argparse.ArgumentParser(description="Capture Bilibili live audio and keyframes")
+    parser = argparse.ArgumentParser(description="Capture Bilibili live streaming with real-time ASR (SenseVoice)")
     parser.add_argument("--qn", type=int, default=150, help="quality level, default 150")
-    parser.add_argument(
-        "--audio-segment",
-        type=int,
-        default=15,
-        help="audio segment length in seconds",
-    )
     parser.add_argument(
         "--frame-interval",
         type=int,
@@ -359,7 +415,6 @@ def _parse_args(argv: list[str]) -> LiveCaptureConfig:
     return LiveCaptureConfig(
         room_ids=room_ids,
         qn=args.qn,
-        audio_segment_seconds=args.audio_segment,
         frame_interval_seconds=args.frame_interval,
         output_root=output_root,
         cookies=build_cookies(),
