@@ -41,6 +41,22 @@ def get_latest_live_cmd(room_id: int) -> str | None:
     return str(row[0])
 
 
+def get_latest_live_event_id(room_ids: list[int]) -> int:
+    if not room_ids:
+        return 0
+    placeholders = ",".join("?" for _ in room_ids)
+    sql = (
+        "SELECT MAX(id) FROM event "
+        "WHERE cmd IN ('LIVE', 'PREPARING') "
+        f"AND room_id IN ({placeholders})"
+    )
+    with connect_sqlite() as conn:
+        row = conn.execute(sql, room_ids).fetchone()
+    if row is None or row[0] is None:
+        return 0
+    return int(row[0])
+
+
 def list_live_events_after(room_ids: list[int], last_id: int) -> list[dict[str, object]]:
     if not room_ids:
         return []

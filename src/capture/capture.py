@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import threading
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,12 +16,16 @@ import httpx
 
 from src.common.utils import load_env_file, init_logger
 from src.db.subscription import list_subscribed_room_ids
-from src.db.event import is_streaming_event, get_latest_live_cmd, list_live_events_after
+from src.db.event import is_streaming_event, get_latest_live_cmd, get_latest_live_event_id, list_live_events_after
 from src.spider.api import BILI_HEADERS, build_cookies
 
 
 DEFAULT_USER_AGENT = BILI_HEADERS["User-Agent"]
 logger = init_logger("capture")
+RETRYABLE_HTTP_ERRORS = re.compile(r"HTTP error (?:401|403|404|410)|Server returned (?:401|403|404|410)", re.IGNORECASE)
+BASE_RESTART_BACKOFF = 2.0
+MAX_RESTART_BACKOFF = 60.0
+FAST_FAIL_SECONDS = 8.0
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,10 @@ class LiveCapture:
         self._last_cmd_by_room: dict[int, str] = {}
         self._last_restart_at: dict[int, float] = {}
         self._ffmpeg_threads: dict[int, threading.Thread] = {}
+        self._force_restart_at: dict[int, float] = {}
+        self._restart_backoff: dict[int, float] = {}
+        self._next_start_at: dict[int, float] = {}
+        self._lock = threading.Lock()
 
     def _resolve_output_root(self) -> Path:
         if self._config.output_root:
@@ -171,20 +180,29 @@ class LiveCapture:
     def _start_capture(self, room_id: int) -> None:
         if room_id in self._processes:
             return
+        now = time.monotonic()
+        next_allowed = self._next_start_at.get(room_id, 0.0)
+        if now < next_allowed:
+            wait_seconds = max(0.0, next_allowed - now)
+            logger.warning("skip start for room_id=%s, backoff %.1fs", room_id, wait_seconds)
+            return
         url = self._resolver.get_stream_url(str(room_id), qn=self._config.qn)
         if not url and self._config.qn > 150:
             url = self._resolver.get_stream_url(str(room_id), qn=150)
         if not url:
             logger.warning("failed to resolve live stream url for room_id=%s", room_id)
+            self._register_failure(room_id, "resolve url failed")
             return
         audio_pattern, frame_pattern = self._build_output_paths(str(room_id))
         try:
             command = self._build_ffmpeg_command(url, audio_pattern, frame_pattern)
         except RuntimeError as exc:
             logger.error("ffmpeg unavailable for room_id=%s: %s", room_id, exc)
+            self._register_failure(room_id, "ffmpeg unavailable")
             return
         self._processes[room_id] = self._spawn_ffmpeg(room_id, command)
         self._last_restart_at[room_id] = time.monotonic()
+        self._restart_backoff.setdefault(room_id, BASE_RESTART_BACKOFF)
         logger.info("started ffmpeg capture for room_id=%s", room_id)
 
     def _stop_capture(self, room_id: int) -> None:
@@ -198,6 +216,8 @@ class LiveCapture:
             process.kill()
         self._last_restart_at.pop(room_id, None)
         self._ffmpeg_threads.pop(room_id, None)
+        self._force_restart_at.pop(room_id, None)
+        self._next_start_at.pop(room_id, None)
         logger.info("stopped ffmpeg capture for room_id=%s", room_id)
 
     def _spawn_ffmpeg(self, room_id: int, command: list[str]) -> subprocess.Popen:
@@ -222,7 +242,10 @@ class LiveCapture:
             return
         try:
             for line in process.stdout:
-                logger.info("ffmpeg[%s] %s", room_id, line.rstrip())
+                text = line.rstrip()
+                logger.info("ffmpeg[%s] %s", room_id, text)
+                if RETRYABLE_HTTP_ERRORS.search(text):
+                    self._force_restart(room_id, process, reason=text)
         except Exception as exc:
             logger.warning("ffmpeg[%s] log stream stopped: %s", room_id, exc)
         finally:
@@ -231,16 +254,40 @@ class LiveCapture:
             except Exception:
                 pass
 
+    def _force_restart(self, room_id: int, process: subprocess.Popen, reason: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            last_forced = self._force_restart_at.get(room_id, 0.0)
+            if now - last_forced < 5:
+                return
+            self._force_restart_at[room_id] = now
+        logger.warning("ffmpeg[%s] forcing restart due to error: %s", room_id, reason)
+        try:
+            process.terminate()
+        except Exception:
+            pass
+
+    def _register_failure(self, room_id: int, reason: str) -> None:
+        backoff = self._restart_backoff.get(room_id, BASE_RESTART_BACKOFF)
+        backoff = min(backoff * 2, MAX_RESTART_BACKOFF) if backoff > 0 else BASE_RESTART_BACKOFF
+        self._restart_backoff[room_id] = backoff
+        self._next_start_at[room_id] = time.monotonic() + backoff
+        logger.warning("room_id=%s backoff %.1fs due to %s", room_id, backoff, reason)
+
     def _restart_if_needed(self) -> None:
         now = time.monotonic()
         for room_id, process in list(self._processes.items()):
             if process.poll() is None:
+                last_restart = self._last_restart_at.get(room_id, 0.0)
+                if now - last_restart > 60:
+                    self._restart_backoff[room_id] = BASE_RESTART_BACKOFF
                 continue
             self._processes.pop(room_id, None)
             if self._last_cmd_by_room.get(room_id) != "LIVE":
                 continue
             last_restart = self._last_restart_at.get(room_id, 0.0)
-            if now - last_restart < 3:
+            if now - last_restart < FAST_FAIL_SECONDS:
+                self._register_failure(room_id, "ffmpeg exited quickly")
                 continue
             self._start_capture(room_id)
 
@@ -249,7 +296,7 @@ class LiveCapture:
 
     def run(self) -> int:
         logger.info("capture service starting")
-        last_id = 0
+        last_id = get_latest_live_event_id(self._config.room_ids)
         for room_id in self._config.room_ids:
             latest_cmd = get_latest_live_cmd(room_id)
             if latest_cmd:
