@@ -39,7 +39,6 @@ class LyricsSearchIndex:
         self,
         keyword: str,
         limit: int = 5,
-        min_score: float = 60.0,
     ) -> list[dict[str, Any]]:
         keyword = (keyword or "").strip()
         if not keyword:
@@ -49,8 +48,6 @@ class LyricsSearchIndex:
         for entry in self._entries:
             score = _score(keyword, entry["text"])
             ranked.append((score, entry["row"]))
-            # if score >= min_score:
-            #     ranked.append((score, entry["row"]))
 
         if not ranked:
             return []
@@ -95,8 +92,19 @@ class LyricsMatcher:
         self,
         keyword: str,
         limit: int = 5,
-        min_score: float = 60.0,
     ) -> list[dict[str, Any]]:
         if self._index is None:
             return []
-        return self._index.search(keyword, limit=limit, min_score=min_score)
+        return self._index.search(keyword, limit=limit)
+
+if __name__ == "__main__":
+    matcher = LyricsMatcher()
+    matcher.refresh()
+    while True:
+        query = input("请输入歌词片段（或 'exit' 退出）：").strip()
+        if query.lower() == "exit":
+            break
+        results = matcher.search(query)
+        print(f"找到 {len(results)} 条匹配结果：")
+        for idx, result in enumerate(results, start=1):
+            print(f"{idx}. {result['title']} - {result['original_singer']} (score: {result['score']:.2f})")
