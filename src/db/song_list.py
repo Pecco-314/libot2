@@ -220,5 +220,47 @@ def update_song_cleaned_lyrics(song_id: int, lyrics_cleaned: str) -> None:
             (lyrics_cleaned, song_id),
         )
 
+
+def get_all_songs() -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, title_trans, original_singer, records, 
+                   notes, language, count, clips, tags, lyrics, lyrics_cleaned
+            FROM song_list
+            ORDER BY id ASC
+            """
+        ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "title": row[1],
+            "title_trans": row[2],
+            "original_singer": row[3],
+            "records": row[4],
+            "notes": row[5],
+            "language": row[6],
+            "count": row[7],
+            "clips": row[8],
+            "tags": row[9],
+            "lyrics": row[10],
+            "lyrics_cleaned": row[11],
+        }
+        for row in rows
+    ]
+
+
+def delete_songs_not_in(valid_ids: list[int]) -> None:
+    if not valid_ids:
+        return
+    placeholders = ",".join(["?"] * len(valid_ids))
+    with write_transaction() as conn:
+        execute_write(
+            conn,
+            f"DELETE FROM song_list WHERE id NOT IN ({placeholders})",
+            tuple(valid_ids)
+        )
+
+
 if __name__ == "__main__":
     init_song_list_db()
