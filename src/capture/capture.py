@@ -152,16 +152,12 @@ class LiveCapture:
             "-reconnect_delay_max", "2",
             "-headers", headers_value,
             "-i", url,
-            
-            # --- 原汁原味的截图逻辑保留 ---
             "-map", "0:v?",
             "-strict", "-2",
-            "-vf", f"fps={fps_value},crop=452:140:664:554,format=yuv420p",
+            "-vf", f"fps={fps_value},format=yuv420p",
             "-pix_fmt", "yuv420p",
             "-color_range", "2",
             "-strftime", "1", str(frame_pattern),
-            
-            # --- 音频管道输出 ---
             "-map", "0:a",
             "-c:a", "pcm_s16le",
             "-f", "s16le",
@@ -334,20 +330,31 @@ class LiveCapture:
 
     def _restart_if_needed(self) -> None:
         now = time.monotonic()
+        
+        # 1. 检查并清理已经退出的进程
         for room_id, process in list(self._processes.items()):
             if process.poll() is None:
+                # 进程仍在运行，如果稳定运行超过 60 秒，重置退避时间
                 last_restart = self._last_restart_at.get(room_id, 0.0)
                 if now - last_restart > 60:
                     self._restart_backoff[room_id] = BASE_RESTART_BACKOFF
                 continue
+            
+            # 进程已经退出，移出进程字典
             self._processes.pop(room_id, None)
-            if self._last_cmd_by_room.get(room_id) != "LIVE":
-                continue
-            last_restart = self._last_restart_at.get(room_id, 0.0)
-            if now - last_restart < FAST_FAIL_SECONDS:
-                self._register_failure(room_id, "ffmpeg exited quickly")
-                continue
-            self._start_capture(room_id)
+            
+            # 判断是否为快速失败
+            if self._last_cmd_by_room.get(room_id) == "LIVE":
+                last_restart = self._last_restart_at.get(room_id, 0.0)
+                if now - last_restart < FAST_FAIL_SECONDS:
+                    self._register_failure(room_id, "ffmpeg exited quickly")
+                    
+        # 2. 根据状态拉起缺少的进程
+        for room_id, cmd in self._last_cmd_by_room.items():
+            if cmd == "LIVE" and room_id not in self._processes:
+                # _start_capture 内部有 now < next_allowed 的判断
+                # 如果还在 backoff 冷却期内，它会自动打印 skip start 并 return，不会重复拉起
+                self._start_capture(room_id)
 
     def _fetch_events_since(self, last_id: int) -> list[dict[str, Any]]:
         return list_live_events_after(self._config.room_ids, last_id)
