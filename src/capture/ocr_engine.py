@@ -85,7 +85,8 @@ def _process_frame_task(image_path: str, room_id: int) -> tuple[int, str, list[s
         # ==========================================
         # 1. 跨模态上下文路由：用 ASR 记录预判 OCR 语言
         # ==========================================
-        recent_asr_text = get_recent_transcripts(room_id, frame_timestamp, window_seconds=15)
+        recent_asr_texts = get_recent_transcripts(room_id, frame_timestamp, window_seconds=15)
+        recent_asr_text = " ".join(recent_asr_texts) if recent_asr_texts else ""
         target_lang = _detect_language_by_unicode(recent_asr_text)
         
         # 路由选择引擎，如果没有加载对应模型，则平滑降级到中文
