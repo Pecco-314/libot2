@@ -19,6 +19,8 @@ from src.capture.transcribe import SenseVoiceEngine
 from src.db.subscription import list_subscribed_room_ids
 from src.db.event import is_streaming_event, get_latest_live_cmd, get_latest_live_event_id, list_live_events_after
 from src.db.transcript import init_transcript_db, insert_transcript
+from src.db.ocr_record import init_ocr_db, insert_ocr_record
+from src.capture.ocr_engine import OCREnginePool
 from src.spider.api import BILI_HEADERS, build_cookies
 
 
@@ -112,9 +114,13 @@ class LiveCapture:
         self._live_start_at: dict[int, float] = {}
         self._lock = threading.Lock()
         
-        # 初始化数据库及 SenseVoice 引擎
         init_transcript_db()
         self._asr_engine = SenseVoiceEngine()
+
+        init_ocr_db()
+        self._ocr_pool = OCREnginePool(max_workers=3)
+        self._frame_monitor_threads: dict[int, threading.Thread] = {}
+        self._monitor_running = True
 
     def _resolve_output_root(self) -> Path:
         if self._config.output_root:
@@ -154,7 +160,7 @@ class LiveCapture:
             "-i", url,
             "-map", "0:v?",
             "-strict", "-2",
-            "-vf", f"fps={fps_value},format=yuv420p",
+            "-vf", f"fps={fps_value},crop=660:160:613:554,format=yuv420p",
             "-pix_fmt", "yuv420p",
             "-color_range", "2",
             "-strftime", "1", str(frame_pattern),
@@ -360,7 +366,16 @@ class LiveCapture:
         return list_live_events_after(self._config.room_ids, last_id)
 
     def run(self) -> int:
-        logger.info("capture service starting (SenseVoice + VAD)")
+        logger.info("capture service starting")
+
+        for room_id in self._config.room_ids:
+            monitor_thread = threading.Thread(
+                target=self._monitor_frames,
+                args=(room_id,),
+                daemon=True,
+            )
+            monitor_thread.start()
+            self._frame_monitor_threads[room_id] = monitor_thread
         
         last_id = get_latest_live_event_id(self._config.room_ids)
         for room_id in self._config.room_ids:
@@ -396,11 +411,58 @@ class LiveCapture:
         except KeyboardInterrupt:
             pass
         finally:
+            self._monitor_running = False  # 通知线程停止
+            self._ocr_pool.shutdown()      # 安全关闭进程池
             for room_id in list(self._processes.keys()):
                 self._stop_capture(room_id)
         logger.info("capture service stopped")
 
         return 0
+
+    def _monitor_frames(self, room_id: int) -> None:
+        frame_dir = self._resolve_output_root() / "frames" / str(room_id)
+        
+        # 创建一个专属的子目录用于存放正在处理的图片
+        processing_dir = frame_dir / "processing"
+
+        while getattr(self, "_monitor_running", True):
+            if not frame_dir.exists():
+                time.sleep(2)
+                continue
+
+            # 确保 processing 目录存在
+            processing_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                for file_path in frame_dir.glob("frame_*.jpg"):
+                    if time.time() - file_path.stat().st_mtime > 2.0:
+                        # 移动到 processing 子目录，不改变原有 .jpg 后缀
+                        processing_path = processing_dir / file_path.name
+                        file_path.rename(processing_path)
+
+                        # 派发任务，传入新的路径
+                        future = self._ocr_pool.submit_frame(str(processing_path), room_id)
+                        future.add_done_callback(self._on_ocr_done)
+            except Exception as e:
+                pass 
+
+            time.sleep(2)
+
+    def _on_ocr_done(self, future) -> None:
+        try:
+            room_id, image_path, text = future.result()
+            if text:
+                logger.info("INFO - OCR[%s]: %s", room_id, text)
+                insert_ocr_record(
+                    room_id=room_id,
+                    content=text,
+                    timestamp=int(time.time()),
+                )
+        except Exception as exc:
+            logger.error("OCR callback error: %s", exc)
+        finally:
+            if 'image_path' in locals() and os.path.exists(image_path):
+                _trash(image_path)
 
 
 def _parse_args(argv: list[str]) -> LiveCaptureConfig:
@@ -426,6 +488,14 @@ def _parse_args(argv: list[str]) -> LiveCaptureConfig:
         output_root=output_root,
         cookies=build_cookies(),
     )
+
+
+def _trash(file_path: str) -> None:
+    try:
+        subprocess.run(["trash-put", file_path], check=True)
+        return
+    except Exception as exc:
+        logger.warning("failed to move %s to trash: %s", file_path, exc)
 
 
 def main(argv: list[str] | None = None) -> int:
