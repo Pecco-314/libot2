@@ -41,6 +41,7 @@ class LiveCaptureConfig:
     output_root: Path | None = None
     cookies: dict[str, str] | None = None
     user_agent: str = DEFAULT_USER_AGENT
+    enable_ocr: bool = True
 
 
 class BilibiliLiveStreamResolver:
@@ -117,8 +118,11 @@ class LiveCapture:
         init_transcript_db()
         self._asr_engine = SenseVoiceEngine()
 
-        init_ocr_db()
-        self._ocr_pool = OCREnginePool(max_workers=3)
+        if self._config.enable_ocr:
+            init_ocr_db()
+            self._ocr_pool = OCREnginePool(max_workers=3)
+        else:
+            self._ocr_pool = None
         self._frame_monitor_threads: dict[int, threading.Thread] = {}
         self._monitor_running = True
 
@@ -149,7 +153,7 @@ class LiveCapture:
                 header_parts.append(f"Cookie: {cookie_value}")
         headers_value = "\r\n".join(header_parts) + "\r\n"
         
-        return [
+        cmd = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel", "warning",
@@ -158,19 +162,29 @@ class LiveCapture:
             "-reconnect_delay_max", "2",
             "-headers", headers_value,
             "-i", url,
-            "-map", "0:v?",
-            "-strict", "-2",
-            "-vf", f"fps={fps_value},crop=660:160:613:554,format=yuv420p",
-            "-pix_fmt", "yuv420p",
-            "-color_range", "2",
-            "-strftime", "1", str(frame_pattern),
+        ]
+
+        # 如果开启了 OCR，才去拉取视频流并截帧
+        if self._config.enable_ocr:
+            cmd.extend([
+                "-map", "0:v?",
+                "-strict", "-2",
+                "-vf", f"fps={fps_value},crop=660:160:613:554,format=yuv420p",
+                "-pix_fmt", "yuv420p",
+                "-color_range", "2",
+                "-strftime", "1", str(frame_pattern),
+            ])
+
+        cmd.extend([
             "-map", "0:a",
             "-c:a", "pcm_s16le",
             "-f", "s16le",
             "-ar", "16000",
             "-ac", "1",
             "pipe:1"
-        ]
+        ])
+        
+        return cmd
 
     def _start_capture(self, room_id: int) -> None:
         if room_id in self._processes:
@@ -368,14 +382,15 @@ class LiveCapture:
     def run(self) -> int:
         logger.info("capture service starting")
 
-        for room_id in self._config.room_ids:
-            monitor_thread = threading.Thread(
-                target=self._monitor_frames,
-                args=(room_id,),
-                daemon=True,
-            )
-            monitor_thread.start()
-            self._frame_monitor_threads[room_id] = monitor_thread
+        if self._config.enable_ocr:
+            for room_id in self._config.room_ids:
+                monitor_thread = threading.Thread(
+                    target=self._monitor_frames,
+                    args=(room_id,),
+                    daemon=True,
+                )
+                monitor_thread.start()
+                self._frame_monitor_threads[room_id] = monitor_thread
         
         last_id = get_latest_live_event_id(self._config.room_ids)
         for room_id in self._config.room_ids:
@@ -412,7 +427,8 @@ class LiveCapture:
             pass
         finally:
             self._monitor_running = False  # 通知线程停止
-            self._ocr_pool.shutdown()      # 安全关闭进程池
+            if self._ocr_pool:
+                self._ocr_pool.shutdown()  # 安全关闭进程池
             for room_id in list(self._processes.keys()):
                 self._stop_capture(room_id)
         logger.info("capture service stopped")
@@ -483,12 +499,16 @@ def _parse_args(argv: list[str]) -> LiveCaptureConfig:
     if not room_ids:
         raise ValueError("subscription 表为空，无法获取直播间房间号")
 
+    enable_ocr_env = os.getenv("ENABLE_OCR", "true").lower()
+    enable_ocr = enable_ocr_env == "true" or enable_ocr_env == "1"
+
     return LiveCaptureConfig(
         room_ids=room_ids,
         qn=args.qn,
         frame_interval_seconds=args.frame_interval,
         output_root=output_root,
         cookies=build_cookies(),
+        enable_ocr=enable_ocr,
     )
 
 

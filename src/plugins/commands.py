@@ -77,6 +77,7 @@ async def handle_help(matcher: Matcher):
         "/查歌曲 <歌名> - 查询歌曲的演唱记录\n"
         "/查歌手 <歌手名> - 列出该歌手的全部歌曲与次数\n"
         "/随机歌曲 [最少演唱次数] - 随机抽取一首演唱过的歌曲，可设置最少演唱次数，默认3次\n"
+        "/在唱什么 [日期时间] - 检索现在（或其他时间）正在唱的歌曲"
     )
 
 
@@ -480,7 +481,6 @@ async def handle_random_song(matcher: Matcher, arg=CommandArg()):
 
 
 @now_playing_cmd.handle()
-@subscription_dev_required
 async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
     group_id = get_group_id(event)
     if group_id is None:

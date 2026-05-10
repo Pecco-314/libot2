@@ -89,7 +89,7 @@ class SimpleAudioStream:
                 clean_text = self._clean_sense_voice_tags(text)
                 
                 # 过滤纯标点符号和超短句
-                if clean_text and not re.fullmatch(r'[^\w\s]+', clean_text) and not len(clean_text) <= 4
+                if clean_text and not re.fullmatch(r'[^\w\s]+', clean_text) and not len(clean_text) <= 4:
                     results.append(clean_text)
                 
                 # 清空桶和计时器，准备接收下一句
