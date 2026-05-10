@@ -205,10 +205,10 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
         
         uids_nh = set()
         if _table_exists(conn, "name_history"):
-            cur.execute("SELECT uid FROM name_history WHERE uname = ?", (target_name,))
+            cur.execute("SELECT uid FROM name_history WHERE uname = ? COLLATE NOCASE", (target_name,))
             uids_nh = {r[0] for r in cur.fetchall()}
         
-        cur.execute("SELECT uid FROM event WHERE uname = ?", (target_name,))
+        cur.execute("SELECT uid FROM event WHERE uname = ? COLLATE NOCASE", (target_name,))
         uids_ev = {r[0] for r in cur.fetchall()}
         
         target_uids = list(uids_nh | uids_ev)
