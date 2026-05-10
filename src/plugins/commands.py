@@ -29,6 +29,7 @@ from src.db.subscription import (
 )
 from src.db.liver import upsert_liver
 from src.db.event import list_name_history_by_name_or_uid
+from src.capture.guesser import guess_song
 
 from .utils import (
     get_group_id,
@@ -36,6 +37,7 @@ from .utils import (
     _parse_room_id,
     _format_name,
     group_manager_required,
+    subscription_dev_required,
 )
 
 logger = logging.getLogger("libot.commands")
@@ -60,6 +62,7 @@ club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
+now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
 
 
 @help_cmd.handle()
@@ -473,4 +476,37 @@ async def handle_random_song(matcher: Matcher, arg=CommandArg()):
         MessageSegment.image(file=str(result["image_path"])),
     ])
     
+    await matcher.finish(message)
+
+
+@now_playing_cmd.handle()
+@subscription_dev_required
+async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+    
+    time_str = arg.extract_plain_text().strip()
+    if time_str:
+        try:
+            target_ts = int(datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").timestamp())
+        except ValueError:
+            await matcher.finish("日期时间格式错误，正确格式：YYYY-MM-DD HH:MM:SS")
+    else:
+        target_ts = int(datetime.now().timestamp())
+    try:
+        results = guess_song(room_id, target_ts)
+    except Exception as e:
+        # logger.error(f"歌曲匹配时发生异常: {e}")
+        # await matcher.finish("歌曲匹配时发生异常")
+        raise e
+    if not results:
+        await matcher.finish("未找到匹配的歌曲")
+    message = "当前可能在唱的歌曲：\n"
+    for i, res in enumerate(results, start=1):
+        message += f"{i}. {res['title']} - {res['singer']} ({res['final_score']:.2%})\n"
     await matcher.finish(message)

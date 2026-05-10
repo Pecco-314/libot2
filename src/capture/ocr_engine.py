@@ -6,7 +6,7 @@ from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, wait
 
 from rapidocr_onnxruntime import RapidOCR
-from src.db.transcript import get_recent_transcripts_text
+from src.db.transcript import get_recent_transcripts
 from src.common.utils import ROOT
 
 logger = logging.getLogger("capture")
@@ -85,7 +85,7 @@ def _process_frame_task(image_path: str, room_id: int) -> tuple[int, str, list[s
         # ==========================================
         # 1. 跨模态上下文路由：用 ASR 记录预判 OCR 语言
         # ==========================================
-        recent_asr_text = get_recent_transcripts_text(room_id, frame_timestamp, window_seconds=15)
+        recent_asr_text = get_recent_transcripts(room_id, frame_timestamp, window_seconds=15)
         target_lang = _detect_language_by_unicode(recent_asr_text)
         
         # 路由选择引擎，如果没有加载对应模型，则平滑降级到中文

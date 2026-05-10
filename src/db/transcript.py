@@ -69,15 +69,17 @@ def list_transcripts_after(last_id: int, limit: int = 100) -> list[dict[str, Any
         for row in rows
     ]
 
-def get_recent_transcripts_text(room_id: int, current_ts: int, window_seconds: int = 15) -> str:
-    """获取指定时间窗口内的全部 ASR 文本，用于上下文语言推断"""
+def get_recent_transcripts(room_id: int, end_ts: int, window_seconds: int = 60, limit: int = 15) -> list[str]:
+    """获取指定时间窗口内的 ASR 记录，按时间倒序"""
+    from src.db.sqlite import connect_sqlite
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
-            SELECT content
-            FROM transcript
+            SELECT content FROM transcript
             WHERE room_id = ? AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp DESC
+            LIMIT ?
             """,
-            (room_id, current_ts - window_seconds, current_ts + 2)
+            (room_id, end_ts - window_seconds, end_ts + 2, limit)
         ).fetchall()
-    return " ".join([row[0] for row in rows])
+    return [row[0] for row in rows if row[0]]
