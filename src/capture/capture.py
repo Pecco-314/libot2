@@ -450,13 +450,15 @@ class LiveCapture:
 
     def _on_ocr_done(self, future) -> None:
         try:
-            room_id, image_path, text = future.result()
-            if text:
-                logger.info("INFO - OCR[%s]: %s", room_id, text)
+            # 接收返回的真实帧时间戳
+            room_id, image_path, texts, frame_timestamp = future.result()
+            
+            if texts:
+                logger.info("INFO - OCR[%s]: %s", room_id, texts)
                 insert_ocr_record(
                     room_id=room_id,
-                    content=text,
-                    timestamp=int(time.time()),
+                    content=texts,
+                    timestamp=frame_timestamp, # 使用文件名解析出的时间
                 )
         except Exception as exc:
             logger.error("OCR callback error: %s", exc)

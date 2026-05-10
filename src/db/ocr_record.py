@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
@@ -31,9 +32,12 @@ def init_ocr_db() -> None:
 def insert_ocr_record(
     *,
     room_id: int,
-    content: str,
+    content: list[str],  # 参数类型改为 list[str]
     timestamp: int,
 ) -> bool:
+    # 将列表序列化为 JSON 字符串，保留中文
+    json_content = json.dumps(content, ensure_ascii=False)
+    
     with write_transaction() as conn:
         cursor = execute_write(
             conn,
@@ -41,6 +45,6 @@ def insert_ocr_record(
             INSERT INTO ocr_record (room_id, content, timestamp)
             VALUES (?, ?, ?)
             """,
-            (room_id, content, timestamp),
+            (room_id, json_content, timestamp),
         )
     return cursor.rowcount > 0
