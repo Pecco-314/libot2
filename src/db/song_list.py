@@ -71,22 +71,44 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
             )
 
 def search_songs_by_title(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
+    clean_keyword = keyword.strip()
+    like_query = f"%{clean_keyword}%"
+
     with connect_sqlite() as conn:
-        rows = conn.execute(
-            """
+        # 使用 CASE 语句计算匹配权重
+        # 权重 0: 标题完全匹配
+        # 权重 1: 翻译标题完全匹配
+        # 权重 2: 标题以关键词开头
+        # 权重 3: 其他模糊匹配
+        query = """
             SELECT id, title, title_trans, original_singer, records, count
             FROM song_list
             WHERE title LIKE ? OR title_trans LIKE ?
+            ORDER BY 
+                (CASE 
+                    WHEN title = ? THEN 0
+                    WHEN title_trans = ? THEN 1
+                    WHEN title LIKE ? THEN 2
+                    ELSE 3 
+                END),
+                count DESC -- 权重相同时，按热度/播放次数降序
             LIMIT ?
-            """,
-            (f"%{keyword}%", f"%{keyword}%", limit)
-        ).fetchall()
+        """
+        
+        params = (
+            like_query, like_query,
+            clean_keyword, clean_keyword,
+            f"{clean_keyword}%",
+            limit
+        )
+        
+        rows = conn.execute(query, params).fetchall()
         
     results = []
     for row in rows:
         try:
             records_list = json.loads(row[4]) if row[4] else []
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             records_list = []
             
         results.append({
