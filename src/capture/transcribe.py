@@ -102,4 +102,13 @@ class SimpleAudioStream:
         return results
 
     def _clean_sense_voice_tags(self, text: str) -> str:
-        return re.sub(r'<\|.*?\|>', '', text).strip()
+        # 1. 移除模型输出的情感、语种等特殊标签 (例如 <|ja|>)
+        text = re.sub(r'<\|.*?\|>', '', text).strip()
+        
+        # 2. 清理多余空格：匹配左侧为非 ASCII 字符（如中日韩文字）的空格并删除
+        text = re.sub(r'([^\x00-\x7F])\s+', r'\1', text)
+        
+        # 3. 清理多余空格：匹配右侧为非 ASCII 字符的空格并删除
+        text = re.sub(r'\s+([^\x00-\x7F])', r'\1', text)
+        
+        return text.strip()
