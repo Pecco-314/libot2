@@ -129,3 +129,21 @@ def list_stats(room_id: int, days: int) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def get_stat_start_date(room_id: int) -> datetime:
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            """
+            SELECT datetime(created_at, '+8 hours') as local_time
+            FROM stats
+            WHERE room_id = ?
+            ORDER BY local_time ASC
+            LIMIT 1
+            """,
+            (room_id,),
+        ).fetchone()
+    if row and row[0]:
+        return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+    else:
+        return datetime.now()

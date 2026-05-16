@@ -27,6 +27,7 @@ from src.db.subscription import (
     set_subscription,
     is_subscription_dev_enabled,
 )
+from src.db.stats import get_stat_start_date
 from src.db.liver import upsert_liver
 from src.db.event import list_name_history_by_name_or_uid
 from src.capture.guesser import guess_song
@@ -323,8 +324,8 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
     days = 1
     if query_text.isdigit():
         days = int(query_text)
-        if not (1 <= days <= 7):
-            await matcher.finish("查询天数请限制在 1 到 7 天以内")
+    stat_start_date = get_stat_start_date(room_id)
+    days_since_stat_start = (datetime.now() - stat_start_date).days
 
     uname = await get_name_by_roomid(room_id) or str(room_id)
 
@@ -350,9 +351,12 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
         stat_name = "大航海"
     else:
         stat_name = "粉丝团"
+    text = f"{uname}的{stat_name}数：{now} ({delta:+})"
+    if days > days_since_stat_start:
+        text += f"\n（数据从{stat_start_date.strftime('%Y-%m-%d')}开始）"
 
     message = Message([
-        MessageSegment.text(f"{uname}的{stat_name}数：{now} ({delta:+})"),
+        MessageSegment.text(text),
         MessageSegment.image(file=str(image_path)),
     ])
     
