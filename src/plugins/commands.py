@@ -28,6 +28,7 @@ from src.db.subscription import (
     is_subscription_dev_enabled,
 )
 from src.db.stats import get_stat_start_date
+from src.db.state import get_state, set_state
 from src.db.liver import upsert_liver
 from src.db.event import list_name_history_by_name_or_uid
 from src.capture.guesser import guess_song
@@ -46,6 +47,7 @@ logger = logging.getLogger("libot.commands")
 help_cmd = on_command("帮助", priority=5)
 superchat_cmd = on_command("查SC", aliases={"查sc", "查Sc"}, priority=5, block=True)
 manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
+mention_all_cmd = on_command("艾特全体", priority=5, block=True)
 manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
 manager_add_cmd = on_command("添加管理员", priority=5, block=True)
 manager_remove_cmd = on_command("删除管理员", priority=5, block=True)
@@ -78,7 +80,8 @@ async def handle_help(matcher: Matcher):
         "/查歌曲 <歌名> - 查询歌曲的演唱记录\n"
         "/查歌手 <歌手名> - 列出该歌手的全部歌曲与次数\n"
         "/随机歌曲 [最少演唱次数] - 随机抽取一首演唱过的歌曲，可设置最少演唱次数，默认3次\n"
-        "/在唱什么 [日期时间] - 检索现在（或其他时间）正在唱的歌曲"
+        "/在唱什么 [日期时间] - 检索现在（或其他时间）正在唱的歌曲\n"
+        "/艾特全体 <打开/关闭> - 开播通知是否艾特全体"
     )
 
 
@@ -137,7 +140,25 @@ async def handle_manager_help(matcher: Matcher, event: Event):
         "/开启测试 - 开启本群测试功能\n"
         "/关闭测试 - 关闭本群测试功能\n"
         "/测试状态 - 查看本群测试功能状态\n"
+        "/艾特全体 <打开/关闭> - 开播通知是否艾特全体\n"
     )
+
+
+@mention_all_cmd.handle()
+@group_manager_required
+async def handle_mention_all(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    action = arg.extract_plain_text().strip()
+    if action not in {"打开", "关闭"}:
+        await matcher.finish("用法：/艾特全体 <打开/关闭>")
+
+    key = f"mention_all:{group_id}"
+    enabled = action == "打开"
+    set_state(key, "1" if enabled else "0")
+    await matcher.finish("已开启开播通知艾特全体" if enabled else "已关闭开播通知艾特全体")
 
 
 @manager_list_cmd.handle()

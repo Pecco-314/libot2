@@ -26,7 +26,12 @@ LOCK_FILE = ROOT / "data" / ".bot_offline.lock"
 NAPCAT_PID = ROOT / "data" / ".pids" / "napcat.pid"
 
 
-async def send_to_room(room_id: int, message: str) -> None:
+def _is_mention_all_enabled(group_id: int) -> bool:
+    value = get_state(f"mention_all:{group_id}")
+    return value is not None and value.isdigit() and int(value) == 1
+
+
+async def send_to_room(room_id: int, message: str, *, mention_all: bool = False) -> None:
     group_ids = list_subscribed_group_ids(room_id)
     if not group_ids:
         return
@@ -39,7 +44,11 @@ async def send_to_room(room_id: int, message: str) -> None:
     bot = bots[0]
     for group_id in group_ids:
         try:
-            await bot.call_api("send_group_msg", group_id=group_id, message=message)
+            if mention_all and _is_mention_all_enabled(group_id):
+                msg = Message([MessageSegment.at("all"), MessageSegment.text(message)])
+                await bot.call_api("send_group_msg", group_id=group_id, message=msg)
+            else:
+                await bot.call_api("send_group_msg", group_id=group_id, message=message)
         except Exception as exc:
             logger.warning("发送群消息失败 room_id=%d group_id=%d: %s", room_id, group_id, exc)
 
@@ -151,7 +160,7 @@ async def watch_live_events() -> None:
     message = await _build_message(row)
     if message is None:
         return
-    await send_to_room(room_id, message)
+    await send_to_room(room_id, message, mention_all=(row.get("cmd") == "LIVE"))
 
 
 @scheduler.scheduled_job(
