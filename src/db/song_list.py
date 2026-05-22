@@ -150,25 +150,33 @@ def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
 
 
 def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
+    normalized = singer.strip().casefold()
+    if not normalized:
+        return []
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
             SELECT id, title, original_singer, count
             FROM song_list
-            WHERE original_singer LIKE ?
+            WHERE original_singer IS NOT NULL AND original_singer != ''
             ORDER BY count DESC, id ASC
             """,
-            (f"%{singer}%",),
         ).fetchall()
-    return [
-        {
-            "id": row[0],
-            "title": row[1],
-            "original_singer": row[2],
-            "count": row[3],
-        }
-        for row in rows
-    ]
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        original_singer = row[2] or ""
+        parts = [part.strip().casefold() for part in original_singer.split("/")]
+        if normalized in [part for part in parts if part]:
+            results.append(
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "original_singer": row[2],
+                    "count": row[3],
+                }
+            )
+    return results
 
 
 def list_songs_without_lyrics(limit: int | None = None) -> list[dict[str, Any]]:
