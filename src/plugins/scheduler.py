@@ -147,6 +147,10 @@ async def watch_live_events() -> None:
         return
     row_id = int(row.get("id"))
     room_id = int(row.get("room_id"))
+    timestamp = int(row.get("timestamp") or 0)
+    if timestamp > 0 and datetime.now().timestamp() - timestamp > 300:
+        set_state("last_event_id", str(row_id))
+        return
     if is_streaming_event(row) or is_duplicate_room_change(row):
         set_state("last_event_id", str(row_id))
         return
