@@ -10,7 +10,7 @@ from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
-from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
+from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
 from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
 from src.common.utils import ROOT
@@ -31,7 +31,12 @@ from src.db.subscription import (
 from src.db.stats import get_stat_start_date
 from src.db.state import get_state, set_state
 from src.db.liver import upsert_liver
-from src.db.event import list_name_history_by_name_or_uid
+from src.db.event import (
+    list_name_history_by_name_or_uid,
+    list_online_counts,
+    list_live_sessions_by_date,
+    get_latest_live_session,
+)
 from src.capture.guesser import guess_song
 
 from .utils import (
@@ -62,6 +67,7 @@ name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5,
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
+concurrent_cmd = on_command("查同接", priority=5, block=True)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
@@ -412,6 +418,91 @@ async def handle_guards_trend(matcher: Matcher, event: Event, arg=CommandArg()):
 @club_trend_cmd.handle()
 async def handle_club_trend(matcher: Matcher, event: Event, arg=CommandArg()):
     await _handle_stats_query(matcher, event, arg, "club")
+
+
+def _parse_concurrent_args(text: str) -> tuple[str | None, int | None]:
+    parts = [p for p in text.strip().split() if p]
+    if not parts:
+        return None, None
+    date_str = parts[0]
+    session_index = None
+    if len(parts) > 1 and parts[1].isdigit():
+        session_index = int(parts[1])
+    return date_str, session_index
+
+
+@concurrent_cmd.handle()
+async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    raw = arg.extract_plain_text()
+    date_str, session_index = _parse_concurrent_args(raw)
+
+    target_session = None
+    session_label = "最近直播"
+    session_index_label = None
+    if date_str is None:
+        target_session = get_latest_live_session(room_id)
+        if target_session is None:
+            await matcher.finish("没有找到直播记录")
+    else:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+        sessions = list_live_sessions_by_date(room_id, date_str)
+        if not sessions:
+            await matcher.finish("没有找到对应日期的直播记录")
+        if session_index is None:
+            target_session = sessions[-1]
+            session_index_label = len(sessions)
+        else:
+            if session_index <= 0 or session_index > len(sessions):
+                await matcher.finish("场次超出范围")
+            target_session = sessions[session_index - 1]
+            session_index_label = session_index
+        session_label = f"{date_str}第{session_index_label}场直播"
+
+    start_ts = int(target_session["start_ts"])
+    end_ts = target_session["end_ts"]
+    ongoing = bool(target_session.get("ongoing"))
+    if end_ts is None:
+        end_ts = int(datetime.now().timestamp())
+    end_ts = int(end_ts)
+
+    records = list_online_counts(room_id, start_ts, end_ts)
+    if not records or len(records) < 2:
+        await matcher.finish("同接数据不足")
+
+    times = [datetime.fromtimestamp(r["timestamp"]) for r in records]
+    values = [int(r["count"]) for r in records]
+
+    uname = await get_name_by_roomid(room_id) or str(room_id)
+    if date_str is None:
+        session_label = "当前直播" if ongoing else "最近直播"
+
+    title = f"{uname} 同接趋势（{session_label}）"
+    chart = await render_concurrent_trend(times, values, title)
+    if not chart:
+        await matcher.finish("数据不足，生成失败")
+
+    avg_value = int(round(sum(values) / len(values)))
+    max_value = max(values)
+    message_text = f"{session_label}平均同接：{avg_value}，最高同接：{max_value}"
+    if session_label == "当前直播":
+        message_text = f"{message_text}，当前同接：{values[-1]}"
+
+    message = Message([
+        MessageSegment.text(message_text),
+        MessageSegment.image(file=str(chart["path"])),
+    ])
+    await matcher.finish(message)
 
 
 @song_search_cmd.handle()

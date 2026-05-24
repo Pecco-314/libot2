@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.db.sqlite import connect_sqlite
 from datetime import datetime
+from typing import Any
 
 def _table_exists(conn, table_name: str) -> bool:
     cur = conn.cursor()
@@ -151,6 +152,101 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     start_of_day = int(day.replace(hour=0, minute=0, second=0).timestamp())
     end_of_day = int(day.replace(hour=23, minute=59, second=59).timestamp())
     return list_superchat_events(room_id, start_of_day, end_of_day)
+
+
+def list_online_counts(room_id: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT content, timestamp, id
+            FROM event
+            WHERE room_id = ? AND cmd = 'ONLINE_RANK_COUNT'
+              AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id, start_ts, end_ts),
+        ).fetchall()
+
+    result: list[dict[str, Any]] = []
+    for content, ts, _row_id in rows:
+        value = None
+        if isinstance(content, int):
+            value = content
+        elif isinstance(content, str):
+            if content.isdigit():
+                value = int(content)
+            else:
+                try:
+                    value = int(float(content))
+                except Exception:
+                    value = None
+        if value is None:
+            continue
+        result.append({
+            "count": value,
+            "timestamp": int(ts) if ts is not None else 0,
+        })
+    return result
+
+
+def list_live_sessions(room_id: int) -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT cmd, timestamp, id
+            FROM event
+            WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING')
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id,),
+        ).fetchall()
+
+    sessions: list[dict[str, Any]] = []
+    current_start: int | None = None
+    for cmd, ts, _row_id in rows:
+        if ts is None:
+            continue
+        ts_int = int(ts)
+        if cmd == "LIVE":
+            current_start = ts_int
+        elif cmd == "PREPARING":
+            if current_start is None:
+                continue
+            sessions.append({
+                "start_ts": current_start,
+                "end_ts": ts_int,
+                "ongoing": False,
+            })
+            current_start = None
+
+    if current_start is not None:
+        sessions.append({
+            "start_ts": current_start,
+            "end_ts": None,
+            "ongoing": True,
+        })
+
+    return sessions
+
+
+def list_live_sessions_by_date(room_id: int, date_str: str) -> list[dict[str, Any]]:
+    target = datetime.strptime(date_str, "%Y-%m-%d").date()
+    result: list[dict[str, Any]] = []
+    for session in list_live_sessions(room_id):
+        start_dt = datetime.fromtimestamp(session["start_ts"])
+        if start_dt.date() == target:
+            result.append({
+                **session,
+                "start_dt": start_dt,
+            })
+    return result
+
+
+def get_latest_live_session(room_id: int) -> dict[str, Any] | None:
+    sessions = list_live_sessions(room_id)
+    if not sessions:
+        return None
+    return sessions[-1]
 
 
 def _merge_and_sort_histories(history_rows: list, event_rows: list) -> list[dict[str, object]]:

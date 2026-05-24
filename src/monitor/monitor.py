@@ -300,7 +300,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
                 count = int(count)
             if not isinstance(count, int):
                 count = 0
-            content = str(count)
+            content = count
             timestamp = int(datetime.now().timestamp())
             logger.info("房间 %d 在线观众数=%s", room_id, content)
     except Exception:

@@ -47,6 +47,10 @@ def _filter_invalid_data(times: list[datetime.datetime], values: list[int]) -> t
             clean_v.append(v)
     return clean_t, clean_v
 
+
+async def render_concurrent_trend(times: list[datetime.datetime], values: list[int], title: str) -> dict[str, Any] | None:
+    return _base_render(times, values, "同接", "#6D8EF4", title)
+
 def _base_render(times: list[datetime.datetime], values: list[int], label: str, color: str, title: str) -> dict[str, Any] | None:
     times, values = _filter_invalid_data(times, values)
     if len(times) < 2:
