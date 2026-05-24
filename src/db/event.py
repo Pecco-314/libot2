@@ -154,6 +154,29 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     return list_superchat_events(room_id, start_of_day, end_of_day)
 
 
+def list_session_events(room_id: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT uid, uname, content
+            FROM event
+            WHERE room_id = ? AND timestamp >= ? AND timestamp <= ?
+              AND uid IS NOT NULL
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id, start_ts, end_ts),
+        ).fetchall()
+
+    return [
+        {
+            "uid": int(row[0]) if row[0] is not None else 0,
+            "uname": str(row[1]) if row[1] is not None else "",
+            "content": row[2],
+        }
+        for row in rows
+    ]
+
+
 def list_online_counts(room_id: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
