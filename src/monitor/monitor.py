@@ -31,6 +31,7 @@ TRACKED_CMDS = {
     "LIVE",
     "PREPARING",
     "ROOM_CHANGE",
+    "ONLINE_RANK_COUNT",
 }
 
 
@@ -292,6 +293,16 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             title = data.get("title")
             timestamp = int(datetime.now().timestamp())
             logger.info("房间 %d 房间标题变更，title=%s", room_id, title)
+        elif cmd == "ONLINE_RANK_COUNT":
+            data = command.get("data") if isinstance(command.get("data"), dict) else {}
+            count = data.get("count")
+            if isinstance(count, str) and count.isdigit():
+                count = int(count)
+            if not isinstance(count, int):
+                count = 0
+            content = str(count)
+            timestamp = int(datetime.now().timestamp())
+            logger.info("房间 %d 在线观众数=%s", room_id, content)
     except Exception:
         pass
 
