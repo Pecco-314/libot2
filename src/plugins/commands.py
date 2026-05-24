@@ -9,6 +9,7 @@ from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
 from src.render.superchat import get_daily_superchat_images
+from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
 from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
@@ -70,19 +71,13 @@ now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=
 
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
-    await matcher.finish(
-        "/帮助 - 显示帮助信息\n"
-        "/查SC [日期] - 查看醒目留言列表，默认当天\n"
-        "/曾用名 <UID/用户名> - 查询用户的曾用名\n"
-        "/查粉丝 [天数] - 查询订阅主播粉丝数趋势，默认1天\n"
-        "/查舰长 [天数] - 查询订阅主播大航海数趋势，默认1天\n"
-        "/查粉丝团 [天数] - 查询订阅主播粉丝团人数趋势，默认1天\n"
-        "/查歌曲 <歌名> - 查询歌曲的演唱记录\n"
-        "/查歌手 <歌手名> - 列出该歌手的全部歌曲与次数\n"
-        "/随机歌曲 [最少演唱次数] - 随机抽取一首演唱过的歌曲，可设置最少演唱次数，默认3次\n"
-        "/在唱什么 [日期时间] - 检索现在（或其他时间）正在唱的歌曲\n"
-        "/艾特全体 <打开/关闭> - 开播通知是否艾特全体"
-    )
+    try:
+        result = await render_help_image()
+    except Exception as exc:
+        logger.error("渲染帮助图片失败: %s", exc)
+        await matcher.finish("图片渲染失败")
+
+    await matcher.finish(MessageSegment.image(file=str(result["image_path"])))
 
 
 @superchat_cmd.handle()
@@ -128,20 +123,17 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
 @manager_help_cmd.handle()
 @group_manager_required
 async def handle_manager_help(matcher: Matcher, event: Event):
-    await matcher.finish(
-        "/管理员帮助 - 显示管理员帮助信息\n"
-        "/查看管理员 - 查看当前群管理员\n"
-        "/添加管理员 <QQ号> - 添加群管理员\n"
-        "/删除管理员 <QQ号> - 删除群管理员\n"
-        "/查看订阅 - 查看当前群订阅\n"
-        "/设置订阅 <房间号> - 设置当前群订阅\n"
-        "/删除订阅 - 删除当前群订阅\n"
-        "/设置昵称 - 修改当前订阅主播的昵称\n"
-        "/开启测试 - 开启本群测试功能\n"
-        "/关闭测试 - 关闭本群测试功能\n"
-        "/测试状态 - 查看本群测试功能状态\n"
-        "/艾特全体 <打开/关闭> - 开播通知是否艾特全体\n"
-    )
+    try:
+        result = await render_admin_help_image()
+    except Exception as exc:
+        logger.error("渲染管理员帮助图片失败: %s", exc)
+        await matcher.finish("图片渲染失败")
+
+    message = Message([
+        MessageSegment.text("管理员帮助："),
+        MessageSegment.image(file=str(result["image_path"])),
+    ])
+    await matcher.finish(message)
 
 
 @mention_all_cmd.handle()

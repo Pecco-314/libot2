@@ -1,0 +1,187 @@
+import hashlib
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from nonebot_plugin_imageutils import BuildImage, Text2Image
+
+from src.common.utils import ROOT
+
+
+def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
+    """基于英文单词和汉字的智能换行"""
+    tokens = re.findall(r"[a-zA-Z0-9]+|\s+|[^\x00-\xff]|.", text)
+    lines = []
+    curr_line = ""
+    for token in tokens:
+        test_line = curr_line + token
+        if Text2Image.from_text(test_line, font_size, weight=weight).width > max_width:
+            if curr_line:
+                lines.append(curr_line.rstrip())
+                curr_line = "" if token.isspace() else token
+            else:
+                lines.append(token)
+                curr_line = ""
+        else:
+            curr_line = test_line
+    if curr_line:
+        lines.append(curr_line.rstrip())
+    return "\n".join(lines)
+
+
+def draw_help_card(sections: list[dict[str, Any]], subtitle: str = "") -> BuildImage:
+    width = 760
+    padding = 40
+    content_width = width - padding * 2
+    bg_color = (255, 255, 255, 255)
+
+    title_t2i = Text2Image.from_text("LiBot 指令帮助", 42, weight="bold", fill=(34, 34, 34))
+    subtitle_t2i = Text2Image.from_text(subtitle, 22, fill=(120, 120, 120)) if subtitle else None
+    row_items: list[dict[str, Any]] = []
+
+    cmd_col_width = 288
+    gap = 16
+    desc_max_width = content_width - cmd_col_width - gap
+
+    for section in sections:
+        section_title = Text2Image.from_text(section["title"], 28, weight="bold", fill=(34, 34, 34))
+
+        rows = []
+        for cmd, desc in section["items"]:
+            cmd_text = _smart_wrap(cmd, 24, cmd_col_width, weight="bold")
+            cmd_img = Text2Image.from_text(cmd_text, 24, weight="bold", fill=(0, 102, 204))
+
+            desc_text = _smart_wrap(desc, 22, desc_max_width)
+            desc_img = Text2Image.from_text(desc_text, 22, fill=(80, 80, 80))
+
+            row_height = max(cmd_img.height, desc_img.height)
+            rows.append({
+                "cmd": cmd_img,
+                "desc": desc_img,
+                "height": row_height,
+            })
+        row_items.append({
+            "title": section_title,
+            "rows": rows,
+        })
+
+    content_h = (
+        padding +
+        title_t2i.height + 10 +
+        (subtitle_t2i.height + 24 if subtitle_t2i else 0) +
+        sum(
+            item["title"].height + 12 + sum(r["height"] + 12 for r in item["rows"]) + 16
+            for item in row_items
+        ) +
+        padding
+    )
+
+    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
+
+    curr_y = padding
+    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
+    curr_y += title_t2i.height + 10
+    if subtitle_t2i:
+        subtitle_t2i.draw_on_image(canvas.image, (padding, curr_y))
+        curr_y += subtitle_t2i.height + 24
+
+    for item in row_items:
+        item["title"].draw_on_image(canvas.image, (padding, curr_y))
+        curr_y += item["title"].height + 12
+
+        for row in item["rows"]:
+            row["cmd"].draw_on_image(canvas.image, (padding, curr_y))
+            row["desc"].draw_on_image(canvas.image, (padding + cmd_col_width + gap, curr_y))
+            curr_y += row["height"] + 12
+        curr_y += 16
+
+    return canvas
+
+
+def _get_cache_path(prefix: str, sections: list[dict[str, Any]], subtitle: str) -> tuple[str, str]:
+    payload = json.dumps({"subtitle": subtitle, "sections": sections}, ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    file_name = f"{prefix}_{digest}.png"
+    save_dir = ROOT / "data" / "images" / "help"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    return str(save_dir / file_name), digest
+
+
+def save_help_card() -> dict[str, Any]:
+    sections = [
+        {
+            "title": "用户相关",
+            "items": [
+                ("/曾用名 <UID/用户名>", "查询用户的曾用名"),
+            ],
+        },
+        {
+            "title": "直播相关",
+            "items": [
+                ("/查SC [日期]", "查看醒目留言列表，默认当天"),
+            ],
+        },
+        {
+            "title": "数据趋势",
+            "items": [
+                ("/查粉丝 [天数]", "查询订阅主播粉丝数趋势，默认1天"),
+                ("/查舰长 [天数]", "查询订阅主播大航海数趋势，默认1天"),
+                ("/查粉丝团 [天数]", "查询订阅主播粉丝团人数趋势，默认1天"),
+            ],
+        },
+        {
+            "title": "歌曲相关",
+            "items": [
+                ("/查歌曲 <歌名>", "查询歌曲的演唱记录"),
+                ("/查歌手 <歌手名>", "列出该歌手的全部歌曲与次数"),
+                ("/随机歌曲 [最少演唱次数]", "随机抽取一首演唱过的歌曲，默认3次"),
+                ("/在唱什么 [日期时间]", "检索现在（或其他时间）正在唱的歌曲"),
+            ],
+        },
+    ]
+
+    save_path, _ = _get_cache_path("help", sections, "")
+    if not Path(save_path).exists():
+        canvas = draw_help_card(sections)
+        canvas.image.save(save_path)
+
+    return {"image_path": str(save_path)}
+
+
+def save_admin_help_card() -> dict[str, Any]:
+    sections = [
+        {
+            "title": "管理员命令",
+            "items": [
+                ("/管理员帮助", "显示管理员帮助信息"),
+                ("/查看管理员", "查看当前群管理员"),
+                ("/添加管理员 <QQ号>", "添加群管理员"),
+                ("/删除管理员 <QQ号>", "删除群管理员"),
+                ("/查看订阅", "查看当前群订阅"),
+                ("/设置订阅 <房间号>", "设置当前群订阅"),
+                ("/删除订阅", "删除当前群订阅"),
+                ("/设置昵称", "修改当前订阅主播的昵称"),
+                ("/开启测试", "开启本群测试功能"),
+                ("/关闭测试", "关闭本群测试功能"),
+                ("/测试状态", "查看本群测试功能状态"),
+                ("/艾特全体 <打开/关闭>", "开播通知是否艾特全体"),
+            ],
+        },
+    ]
+
+    subtitle = "仅管理员可用"
+    save_path, _ = _get_cache_path("admin_help", sections, subtitle)
+    if not Path(save_path).exists():
+        canvas = draw_help_card(sections, subtitle)
+        canvas.image.save(save_path)
+
+    return {"image_path": str(save_path)}
+
+
+async def render_help_image() -> dict[str, Any]:
+    return save_help_card()
+
+
+async def render_admin_help_image() -> dict[str, Any]:
+    return save_admin_help_card()
