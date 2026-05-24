@@ -48,7 +48,9 @@ logger = logging.getLogger("libot.commands")
 help_cmd = on_command("帮助", priority=5)
 superchat_cmd = on_command("查SC", aliases={"查sc", "查Sc"}, priority=5, block=True)
 manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
-mention_all_cmd = on_command("艾特全体", priority=5, block=True)
+feature_enable_cmd = on_command("打开功能", priority=5, block=True)
+feature_disable_cmd = on_command("关闭功能", priority=5, block=True)
+feature_status_cmd = on_command("功能状态", priority=5, block=True)
 manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
 manager_add_cmd = on_command("添加管理员", priority=5, block=True)
 manager_remove_cmd = on_command("删除管理员", priority=5, block=True)
@@ -56,9 +58,6 @@ sub_show_cmd = on_command("查看订阅", priority=5, block=True)
 sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, block=True)
 sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
 nickname_set_cmd = on_command("设置昵称", priority=5, block=True)
-test_enable_cmd = on_command("开启测试", priority=5, block=True)
-test_disable_cmd = on_command("关闭测试", priority=5, block=True)
-test_status_cmd = on_command("测试状态", priority=5, block=True)
 name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5, block=True)
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
@@ -136,21 +135,80 @@ async def handle_manager_help(matcher: Matcher, event: Event):
     await matcher.finish(message)
 
 
-@mention_all_cmd.handle()
-@group_manager_required
-async def handle_mention_all(matcher: Matcher, event: Event, arg=CommandArg()):
+def _parse_feature_name(text: str) -> str | None:
+    normalized = text.strip()
+    if normalized in {"测试", "功能测试"}:
+        return "测试"
+    if normalized in {"艾特全体", "@全体"}:
+        return "艾特全体"
+    return None
+
+
+async def _handle_feature_toggle(matcher: Matcher, event: Event, feature: str, enabled: bool):
     group_id = get_group_id(event)
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
 
-    action = arg.extract_plain_text().strip()
-    if action not in {"打开", "关闭"}:
-        await matcher.finish("用法：/艾特全体 <打开/关闭>")
+    if feature == "测试":
+        ok = set_subscription_dev(group_id, enabled)
+        if not ok:
+            await matcher.finish("请先设置订阅，再开启测试功能" if enabled else "请先设置订阅，再关闭测试功能")
+        await matcher.finish("已开启测试功能" if enabled else "已关闭测试功能")
+        return
 
-    key = f"mention_all:{group_id}"
-    enabled = action == "打开"
-    set_state(key, "1" if enabled else "0")
-    await matcher.finish("已开启开播通知艾特全体" if enabled else "已关闭开播通知艾特全体")
+    if feature == "艾特全体":
+        key = f"mention_all:{group_id}"
+        set_state(key, "1" if enabled else "0")
+        await matcher.finish("已开启开播通知艾特全体" if enabled else "已关闭开播通知艾特全体")
+        return
+
+    await matcher.finish("用法：/打开功能 <功能>")
+
+
+async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    if feature == "测试":
+        enabled = is_subscription_dev_enabled(group_id)
+        await matcher.finish("本群测试功能：已开启" if enabled else "本群测试功能：已关闭")
+        return
+
+    if feature == "艾特全体":
+        key = f"mention_all:{group_id}"
+        enabled = get_state(key) == "1"
+        await matcher.finish("开播通知艾特全体：已开启" if enabled else "开播通知艾特全体：已关闭")
+        return
+
+    await matcher.finish("用法：/功能状态 <功能>")
+
+
+@feature_enable_cmd.handle()
+@group_manager_required
+async def handle_feature_enable(matcher: Matcher, event: Event, arg=CommandArg()):
+    feature = _parse_feature_name(arg.extract_plain_text())
+    if not feature:
+        await matcher.finish("用法：/打开功能 <功能>")
+    await _handle_feature_toggle(matcher, event, feature, True)
+
+
+@feature_disable_cmd.handle()
+@group_manager_required
+async def handle_feature_disable(matcher: Matcher, event: Event, arg=CommandArg()):
+    feature = _parse_feature_name(arg.extract_plain_text())
+    if not feature:
+        await matcher.finish("用法：/关闭功能 <功能>")
+    await _handle_feature_toggle(matcher, event, feature, False)
+
+
+@feature_status_cmd.handle()
+@group_manager_required
+async def handle_feature_status(matcher: Matcher, event: Event, arg=CommandArg()):
+    feature = _parse_feature_name(arg.extract_plain_text())
+    if not feature:
+        await matcher.finish("用法：/功能状态 <功能>")
+    await _handle_feature_status(matcher, event, feature)
 
 
 @manager_list_cmd.handle()
@@ -251,41 +309,6 @@ async def handle_set_nickname(matcher: Matcher, event: Event, arg=CommandArg()):
     await matcher.finish(f"昵称已设置：{nickname}")
 
 
-@test_enable_cmd.handle()
-@group_manager_required
-async def handle_test_enable(matcher: Matcher, event: Event):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    if not set_subscription_dev(group_id, True):
-        await matcher.finish("请先设置订阅，再开启测试功能")
-        return
-    await matcher.finish("已开启测试功能")
-
-
-@test_disable_cmd.handle()
-@group_manager_required
-async def handle_test_disable(matcher: Matcher, event: Event):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    if not set_subscription_dev(group_id, False):
-        await matcher.finish("请先设置订阅，再关闭测试功能")
-        return
-    await matcher.finish("已关闭测试功能")
-
-
-@test_status_cmd.handle()
-@group_manager_required
-async def handle_test_status(matcher: Matcher, event: Event):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    enabled = is_subscription_dev_enabled(group_id)
-    await matcher.finish("本群测试功能：已开启" if enabled else "本群测试功能：已关闭")
 
 
 @sub_remove_cmd.handle()
