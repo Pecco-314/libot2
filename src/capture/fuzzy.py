@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from rapidfuzz import fuzz
+
+
+def _has_hangul(text: str) -> bool:
+    return bool(text and re.search(r"[\uAC00-\uD7A3]", text))
+
+
+def _normalize_korean_spacing(text: str) -> str:
+    return re.sub(r"\s+", "", text) if text else ""
 
 from src.db.sqlite import connect_sqlite
 
@@ -11,6 +20,9 @@ from src.db.sqlite import connect_sqlite
 def _score(keyword: str, text: str) -> float:
     if not keyword or not text:
         return 0.0
+    if _has_hangul(keyword) or _has_hangul(text):
+        keyword = _normalize_korean_spacing(keyword)
+        text = _normalize_korean_spacing(text)
     if keyword in text:
         return 100.0
     return float(fuzz.partial_ratio(keyword, text))
