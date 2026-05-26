@@ -13,7 +13,14 @@ from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
-from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
+from src.spider.wrapper import (
+    get_name_by_roomid,
+    get_name_by_uid,
+    get_uid_by_roomid,
+    get_fans_num,
+    get_guard_num,
+    get_fan_club_num,
+)
 from src.common.utils import ROOT
 from src.db.manager import (
     add_manager,
@@ -374,6 +381,18 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
 
     uname = await get_name_by_roomid(room_id) or str(room_id)
 
+    current_value: int | None = None
+    try:
+        uid = await get_uid_by_roomid(room_id)
+        if stat_type == "fans":
+            current_value = await get_fans_num(uid)
+        elif stat_type == "guards":
+            current_value = await get_guard_num(room_id, uid)
+        else:
+            current_value = await get_fan_club_num(uid)
+    except Exception as exc:
+        logger.warning("查询实时%s数据失败: %s", stat_type, exc)
+
     # 路由到对应的渲染逻辑
     if stat_type == "fans":
         data = await render_fans_trend(room_id, days, uname)
@@ -396,7 +415,8 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
         stat_name = "大航海"
     else:
         stat_name = "粉丝团"
-    text = f"{uname}的{stat_name}数：{now} ({delta:+})"
+    display_value = current_value if current_value is not None else now
+    text = f"{uname}的{stat_name}数：{display_value} ({delta:+})"
     if days > days_since_stat_start:
         text += f"\n（数据从{stat_start_date.strftime('%Y-%m-%d')}开始）"
 
@@ -508,7 +528,7 @@ async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
     max_value = max(values)
     message_text = f"{session_label}平均同接：{avg_value}，最高同接：{max_value}"
     if session_label == "当前直播":
-        message_text = f"{message_text}，（当前）同接：{values[-1]}"
+        message_text = f"{message_text}，当前同接：{values[-1]}"
 
     message = Message([
         MessageSegment.text(message_text),
