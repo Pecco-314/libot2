@@ -245,12 +245,19 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
     total_coin: int | None = None
     title: str | None = None
 
+    def _sanitize_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value)
+        text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        return " ".join(text.split())
+
     try:
         if cmd == "DANMU_MSG":
             msg = web_models.DanmakuMessage.from_command(command["info"])
             uid = int(msg.uid)
             uname = msg.uname
-            content = msg.msg
+            content = _sanitize_text(msg.msg)
             timestamp = msg.timestamp // 1000
             logger.info("房间 %d 收到弹幕，uid=%d uname=%s content=%s", room_id, uid, uname, content)
         elif cmd == "SEND_GIFT":
@@ -276,7 +283,7 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             msg = web_models.SuperChatMessage.from_command(command["data"])
             uid = int(msg.uid)
             uname = msg.uname
-            content = msg.message
+            content = _sanitize_text(msg.message)
             total_coin = int(msg.price)
             gift_name = msg.gift_name
             gift_num = 1
