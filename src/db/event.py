@@ -154,6 +154,51 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     return list_superchat_events(room_id, start_of_day, end_of_day)
 
 
+def get_latest_uid_by_uname(room_id: int, uname: str) -> int | None:
+    if not uname:
+        return None
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            """
+            SELECT uid
+            FROM event
+            WHERE room_id = ? AND uname = ? COLLATE NOCASE AND uid IS NOT NULL
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (room_id, uname),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def list_events_by_uid(room_id: int, uid: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp
+            FROM event
+            WHERE room_id = ? AND uid = ? AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id, uid, start_ts, end_ts),
+        ).fetchall()
+
+    return [
+        {
+            "cmd": str(row[0]),
+            "content": row[1],
+            "gift_name": row[2],
+            "gift_num": row[3],
+            "total_coin": row[4],
+            "title": row[5],
+            "timestamp": int(row[6]) if row[6] is not None else 0,
+        }
+        for row in rows
+    ]
+
+
 def list_session_events(room_id: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(

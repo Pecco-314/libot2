@@ -13,6 +13,7 @@ from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
+from src.render.danmaku_logs import render_event_pages
 from src.spider.wrapper import (
     get_name_by_roomid,
     get_name_by_uid,
@@ -45,6 +46,8 @@ from src.db.event import (
     list_live_sessions_by_date,
     get_latest_live_session,
     list_session_events,
+    get_latest_uid_by_uname,
+    list_events_by_uid,
 )
 from src.capture.guesser import guess_song
 
@@ -78,6 +81,7 @@ guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5,
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
 concurrent_cmd = on_command("查同接", priority=5, block=True)
 danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
+events_cmd = on_command("查弹幕", priority=5, block=True)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
@@ -578,6 +582,79 @@ async def handle_danmaku_rank(matcher: Matcher, event: Event, arg=CommandArg()):
         MessageSegment.image(file=str(result["image_path"]))
     ])
     await matcher.finish(message)
+
+
+def _parse_events_args(text: str) -> tuple[str | None, str | None]:
+    parts = [p for p in text.strip().split() if p]
+    if not parts:
+        return None, None
+    target = parts[0]
+    date_str = parts[1] if len(parts) > 1 else None
+    return target, date_str
+
+
+@events_cmd.handle()
+async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    raw = arg.extract_plain_text()
+    target, date_str = _parse_events_args(raw)
+    if not target:
+        await matcher.finish("用法：/查弹幕 <UID/用户名> [日期]")
+
+    if date_str:
+        try:
+            day = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+    else:
+        day = datetime.now()
+
+    start_ts = int(day.replace(hour=0, minute=0, second=0).timestamp())
+    end_ts = int(day.replace(hour=23, minute=59, second=59).timestamp())
+
+    display_name = target
+    if target.isdigit():
+        uid = int(target)
+        try:
+            display_name = await get_name_by_uid(uid)
+        except Exception:
+            display_name = target
+    else:
+        uid = get_latest_uid_by_uname(room_id, target)
+        if uid is None:
+            await matcher.finish("未找到对应用户")
+
+    events = list_events_by_uid(room_id, uid, start_ts, end_ts)
+    if not events:
+        await matcher.finish("暂无记录")
+
+    title = f"{display_name} {day.strftime('%Y-%m-%d')} 记录"
+    pages = render_event_pages(title, events, page_size=100)
+    if not pages:
+        await matcher.finish("暂无记录")
+
+    nodes = []
+    for img in pages:
+        nodes.append({
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(img)),
+            },
+        })
+
+    try:
+        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+    except Exception as exc:
+        logger.error("发送弹幕记录失败: %s", exc)
 
 
 @song_search_cmd.handle()
