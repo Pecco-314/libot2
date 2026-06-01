@@ -161,6 +161,8 @@ def _parse_feature_name(text: str) -> str | None:
         return "测试"
     if normalized in {"艾特全体", "@全体"}:
         return "艾特全体"
+    if normalized in {"退群通知", "退群提醒"}:
+        return "退群通知"
     return None
 
 
@@ -182,6 +184,12 @@ async def _handle_feature_toggle(matcher: Matcher, event: Event, feature: str, e
         await matcher.finish("已开启开播通知艾特全体" if enabled else "已关闭开播通知艾特全体")
         return
 
+    if feature == "退群通知":
+        key = f"leave_notice:{group_id}"
+        set_state(key, "1" if enabled else "0")
+        await matcher.finish("已开启退群通知" if enabled else "已关闭退群通知")
+        return
+
     await matcher.finish("用法：/打开功能 <功能>")
 
 
@@ -199,6 +207,12 @@ async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
         key = f"mention_all:{group_id}"
         enabled = get_state(key) == "1"
         await matcher.finish("开播通知艾特全体：已开启" if enabled else "开播通知艾特全体：已关闭")
+        return
+
+    if feature == "退群通知":
+        key = f"leave_notice:{group_id}"
+        enabled = get_state(key) != "0"
+        await matcher.finish("退群通知：已开启" if enabled else "退群通知：已关闭")
         return
 
     await matcher.finish("用法：/功能状态 <功能>")
