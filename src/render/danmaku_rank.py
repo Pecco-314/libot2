@@ -11,7 +11,7 @@ def _count_special_tags(text: str) -> tuple[int, int, int]:
         return 0, 0, 0
     dc = 1 if "打call" in text else 0
     dc += 1 if text.count("三理") >= 3 else 0
-    dc += 1 if text.count("理理") >= 3 else 0
+    dc += 1 if text.count("理理") >= 3 and "晚安" not in text else 0
     gn = 1 if "晚安" in text else 0
     ky = 1 if text == "看你" else 0
     return dc, gn, ky
