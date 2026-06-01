@@ -108,8 +108,15 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
                     continue
 
                 if char not in char_width_cache:
-                    char_width_cache[char] = Text2Image.from_text(char, font_size).width
+                    char_image = Text2Image.from_text(char, font_size)
+                    if char_image.width <= 0 or char_image.height <= 0:
+                        char_width_cache[char] = 0
+                    else:
+                        char_width_cache[char] = char_image.width
                 char_w = char_width_cache[char]
+
+                if char_w <= 0:
+                    continue
                 
                 if curr_x + char_w > width and curr_line:
                     lines.append(curr_line)
