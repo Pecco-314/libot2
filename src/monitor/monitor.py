@@ -340,6 +340,10 @@ class RawEventHandler(handlers.HandlerInterface):
                 client.room_id,
                 popularity if popularity is not None else "unknown",
             )
+            try:
+                Path("data/.monitor_heartbeat").touch()
+            except Exception:
+                pass
             return
 
         row = _extract_row(client.room_id, command)

@@ -271,3 +271,44 @@ async def check_bot_status() -> None:
                 
     except Exception as exc:
         logger.error("failed to check bot status: %s", exc)
+
+
+@scheduler.scheduled_job(
+    "cron",
+    minute="*",
+    id="libot_monitor_status_watcher",
+    name="libot_monitor_status_watcher",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=30,
+)
+async def check_monitor_status() -> None:
+    try:
+        hb_file = ROOT / "data" / ".monitor_heartbeat"
+        lock_file = ROOT / "data" / ".monitor_offline.lock"
+        is_offline = False
+
+        if hb_file.exists():
+            silence_time = time.time() - hb_file.stat().st_mtime
+            if silence_time > 60:
+                is_offline = True
+
+        if is_offline:
+            if not lock_file.exists():
+                logger.warning("Monitor is offline, triggering email notification")
+                send_notification_email(
+                    subject="[警告] 监控掉线通知",
+                    content="检测到 Monitor 超过 1 分钟未收到心跳包，可能已掉线。"
+                )
+                lock_file.parent.mkdir(parents=True, exist_ok=True)
+                lock_file.touch()
+            else:
+                logger.debug("Monitor is still offline, skipped sending email due to lock file")
+        else:
+            if hb_file.exists():
+                logger.debug("Monitor is online")
+                if lock_file.exists():
+                    lock_file.unlink(missing_ok=True)
+                    logger.info("Monitor connection recovered, removing lock file")
+    except Exception as exc:
+        logger.error("failed to check monitor status: %s", exc)
