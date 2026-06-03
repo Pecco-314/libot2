@@ -96,14 +96,20 @@ async def _render_activity_image(activity: dict[str, Any]) -> Path | None:
     if image_path.exists():
         return image_path
 
-    try:
-        image = await render_bilibili_card(
-            str(activity.get("card") or ""),
-            int(activity.get("dy_type") or 0),
-            int(activity.get("orig_type") or 0),
-            int(activity.get("timestamp") or 0),
-            activity.get("emoji_details") if isinstance(activity.get("emoji_details"), list) else [],
+    # 安全检查：如果是从数据库拉出来的遗留版历史记录（没有 item 字段）
+    # 我们直接跳过渲染，因为新版渲染器不兼容老格式的数据（且旧图片通常已经保存在本地了）
+    if not activity.get("item"):
+        logger.warning(
+            "跳过渲染旧版结构动态 activity_id=%s room_id=%s", 
+            activity.get("activity_id"),
+            activity.get("room_id")
         )
+        return None
+
+    try:
+        # 现在的画图函数只需要传入一整个解析好的 item 字典
+        image = await render_bilibili_card(activity["item"])
+        
         await asyncio.to_thread(image.image.save, str(image_path))
         return image_path
     except Exception as exc:
@@ -188,12 +194,12 @@ async def watch_activities() -> None:
         timestamp = int(row.get("timestamp") or 0)
         upload_time = datetime.fromtimestamp(timestamp)
         activity_id = row.get("id")
-        if datetime.now() - upload_time > timedelta(minutes=10):
-            set_state("last_activity_id", activity_id)
-            continue
         logger.info("发现新动态，开始渲染")
         image_path = await _render_activity_image(row)
         if image_path is None:
+            set_state("last_activity_id", activity_id)
+            continue
+        if datetime.now() - upload_time > timedelta(minutes=10):
             set_state("last_activity_id", activity_id)
             continue
 

@@ -9,7 +9,6 @@ from src.db.subscription import list_subscribed_room_ids
 from src.db.liver import get_uid_by_roomid
 from src.spider.wrapper import get_space_history
 
-
 logger = logging.getLogger("spider.jobs.activity")
 
 
@@ -33,16 +32,15 @@ async def collect_activity() -> None:
                 continue
 
             for item in reversed(history_items):
+                # 适配新版传参：舍弃 orig_type, card, emoji_details，使用 item_dict 和 dy_type_str
                 inserted = insert_activity(
                     activity_id=item.activity_id,
                     room_id=room_id,
                     uid=item.uid,
                     uname=item.uname,
                     timestamp=item.timestamp,
-                    dy_type=item.dy_type,
-                    orig_type=item.orig_type,
-                    card=item.card,
-                    emoji_details=item.emoji_details,
+                    dy_type_str=item.dy_type,
+                    item_dict=item.item,
                 )
                 if inserted:
                     logger.info(

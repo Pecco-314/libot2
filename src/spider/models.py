@@ -27,11 +27,9 @@ class LiverStats:
 
 @dataclass
 class SpaceHistory:
-    activity_id: int
+    activity_id: str
     uid: int
     uname: str
     timestamp: int
-    dy_type: int
-    orig_type: int
-    card: dict[str, Any]
-    emoji_details: list[dict[str, Any]]
+    dy_type: str
+    item: dict

@@ -4,7 +4,7 @@ import math
 import httpx
 from io import BytesIO
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 from nonebot.log import logger
 from nonebot_plugin_imageutils import BuildImage, Text2Image
@@ -45,27 +45,85 @@ async def download_image(url: str, suffix: str | None = None) -> BuildImage:
         logger.warning(f"下载图片失败 {target_url}: {e}")
         return BuildImage.new("RGBA", (100, 100), (200, 200, 200, 255))
 
-def extract_dynamic_info(data_dict: dict, dy_type: int) -> dict:
-    # (保持原有的提取逻辑不变...)
-    # 为了简洁，这里省略提取逻辑的重复部分，仅保留结构
-    res = {'username': '未知', 'avatar_url': '', 'text': '', 'pic_urls': []}
-    if dy_type == 8: # 视频
-        owner = data_dict.get('owner', {})
-        res.update({'username': owner.get('name', '未知'), 'avatar_url': owner.get('face', ''), 
-                    'text': f"▶ 视频：{data_dict.get('title', '')}", 'pic_urls': [data_dict.get('pic', '')]})
-    elif dy_type == 1: # 转发
-        user = data_dict.get('user', {})
-        res.update({'username': user.get('uname', '未知'), 'avatar_url': user.get('face', ''), 'text': data_dict.get('item', {}).get('content', '')})
-    else: # 图文/其他
-        user = data_dict.get('user') or data_dict.get('owner') or {}
-        item = data_dict.get('item', {})
-        res.update({
-            'username': user.get('name') or user.get('uname') or "未知",
-            'avatar_url': user.get('head_url') or user.get('face') or "",
-            'text': item.get('description') or item.get('content') or data_dict.get('dynamic') or "",
-            # 核心修复点：使用 or [] 来确保 None 也能转为空列表
-            'pic_urls': [p.get('img_src') for p in (item.get('pictures') or [])]
-        })
+def extract_dynamic_info(item: dict) -> dict:
+    """提取新版 API (v2) 中的动态数据，全面兼容 OPUS 图文格式"""
+    res = {'username': '未知', 'avatar_url': '', 'text': '', 'pic_urls': [], 'emoji_dict': {}}
+    if not item:
+        return res
+        
+    modules = item.get('modules', {})
+    author = modules.get('module_author', {})
+    dynamic = modules.get('module_dynamic', {})
+    
+    # 1. 提取作者信息
+    res['username'] = author.get('name', '未知')
+    res['avatar_url'] = author.get('face', '')
+    
+    # 内置通用提取富文本表情的方法
+    def _extract_emojis(nodes: list):
+        for node in nodes:
+            if node.get('type') == 'RICH_TEXT_NODE_TYPE_EMOJI':
+                emoji_name = node.get('text')
+                emoji_url = node.get('emoji', {}).get('icon_url')
+                if emoji_name and emoji_url:
+                    res['emoji_dict'][emoji_name] = emoji_url
+
+    parts = []
+
+    # 2. 提取外层描述 desc (通常出现在转发文案中)
+    desc = dynamic.get('desc')
+    if desc:
+        if desc.get('text'):
+            parts.append(desc.get('text'))
+        _extract_emojis(desc.get('rich_text_nodes', []))
+
+    # 3. 提取主体内容 major
+    major = dynamic.get('major')
+    if major:
+        major_type = major.get('type')
+        
+        # [重点] B站全新的 OPUS (综合图文) 格式
+        if major_type == 'MAJOR_TYPE_OPUS':
+            opus = major.get('opus', {})
+            title = opus.get('title', '')
+            summary = opus.get('summary', {})
+            
+            if title:
+                parts.append(f"【{title}】")
+            if summary.get('text'):
+                parts.append(summary.get('text'))
+            
+            _extract_emojis(summary.get('rich_text_nodes', []))
+            res['pic_urls'].extend([pic.get('url') for pic in opus.get('pics', [])])
+            
+        # 兼容老版本DRAW (纯图片)
+        elif major_type == 'MAJOR_TYPE_DRAW':
+            draw_items = major.get('draw', {}).get('items', [])
+            res['pic_urls'].extend([pic.get('src') for pic in draw_items])
+            
+        # 视频
+        elif major_type == 'MAJOR_TYPE_ARCHIVE':
+            archive = major.get('archive', {})
+            parts.append(f"▶ 视频：{archive.get('title', '')}")
+            if archive.get('cover'):
+                res['pic_urls'].append(archive.get('cover'))
+                
+        # 专栏文章
+        elif major_type == 'MAJOR_TYPE_ARTICLE':
+            article = major.get('article', {})
+            parts.append(f"📝 文章：{article.get('title', '')}")
+            if article.get('covers'):
+                res['pic_urls'].extend(article.get('covers'))
+                
+        # 直播推荐
+        elif major_type == 'MAJOR_TYPE_LIVE_RCMD':
+            live_content = major.get('live_rcmd', {}).get('content', {})
+            parts.append(f"📺 直播间：{live_content.get('title', '')}")
+            if live_content.get('live_play_info', {}).get('cover'):
+                res['pic_urls'].append(live_content['live_play_info']['cover'])
+
+    # 合并所有的文本分段
+    res['text'] = "\n".join(parts)
     return res
 
 async def render_text_and_images(text: str, pic_urls: list, width: int, font_size: int, emoji_dict: dict, text_color: tuple, bg_color: tuple) -> Optional[BuildImage]:
@@ -79,7 +137,9 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
     
     # 构建文字和表情的分块逻辑
     if emoji_dict:
-        pattern = re.compile('(' + '|'.join(map(re.escape, emoji_dict.keys())) + ')')
+        # 按长度降序排列表情键值，防止像 "[哈哈]" 和 "[哈]" 冲突
+        sorted_emoji_keys = sorted(emoji_dict.keys(), key=len, reverse=True)
+        pattern = re.compile('(' + '|'.join(map(re.escape, sorted_emoji_keys)) + ')')
         raw_tokens = [t for t in pattern.split(text) if t] if text else []
     else:
         raw_tokens = [text] if text else []
@@ -162,7 +222,6 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
     # 绘制文字
     y = 0
     for line in lines:
-        # 即使 line 是因为纯换行产生的空列表，内层循环会跳过，但外层依旧会加上 line_height，完美实现空行占位
         for el in line:
             if el['type'] == 'text':
                 t2i = Text2Image.from_text(el['content'], font_size, fill=text_color)
@@ -180,10 +239,10 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
             
     return canvas
 
-async def render_bilibili_card(card_json: str, dy_type: int, orig_type: int, timestamp: int, emoji_details: list = None) -> BuildImage:
-    data = json.loads(card_json)
-    main_info = extract_dynamic_info(data, dy_type)
-    emoji_dict = {e['emoji_name']: e['url'] for e in (emoji_details or [])}
+async def render_bilibili_card(item: dict[str, Any]) -> BuildImage:
+    """直接接收新版 API 的 item 字典并渲染"""
+    main_info = extract_dynamic_info(item)
+    timestamp = int(item.get("modules", {}).get("module_author", {}).get("pub_ts", 0))
     
     # 准备画布尺寸
     width, margin = 800, 40
@@ -196,23 +255,33 @@ async def render_bilibili_card(card_json: str, dy_type: int, orig_type: int, tim
         av = (await download_image(main_info['avatar_url'], SUFFIX_AVATAR)).circle().resize((80, 80))
         header.paste(av, (0, 10), alpha=True)
     
-    # 名字使用 Text2Image，自动处理 B 站名字里的特殊符号
     Text2Image.from_text(main_info['username'], 32, fill=(251, 114, 153)).draw_on_image(header.image, (100, 15))
     time_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M') if timestamp else ""
     Text2Image.from_text(time_str, 22, fill=(153, 153, 153)).draw_on_image(header.image, (100, 55))
 
     # 2. 正文
-    content_canvas = await render_text_and_images(main_info['text'], main_info['pic_urls'], main_w, 28, emoji_dict, (34, 34, 34), bg_color)
+    content_canvas = await render_text_and_images(main_info['text'], main_info['pic_urls'], main_w, 28, main_info['emoji_dict'], (34, 34, 34), bg_color)
 
     # 3. 转发内容
     origin_canvas = None
-    if 'origin' in data and data['origin'] and data['origin'] != 'null':
-        o_data = json.loads(data['origin'])
-        o_info = extract_dynamic_info(o_data, orig_type)
+    orig_item = item.get('orig')  # 在 v2 API 中，转发的源动态原封不动地放在 orig 字段里
+    
+    if orig_item:
+        o_info = extract_dynamic_info(orig_item)
+        
+        # 兼容有些转发源被删除的情况
+        if o_info['username'] == '未知' and not o_info['text']:
+            o_info['text'] = "该内容已不可见"
+            
         o_info['text'] = f"@{o_info['username']}: {o_info['text']}"
+        
+        # 将原动态表情和转发表情合并，防止遗漏
+        combined_emojis = {**main_info['emoji_dict'], **o_info['emoji_dict']}
         o_bg = (244, 245, 247, 255)
         o_inner_w = main_w - 40
-        origin_inner = await render_text_and_images(o_info['text'], o_info['pic_urls'], o_inner_w, 26, emoji_dict, (102, 102, 102), o_bg)
+        
+        origin_inner = await render_text_and_images(o_info['text'], o_info['pic_urls'], o_inner_w, 26, combined_emojis, (102, 102, 102), o_bg)
+        
         if origin_inner:
             origin_canvas = BuildImage.new("RGBA", (main_w, origin_inner.height + 40), bg_color)
             origin_canvas.draw_rounded_rectangle((0, 0, main_w, origin_canvas.height), radius=12, fill=o_bg)

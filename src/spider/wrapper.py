@@ -103,29 +103,28 @@ async def get_stats(room_id: int) -> LiverStats:
 async def get_space_history(uid: int) -> list[SpaceHistory]:
     response = await api.get_space_history(uid)
     data = _get_data(response)
-    cards = data["cards"]
+    
+    items = data.get("items", [])
     result: list[SpaceHistory] = []
-    for card_entry in cards:
-        desc = card_entry["desc"]
-        card_data = card_entry["card"]
-        emoji_info = card_entry["display"]["emoji_info"]
-        if emoji_info is None:
-            emoji_details = []
-        else:
-            emoji_details = emoji_info.get("emoji_details", [])
-        uid = desc["uid"]
-        uname = desc["user_profile"]["info"]["uname"]
-        activity_id = desc["dynamic_id_str"]
+    
+    for item in items:
+        modules = item.get("modules", {})
+        author = modules.get("module_author", {})
+        
+        activity_id = item.get("id_str")
+        uname = author.get("name", "未知")
+        author_uid = author.get("mid", uid)
+        timestamp = int(author.get("pub_ts", 0))
+        dy_type = item.get("type", "UNKNOWN")
+        
         result.append(
             SpaceHistory(
                 activity_id=activity_id,
-                uid=uid,
+                uid=author_uid,
                 uname=uname,
-                timestamp=desc["timestamp"],
-                dy_type=desc["type"],
-                orig_type=desc["orig_type"],
-                card=card_data,
-                emoji_details=emoji_details,
+                timestamp=timestamp,
+                dy_type=dy_type,
+                item=item
             )
         )
     return result

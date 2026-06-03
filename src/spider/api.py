@@ -24,11 +24,12 @@ BILI_HEADERS = {
 
 def build_cookies() -> dict[str, str]:
     cookies: dict[str, str] = {}
-    sessdata = os.getenv("SESSDATA", "").strip()
-    buvid3 = os.getenv("BUVID3", "").strip()
-    if sessdata:
-        cookies["SESSDATA"] = sessdata
-        cookies["BUVID3"] = buvid3
+    cookie_str = os.getenv("COOKIE", "").strip()
+    if cookie_str:
+        for pair in cookie_str.split(";"):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                cookies[key.strip()] = value.strip()
     return cookies
 
 
@@ -108,14 +109,12 @@ async def get_activated_medal_info(target_id: int) -> dict[str, Any]:
     )
 
 
-async def get_space_history(uid: int, *, offset_dynamic_id: int = 0, need_top: int = 0) -> dict[str, Any]:
+async def get_space_history(uid: int) -> dict[str, Any]:
     return await request_json(
-        "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history",
+        "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
         {
-            "host_uid": uid,
-            "offset_dynamic_id": offset_dynamic_id,
-            "need_top": need_top,
-            "platform": "web",
+            "host_mid": uid,
+            "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardUser",
         },
         headers=BILI_HEADERS,
     )
