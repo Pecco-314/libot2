@@ -16,7 +16,7 @@ import httpx
 
 from src.common.utils import load_env_file, init_logger
 from src.capture.transcribe import SenseVoiceEngine
-from src.db.subscription import list_subscribed_room_ids
+from src.db.subscription import list_asr_enabled_room_ids
 from src.db.event import is_streaming_event, get_latest_live_cmd, get_latest_live_event_id, list_live_events_after
 from src.db.transcript import init_transcript_db, insert_transcript
 from src.db.ocr_record import init_ocr_db, insert_ocr_record
@@ -495,7 +495,7 @@ def _parse_args(argv: list[str]) -> LiveCaptureConfig:
 
     args = parser.parse_args(argv)
     output_root = None
-    room_ids = list_subscribed_room_ids()
+    room_ids = list_asr_enabled_room_ids()
     if not room_ids:
         raise ValueError("subscription 表为空，无法获取直播间房间号")
 

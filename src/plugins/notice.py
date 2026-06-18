@@ -1,7 +1,7 @@
 from nonebot import on_notice
 from nonebot.adapters.onebot.v11 import Bot, GroupDecreaseNoticeEvent
 
-from src.db.state import get_state
+from src.db.subscription import get_subscription_feature
 
 leave_notice = on_notice(priority=50, block=False)
 
@@ -11,7 +11,7 @@ async def handle_group_decrease(bot: Bot, event: GroupDecreaseNoticeEvent):
         return
 
     group_id = int(event.group_id)
-    if get_state(f"leave_notice:{group_id}") == "0":
+    if not get_subscription_feature(group_id, "leave_notice"):
         return
 
     user_id = event.user_id

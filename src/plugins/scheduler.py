@@ -16,7 +16,7 @@ from src.render.activity import render_bilibili_card
 from src.db.activity import get_max_activity_id, list_activities_after
 from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
 from src.db.state import get_state, set_state
-from src.db.subscription import list_subscribed_group_ids
+from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
 
 from .config import ACTIVITY_IMAGE_DIR
 from .utils import _format_name
@@ -27,8 +27,7 @@ NAPCAT_PID = ROOT / "data" / ".pids" / "napcat.pid"
 
 
 def _is_mention_all_enabled(group_id: int) -> bool:
-    value = get_state(f"mention_all:{group_id}")
-    return value is not None and value.isdigit() and int(value) == 1
+    return get_subscription_feature(group_id, "mention_all")
 
 
 async def send_to_room(room_id: int, message: str, *, mention_all: bool = False) -> None:

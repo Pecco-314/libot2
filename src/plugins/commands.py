@@ -33,9 +33,9 @@ from src.db.manager import (
 from src.db.subscription import (
     get_subscription,
     remove_subscription,
-    set_subscription_dev,
     set_subscription,
-    is_subscription_dev_enabled,
+    get_subscription_feature,
+    set_subscription_feature,
 )
 from src.db.stats import get_stat_start_date
 from src.db.state import get_state, set_state
@@ -163,34 +163,35 @@ def _parse_feature_name(text: str) -> str | None:
         return "艾特全体"
     if normalized in {"退群通知", "退群提醒"}:
         return "退群通知"
-    return None
+    return normalized
 
+
+FEATURE_REGISTRY = {
+    "测试": {"col": "dev", "name": "测试功能"},
+    "艾特全体": {"col": "mention_all", "name": "开播通知艾特全体"},
+    "退群通知": {"col": "leave_notice", "name": "退群通知"},
+    "听歌识曲": {"col": "enable_asr", "name": "听歌识曲"},
+}
 
 async def _handle_feature_toggle(matcher: Matcher, event: Event, feature: str, enabled: bool):
     group_id = get_group_id(event)
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
 
-    if feature == "测试":
-        ok = set_subscription_dev(group_id, enabled)
-        if not ok:
-            await matcher.finish("请先设置订阅，再开启测试功能" if enabled else "请先设置订阅，再关闭测试功能")
-        await matcher.finish("已开启测试功能" if enabled else "已关闭测试功能")
-        return
+    if feature not in FEATURE_REGISTRY:
+        features_str = "、".join(FEATURE_REGISTRY.keys())
+        await matcher.finish(f"用法：/打开功能 <功能>\n支持的功能有：{features_str}")
 
-    if feature == "艾特全体":
-        key = f"mention_all:{group_id}"
-        set_state(key, "1" if enabled else "0")
-        await matcher.finish("已开启开播通知艾特全体" if enabled else "已关闭开播通知艾特全体")
-        return
+    config = FEATURE_REGISTRY[feature]
+    col_name = config["col"]
+    feature_name = config["name"]
 
-    if feature == "退群通知":
-        key = f"leave_notice:{group_id}"
-        set_state(key, "1" if enabled else "0")
-        await matcher.finish("已开启退群通知" if enabled else "已关闭退群通知")
-        return
+    # 操作数据库
+    ok = set_subscription_feature(group_id, col_name, enabled)
+    if not ok:
+        await matcher.finish(f"请先设置订阅，再{'开启' if enabled else '关闭'}{feature_name}")
 
-    await matcher.finish("用法：/打开功能 <功能>")
+    await matcher.finish(f"已{'开启' if enabled else '关闭'}{feature_name}")
 
 
 async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
@@ -198,24 +199,17 @@ async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
 
-    if feature == "测试":
-        enabled = is_subscription_dev_enabled(group_id)
-        await matcher.finish("本群测试功能：已开启" if enabled else "本群测试功能：已关闭")
-        return
+    if feature not in FEATURE_REGISTRY:
+        features_str = "、".join(FEATURE_REGISTRY.keys())
+        await matcher.finish(f"用法：/功能状态 <功能>\n支持的功能有：{features_str}")
 
-    if feature == "艾特全体":
-        key = f"mention_all:{group_id}"
-        enabled = get_state(key) == "1"
-        await matcher.finish("开播通知艾特全体：已开启" if enabled else "开播通知艾特全体：已关闭")
-        return
-
-    if feature == "退群通知":
-        key = f"leave_notice:{group_id}"
-        enabled = get_state(key) != "0"
-        await matcher.finish("退群通知：已开启" if enabled else "退群通知：已关闭")
-        return
-
-    await matcher.finish("用法：/功能状态 <功能>")
+    config = FEATURE_REGISTRY[feature]
+    
+    # 从数据库获取状态
+    is_enabled = get_subscription_feature(group_id, config["col"])
+    
+    status = "已开启" if is_enabled else "已关闭"
+    await matcher.finish(f"{config['name']}：{status}")
 
 
 @feature_enable_cmd.handle()

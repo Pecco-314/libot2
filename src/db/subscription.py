@@ -1,7 +1,15 @@
+# --- START OF FILE subscription.py ---
 from __future__ import annotations
 
 from src.db.sqlite import connect_sqlite, execute_write, write_transaction
 
+# 功能列白名单，防止 SQL 注入。新增功能只需要在这里加一个字段名。
+VALID_FEATURES = {
+    "dev",
+    "mention_all",
+    "leave_notice",
+    "enable_asr"
+}
 
 def init_subscription_db() -> None:
     with write_transaction() as conn:
@@ -12,6 +20,9 @@ def init_subscription_db() -> None:
                 group_id INTEGER PRIMARY KEY,
                 room_id INTEGER NOT NULL,
                 dev INTEGER NOT NULL DEFAULT 0,
+                mention_all INTEGER NOT NULL DEFAULT 0,
+                leave_notice INTEGER NOT NULL DEFAULT 1,
+                enable_asr INTEGER NOT NULL DEFAULT 1,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -23,8 +34,8 @@ def set_subscription(group_id: int, room_id: int) -> None:
         execute_write(
             conn,
             """
-            INSERT INTO subscription (group_id, room_id, dev)
-            VALUES (?, ?, 0)
+            INSERT INTO subscription (group_id, room_id)
+            VALUES (?, ?)
             ON CONFLICT(group_id)
             DO UPDATE SET room_id = excluded.room_id, updated_at = CURRENT_TIMESTAMP
             """,
@@ -32,18 +43,43 @@ def set_subscription(group_id: int, room_id: int) -> None:
         )
 
 
-def set_subscription_dev(group_id: int, enabled: bool) -> bool:
+def set_subscription_feature(group_id: int, feature_col: str, enabled: bool) -> bool:
+    """通用方法：设置任意功能开关"""
+    if feature_col not in VALID_FEATURES:
+        raise ValueError(f"Invalid feature column: {feature_col}")
+
     with write_transaction() as conn:
         cur = execute_write(
             conn,
-            """
+            f"""
             UPDATE subscription
-            SET dev = ?, updated_at = CURRENT_TIMESTAMP
+            SET {feature_col} = ?, updated_at = CURRENT_TIMESTAMP
             WHERE group_id = ?
             """,
             (1 if enabled else 0, group_id),
         )
+    # 如果 rowcount > 0 说明该群有订阅记录并更新成功
     return cur.rowcount > 0
+
+
+def get_subscription_feature(group_id: int, feature_col: str) -> bool:
+    """通用方法：获取任意功能开关状态"""
+    if feature_col not in VALID_FEATURES:
+        raise ValueError(f"Invalid feature column: {feature_col}")
+
+    with connect_sqlite() as conn:
+        row = conn.execute(
+            f"SELECT {feature_col} FROM subscription WHERE group_id = ?",
+            (group_id,),
+        ).fetchone()
+        
+    if row is None:
+        # 如果群还没有订阅，退群通知依然当作默认开启，其他为关闭
+        if feature_col == "leave_notice":
+            return True
+        return False
+        
+    return bool(int(row[0]))
 
 
 def get_subscription(group_id: int) -> int | None:
@@ -57,17 +93,6 @@ def get_subscription(group_id: int) -> int | None:
     return int(row[0])
 
 
-def is_subscription_dev_enabled(group_id: int) -> bool:
-    with connect_sqlite() as conn:
-        row = conn.execute(
-            "SELECT dev FROM subscription WHERE group_id = ?",
-            (group_id,),
-        ).fetchone()
-    if row is None:
-        return False
-    return bool(int(row[0]))
-
-
 def remove_subscription(group_id: int) -> bool:
     with write_transaction() as conn:
         cur = execute_write(conn, "DELETE FROM subscription WHERE group_id = ?", (group_id,))
@@ -77,6 +102,18 @@ def remove_subscription(group_id: int) -> bool:
 def list_subscribed_room_ids() -> list[int]:
     with connect_sqlite() as conn:
         rows = conn.execute("SELECT DISTINCT room_id FROM subscription ORDER BY room_id ASC").fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def list_asr_enabled_room_ids() -> list[int]:
+    """
+    核心聚合查询：获取至少有一个群开启了 ASR 的直播间 room_id 列表。
+    节约系统性能，按需开启听歌识曲。
+    """
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT room_id FROM subscription WHERE enable_asr = 1 ORDER BY room_id ASC"
+        ).fetchall()
     return [int(row[0]) for row in rows]
 
 

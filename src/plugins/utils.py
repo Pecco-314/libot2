@@ -6,7 +6,7 @@ from nonebot.adapters.onebot.v11 import Event, Message, GroupMessageEvent
 from nonebot.matcher import Matcher
 
 from src.db.manager import ensure_initial_manager, is_manager
-from src.db.subscription import list_subscribed_group_ids, is_subscription_dev_enabled
+from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
 from src.spider.wrapper import get_name_by_roomid
 
 from .config import INITIAL_MANAGER_QQ
@@ -83,7 +83,8 @@ def subscription_dev_required(func):
             if group_id is None:
                 await matcher.finish("请在群聊中使用该命令")
                 return None
-            if not is_subscription_dev_enabled(group_id):
+            
+            if not get_subscription_feature(group_id, "dev"):
                 await matcher.finish("此功能测试中")
                 return None
             return await func(*args, **kwargs)
@@ -96,7 +97,7 @@ def subscription_dev_required(func):
             enabled_groups = [
                 group_id
                 for group_id in list_subscribed_group_ids(room_id)
-                if is_subscription_dev_enabled(group_id)
+                if get_subscription_feature(group_id, "dev")
             ]
             if not enabled_groups:
                 return None
