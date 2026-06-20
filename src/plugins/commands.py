@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from nonebot import on_command
@@ -14,6 +15,7 @@ from src.render.stats import render_fans_trend, render_guards_trend, render_fan_
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
 from src.render.danmaku_logs import render_event_pages
+from src.render.dc import render_dc_images
 from src.spider.wrapper import (
     get_name_by_roomid,
     get_name_by_uid,
@@ -86,7 +88,7 @@ song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
-
+dc_cmd = on_command("斗虫", priority=5, block=True)
 
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
@@ -801,3 +803,55 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
     for i, res in enumerate(results, start=1):
         message += f"{i}. {res['title']} - {res['singer']} ({res['final_score']:.2%})\n"
     await matcher.finish(message)
+
+@dc_cmd.handle()
+async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+        
+    args = arg.extract_plain_text().strip().split()
+    
+    # 默认选项设置
+    filter_type = "vr"
+    time_str = datetime.now().strftime("%Y-%m")
+    
+    # 解析参数选项
+    for a in args:
+        a_upper = a.upper()
+        if a_upper in ["VR", "PSP", "VRPSP", "ALL"]:
+            filter_type = a_upper.lower()
+            if filter_type == "vrpsp":
+                filter_type = "all"
+        elif re.match(r"^20\d{2}$", a):  # 例如 2026
+            time_str = a
+        elif re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", a):  # 例如 2026-06
+            time_str = a
+        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", a):  # 兼容 202606 这种连续格式
+            time_str = f"{a[:4]}-{a[4:]}"
+            
+    try:
+        images = await render_dc_images(filter_type, time_str)
+    except Exception as e:
+        logger.error(f"渲染斗虫图片失败: {e}")
+        await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
+        
+    if not images:
+        await matcher.finish(f"未找到 {filter_type.upper()} 在 {time_str} 的相关营收数据")
+        
+    # 构造合并转发节点
+    nodes = []
+    for img in images:
+        nodes.append({
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(img))
+            }
+        })
+    
+    try:
+        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+    except Exception as e:
+        logger.error(f"发送群转发消息失败: {e}")
