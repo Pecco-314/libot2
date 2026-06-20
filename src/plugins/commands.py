@@ -841,6 +841,15 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
         
     # 构造合并转发节点
     nodes = []
+    info = f"统计区间：{time_str} 社团：{filter_type.upper()}"
+    nodes.append({
+        "type": "node",
+        "data": {
+            "name": "LiBot",
+            "uin": bot.self_id,
+            "content": info
+        }
+    })
     for img in images:
         nodes.append({
             "type": "node",
