@@ -16,6 +16,12 @@ from src.render.song import render_songs_by_keyword, render_random_song, render_
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
+from src.render.live_list import render_live_list_image
+from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
+from src.db.liver import get_name_by_uid as _db_get_name_by_uid
+from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info
+from src.db.manager import ensure_initial_manager, is_manager
+from src.plugins.utils import INITIAL_MANAGER_QQ
 from src.spider.wrapper import (
     get_name_by_roomid,
     get_name_by_uid,
@@ -51,6 +57,7 @@ from src.db.event import (
     get_latest_uid_by_uname,
     list_events_by_uid,
 )
+from src.db.live_list import add_live_list, remove_live_list, get_live_list
 from src.capture.guesser import guess_song
 
 from .utils import (
@@ -89,6 +96,9 @@ song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
 dc_cmd = on_command("斗虫", priority=5, block=True)
+live_list_add_cmd = on_command("添加直播", priority=5, block=True)
+live_list_remove_cmd = on_command("删除直播", priority=5, block=True)
+live_list_show_cmd = on_command("开播列表", priority=5, block=True)
 
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
@@ -337,8 +347,6 @@ async def handle_set_nickname(matcher: Matcher, event: Event, arg=CommandArg()):
         await matcher.finish("用法：/设置昵称 <昵称>")
     upsert_liver(room_id=room_id, uid=None, uname=None, nickname=nickname)
     await matcher.finish(f"昵称已设置：{nickname}")
-
-
 
 
 @sub_remove_cmd.handle()
@@ -794,9 +802,8 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
     try:
         results = guess_song(room_id, target_ts)
     except Exception as e:
-        # logger.error(f"歌曲匹配时发生异常: {e}")
-        # await matcher.finish("歌曲匹配时发生异常")
-        raise e
+        logger.error(f"歌曲匹配时发生异常: {e}")
+        await matcher.finish("歌曲匹配时发生异常")
     if not results:
         await matcher.finish("未找到匹配的歌曲")
     message = "当前可能在唱的歌曲：\n"
@@ -864,3 +871,104 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
         await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
     except Exception as e:
         logger.error(f"发送群转发消息失败: {e}")
+
+
+@live_list_add_cmd.handle()
+async def handle_live_list_add(matcher: Matcher, event: Event, arg=CommandArg()):
+    room_id = _parse_room_id(arg)
+    if room_id is None:
+        await matcher.finish("用法：/添加直播 <直播间号>")
+        
+    user_id = int(event.get_user_id())
+
+    try:
+        resp = await _api_get_room_info(room_id)
+        if not resp.get("ok") or not resp.get("body", {}).get("data"):
+            raise RuntimeError("网络请求失败")
+            
+        data = resp["body"]["data"]
+        real_room_id = int(data["room_id"])
+        uid = int(data["uid"])
+    except Exception as e:
+        logger.error(f"添加开播列表解析失败: {e}")
+        await matcher.finish("网络请求失败，请稍后再试")
+        
+    name = _db_get_name_by_uid(uid)
+    if not name:
+        try:
+            m_resp = await _api_get_master_info(uid)
+            if m_resp.get("ok"):
+                name = m_resp["body"]["data"]["info"]["uname"]
+        except Exception:
+            pass
+            
+    name_str = name or str(real_room_id)
+    added = add_live_list(real_room_id, name_str, user_id)
+    
+    if not added:
+        await matcher.finish("该直播间已在列表中")
+        
+    msg = f"已添加到开播列表：{name_str}"
+        
+    await matcher.finish(msg)
+
+
+@live_list_remove_cmd.handle()
+async def handle_live_list_remove(matcher: Matcher, event: Event, arg=CommandArg()):
+    # 自己判定权限
+    room_id = _parse_room_id(arg)
+    if room_id is None:
+        await matcher.finish("用法：/删除直播 <直播间号>")
+        
+    user_id = int(event.get_user_id())
+    group_id = get_group_id(event)
+    
+    real_room_id = room_id
+    info = get_live_list_info(real_room_id)
+    
+    # 短号推断逻辑：如果本号没查到，查一次 API 转成长号再搜一次 DB
+    if not info:
+        try:
+            resp = await _api_get_room_info(room_id)
+            if resp.get("ok") and "data" in resp.get("body", {}):
+                real_room_id = int(resp["body"]["data"]["room_id"])
+                info = get_live_list_info(real_room_id)
+        except Exception as e:
+            logger.warning(f"删除开播列表长短号转换失败: {e}")
+
+    if not info:
+        await matcher.finish("该直播间不在列表中")
+        
+    # 鉴权：本群管理员 或者 该直播间的添加者 可以删除
+    is_mgr = False
+    if group_id is not None:
+        if INITIAL_MANAGER_QQ is not None:
+            ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
+        is_mgr = is_manager(group_id, user_id)
+        
+    if not is_mgr and user_id != info["adder_uid"]:
+        await matcher.finish("权限不足：仅群管理员或该直播间的添加者可删除")
+
+    removed = remove_live_list(real_room_id)
+    if removed:
+        await matcher.finish(f"已从开播列表中删除直播间：{real_room_id}")
+    else:
+        await matcher.finish("系统错误，未能删除")
+
+
+@live_list_show_cmd.handle()
+async def handle_live_list_show(matcher: Matcher, event: Event):
+    rooms_info = get_live_list()
+    if not rooms_info:
+        await matcher.finish("目前尚未添加任何直播间，请使用 /添加直播 <直播间号> 增加主播哦。")
+        
+    try:
+        image_path = await render_live_list_image(rooms_info)
+    except Exception as e:
+        logger.error(f"渲染开播列表失败: {e}")
+        await matcher.finish("查询或渲染失败，请稍后再试。")
+        
+    if not image_path:
+        await matcher.finish("当前列表内未发现正在直播的主播！")
+        
+    await matcher.finish(MessageSegment.image(file=str(image_path)))
