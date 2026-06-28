@@ -54,6 +54,7 @@ async def get_dc_data(filter_type: str, time_str: str) -> list[dict[str, Any]]:
                         "anchor_name": anchor.get("anchor_name", "未知"),
                         "total_revenue": 0.0,
                         "live_duration_sec": 0,
+                        "effective_days": 0,
                         "gift": 0.0,
                         "guard": 0.0,
                         "super_chat": 0.0,
@@ -63,6 +64,7 @@ async def get_dc_data(filter_type: str, time_str: str) -> list[dict[str, Any]]:
                 aggregated[room_id]["guard"] += float(anchor.get("guard") or 0)
                 aggregated[room_id]["super_chat"] += float(anchor.get("super_chat") or 0)
                 aggregated[room_id]["live_duration_sec"] += _parse_duration(anchor.get("live_duration", "00:00:00"))
+                aggregated[room_id]["effective_days"] += int(anchor.get("effective_days") or 0)
         except Exception as e:
             import logging
             logging.error(f"获取 {m} 斗虫数据失败: {e}")
@@ -89,6 +91,7 @@ async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25
         ("名称", 250),
         ("总营收", 190),
         ("直播时长", 140),
+        ("有效天", 120),
         ("礼物", 190),
         ("大航海", 190),
         ("SC", 190),
@@ -135,11 +138,14 @@ async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25
             Text2Image.from_text(item["live_duration"], 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
             x_offset += cols[3][1]
             
-            Text2Image.from_text(f"￥{item['gift']:.2f}", 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
+            Text2Image.from_text(str(item["effective_days"]), 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
             x_offset += cols[4][1]
             
-            Text2Image.from_text(f"￥{item['guard']:.2f}", 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
+            Text2Image.from_text(f"￥{item['gift']:.2f}", 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
             x_offset += cols[5][1]
+            
+            Text2Image.from_text(f"￥{item['guard']:.2f}", 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
+            x_offset += cols[6][1]
             
             Text2Image.from_text(f"￥{item['super_chat']:.2f}", 26, fill=(80, 80, 80)).draw_on_image(canvas.image, (x_offset, y))
             
