@@ -111,7 +111,7 @@ async def get_live_data(room_infos: list[dict]) -> list[dict[str, Any]]:
     return result
 
 
-async def render_live_list_image(room_infos: list[dict]) -> Path | None:
+async def render_live_list_image(room_infos: list[dict], filter_tag: str | None = None) -> Path | None:
     data_list = await get_live_data(room_infos)
     if not data_list:
         return None
@@ -119,8 +119,8 @@ async def render_live_list_image(room_infos: list[dict]) -> Path | None:
     save_dir = ROOT / "data" / "images" / "live_list"
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    # 构建顶部大标题（加粗）
-    title_text = "开播列表"
+    # 构建顶部大标题（动态携带标签名）
+    title_text = f"开播列表 - {filter_tag}" if filter_tag else "开播列表"
     title_t2i = Text2Image.from_text(title_text, 36, weight="bold", fill=(34, 34, 34))
 
     cols = [
@@ -134,7 +134,6 @@ async def render_live_list_image(room_infos: list[dict]) -> Path | None:
     row_h = 50
     header_h = 60
     
-    # 精确计算高度，避免出现底部多余空行
     height = (
         padding + 
         title_t2i.height + 20 +    # 顶部主标题 + 间距

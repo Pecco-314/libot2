@@ -19,7 +19,7 @@ from src.render.dc import render_dc_images
 from src.render.live_list import render_live_list_image
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
-from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info
+from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
 from src.db.manager import ensure_initial_manager, is_manager
 from src.plugins.utils import INITIAL_MANAGER_QQ
 from src.spider.wrapper import (
@@ -96,9 +96,11 @@ song_singer_cmd = on_command("查歌手", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
 dc_cmd = on_command("斗虫", priority=5, block=True)
-live_list_add_cmd = on_command("添加直播", priority=5, block=True)
+live_list_add_cmd = on_command("添加直播", aliases={"增加直播"}, priority=5, block=True)
 live_list_remove_cmd = on_command("删除直播", priority=5, block=True)
-live_list_show_cmd = on_command("开播列表", priority=5, block=True)
+live_list_show_cmd = on_command("开播列表", aliases={"开播"}, priority=5, block=True)
+live_list_add_tag_cmd = on_command("添加标签", aliases={"增加标签"}, priority=5, block=True)
+live_list_set_tag_cmd = on_command("修改标签", priority=5, block=True)
 
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
@@ -875,12 +877,19 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
 
 @live_list_add_cmd.handle()
 async def handle_live_list_add(matcher: Matcher, event: Event, arg=CommandArg()):
-    room_id = _parse_room_id(arg)
-    if room_id is None:
-        await matcher.finish("用法：/添加直播 <直播间号>")
+    args = arg.extract_plain_text().strip().split()
+    if not args:
+        await matcher.finish("用法：/添加直播 <直播间号> [标签...]")
         
+    room_id_str = args[0]
+    if not room_id_str.isdigit():
+        await matcher.finish("用法：/添加直播 <直播间号> [标签...]\n房间号必须为数字。")
+    room_id = int(room_id_str)
+    
+    # 标签去重，保持唯一性
+    tags = list(set(t.lower() for t in args[1:]))
     user_id = int(event.get_user_id())
-
+        
     try:
         resp = await _api_get_room_info(room_id)
         if not resp.get("ok") or not resp.get("body", {}).get("data"):
@@ -903,72 +912,131 @@ async def handle_live_list_add(matcher: Matcher, event: Event, arg=CommandArg())
             pass
             
     name_str = name or str(real_room_id)
-    added = add_live_list(real_room_id, name_str, user_id)
+    added = add_live_list(real_room_id, name_str, user_id, tags)
     
     if not added:
         await matcher.finish("该直播间已在列表中")
         
-    msg = f"已添加到开播列表：{name_str}"
+    tag_info = f" 标签: {' '.join(tags)}" if tags else ""
+    msg = f"已添加到开播列表：{name_str}{tag_info}"
+    if real_room_id != room_id:
+        msg += f"\n(自动转为长号：{real_room_id})"
         
     await matcher.finish(msg)
 
 
-@live_list_remove_cmd.handle()
-async def handle_live_list_remove(matcher: Matcher, event: Event, arg=CommandArg()):
-    # 自己判定权限
-    room_id = _parse_room_id(arg)
-    if room_id is None:
-        await matcher.finish("用法：/删除直播 <直播间号>")
-        
-    user_id = int(event.get_user_id())
-    group_id = get_group_id(event)
-    
-    real_room_id = room_id
-    info = get_live_list_info(real_room_id)
-    
-    # 短号推断逻辑：如果本号没查到，查一次 API 转成长号再搜一次 DB
+async def _resolve_info_from_args(args: list[str]) -> dict | None:
+    if not args[0].isdigit():
+        return None
+    room_id = int(args[0])
+    info = get_live_list_info(room_id)
     if not info:
         try:
             resp = await _api_get_room_info(room_id)
             if resp.get("ok") and "data" in resp.get("body", {}):
                 real_room_id = int(resp["body"]["data"]["room_id"])
                 info = get_live_list_info(real_room_id)
-        except Exception as e:
-            logger.warning(f"删除开播列表长短号转换失败: {e}")
+        except Exception:
+            pass
+    return info
 
-    if not info:
-        await matcher.finish("该直播间不在列表中")
-        
-    # 鉴权：本群管理员 或者 该直播间的添加者 可以删除
+
+def _check_modify_permission(info: dict, event: Event) -> bool:
+    user_id = int(event.get_user_id())
+    group_id = get_group_id(event)
     is_mgr = False
     if group_id is not None:
         if INITIAL_MANAGER_QQ is not None:
             ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
         is_mgr = is_manager(group_id, user_id)
+    return is_mgr or user_id == info["adder_uid"]
+
+
+@live_list_add_tag_cmd.handle()
+async def handle_live_list_add_tag(matcher: Matcher, event: Event, arg=CommandArg()):
+    args = arg.extract_plain_text().strip().split()
+    if len(args) < 2:
+        await matcher.finish("用法：/增加标签 <直播间号> <标签...>")
         
-    if not is_mgr and user_id != info["adder_uid"]:
+    info = await _resolve_info_from_args(args)
+    if not info:
+        await matcher.finish("该直播间不在列表中")
+        
+    if not _check_modify_permission(info, event):
+        await matcher.finish("权限不足：仅群管理员或该直播间的添加者可修改")
+        
+    new_tags = list(set(t.lower() for t in args[1:]))
+    updated_tags = list(set(info["tags"] + new_tags))
+    update_live_list_tags(info["room_id"], updated_tags)
+    await matcher.finish(f"已增加标签，当前标签：{' '.join(updated_tags) if updated_tags else '无'}")
+
+
+@live_list_set_tag_cmd.handle()
+async def handle_live_list_set_tag(matcher: Matcher, event: Event, arg=CommandArg()):
+    args = arg.extract_plain_text().strip().split()
+    if len(args) < 2:
+        await matcher.finish("用法：/修改标签 <直播间号> <标签...>")
+        
+    info = await _resolve_info_from_args(args)
+    if not info:
+        await matcher.finish("该直播间不在列表中")
+        
+    if not _check_modify_permission(info, event):
+        await matcher.finish("权限不足：仅群管理员或该直播间的添加者可修改")
+        
+    new_tags = list(set(t.lower() for t in args[1:]))
+    update_live_list_tags(info["room_id"], new_tags)
+    await matcher.finish(f"已修改标签，当前标签：{' '.join(new_tags)}")
+
+
+@live_list_remove_cmd.handle()
+async def handle_live_list_remove(matcher: Matcher, event: Event, arg=CommandArg()):
+    args = arg.extract_plain_text().strip().split()
+    if not args:
+        await matcher.finish("用法：/删除直播 <直播间号>")
+        
+    info = await _resolve_info_from_args(args)
+    if not info:
+        await matcher.finish("该直播间不在列表中")
+        
+    if not _check_modify_permission(info, event):
         await matcher.finish("权限不足：仅群管理员或该直播间的添加者可删除")
 
-    removed = remove_live_list(real_room_id)
+    removed = remove_live_list(info["room_id"])
     if removed:
-        await matcher.finish(f"已从开播列表中删除直播间：{real_room_id}")
+        await matcher.finish(f"已从开播列表中删除直播间：{info['room_id']}")
     else:
         await matcher.finish("系统错误，未能删除")
 
 
 @live_list_show_cmd.handle()
-async def handle_live_list_show(matcher: Matcher, event: Event):
+async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()):
+    args = arg.extract_plain_text().strip().split()
+    filter_tag = args[0] if args else None
+    
     rooms_info = get_live_list()
     if not rooms_info:
         await matcher.finish("目前尚未添加任何直播间，请使用 /添加直播 <直播间号> 增加主播哦。")
         
+    # 如果指定了标签，则进行本地过滤
+    if filter_tag:
+        filter_tag_lower = filter_tag.lower()
+        rooms_info = [
+            r for r in rooms_info 
+            if filter_tag_lower in [t.lower() for t in r["tags"]]
+        ]
+        if not rooms_info:
+            await matcher.finish(f"当前列表中未找到包含标签 [{filter_tag}] 的直播间。")
+        
     try:
-        image_path = await render_live_list_image(rooms_info)
+        image_path = await render_live_list_image(rooms_info, filter_tag)
     except Exception as e:
         logger.error(f"渲染开播列表失败: {e}")
         await matcher.finish("查询或渲染失败，请稍后再试。")
         
     if not image_path:
-        await matcher.finish("当前列表内未发现正在直播的主播！")
+        # 当数据全被 API 给过滤掉(都处于未开播状态)的情况
+        msg = f"当前 {'标签 ['+filter_tag+'] 内的' if filter_tag else ''}列表未发现正在直播的主播！"
+        await matcher.finish(msg)
         
     await matcher.finish(MessageSegment.image(file=str(image_path)))
