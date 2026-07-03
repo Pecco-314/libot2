@@ -409,3 +409,33 @@ def list_name_history_by_name_or_uid(query: str) -> list[dict[str, object]]:
         return list_name_history_by_uid(int(query))
     else:
         return list_name_history_by_name(query)
+
+
+def list_recent_events_by_uid(room_id: int, uid: int, limit: int) -> list[dict[str, Any]]:
+    # 计算 15 天前的时间戳
+    cutoff_ts = int(datetime.now().timestamp()) - 15 * 24 * 3600
+    
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp
+            FROM event
+            WHERE room_id = ? AND uid = ? AND timestamp >= ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (room_id, uid, cutoff_ts, limit),
+        ).fetchall()
+
+    return [
+        {
+            "cmd": str(row[0]),
+            "content": row[1],
+            "gift_name": row[2],
+            "gift_num": row[3],
+            "total_coin": row[4],
+            "title": row[5],
+            "timestamp": int(row[6]) if row[6] is not None else 0,
+        }
+        for row in reversed(rows)
+    ]

@@ -92,7 +92,7 @@ def _merge_events(events: list[dict[str, Any]], merge_window: int = 30) -> list[
     return merged
 
 
-def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int = 100) -> list[str]:
+def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int = 100, show_date: bool = False) -> list[str]:
     if not events:
         return []
 
@@ -100,12 +100,17 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
 
     font_size = 14
     line_height = int(font_size * 1.6)
-    width = 980
+    
+    # 如果需要显示完整日期，将总宽度从 980 扩大至 1260
+    width = 1260 if show_date else 980
     padding = 30
     gutter = 20
     column_width = (width - padding * 2 - gutter) // 2
     pages: list[str] = []
     total_pages = math.ceil(len(events) / page_size)
+
+    # 动态决定时间格式
+    time_format = "%Y-%m-%d %H:%M:%S" if show_date else "%H:%M:%S"
 
     for page_idx in range(total_pages):
         header_text = f"{title}（{page_idx + 1}/{total_pages}页）"
@@ -124,7 +129,7 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
         for i in range(lines_count):
             if i < len(left):
                 event = left[i]
-                time_str = datetime.fromtimestamp(event["timestamp"]).strftime("%H:%M:%S") if event.get("timestamp") else "--:--:--"
+                time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
                 text, color, suffix = _format_event_text(event)
                 text = truncate_name(text, max_len=48)
                 line = f"{time_str}  {text}"
@@ -136,7 +141,7 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
                     )
             if i < len(right):
                 event = right[i]
-                time_str = datetime.fromtimestamp(event["timestamp"]).strftime("%H:%M:%S") if event.get("timestamp") else "--:--:--"
+                time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
                 text, color, suffix = _format_event_text(event)
                 text = truncate_name(text, max_len=48)
                 line = f"{time_str}  {text}"

@@ -56,6 +56,7 @@ from src.db.event import (
     list_session_events,
     get_latest_uid_by_uname,
     list_events_by_uid,
+    list_recent_events_by_uid,
 )
 from src.db.live_list import add_live_list, remove_live_list, get_live_list
 from src.capture.guesser import guess_song
@@ -623,40 +624,65 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     if room_id is None:
         await matcher.finish("请先设置订阅")
 
-    raw = arg.extract_plain_text()
-    target, date_str = _parse_events_args(raw)
-    if not target:
-        await matcher.finish("用法：/查弹幕 <UID/用户名> [日期]")
+    args = arg.extract_plain_text().strip().split()
+    if not args:
+        await matcher.finish("用法：/查弹幕 <UID/用户名> [日期/数量]")
 
-    if date_str:
-        try:
-            day = datetime.strptime(date_str, "%Y-%m-%d")
-        except ValueError:
-            await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+    query_user = args[0]
+    param = args[1] if len(args) > 1 else None
+
+    # 获取 UID
+    if query_user.isdigit():
+        uid = int(query_user)
     else:
-        day = datetime.now()
-
-    start_ts = int(day.replace(hour=0, minute=0, second=0).timestamp())
-    end_ts = int(day.replace(hour=23, minute=59, second=59).timestamp())
-
-    display_name = target
-    if target.isdigit():
-        uid = int(target)
-        try:
-            display_name = await get_name_by_uid(uid)
-        except Exception:
-            display_name = target
-    else:
-        uid = get_latest_uid_by_uname(room_id, target)
+        uid = get_latest_uid_by_uname(room_id, query_user)
         if uid is None:
-            await matcher.finish("未找到对应用户")
+            await matcher.finish(f"未找到用户：{query_user}")
 
-    events = list_events_by_uid(room_id, uid, start_ts, end_ts)
+    limit = None
+    start_ts = None
+    end_ts = None
+    title_suffix = ""
+
+    # 解析第二个参数：日期或数量
+    if param:
+        if param.isdigit():
+            limit = int(param)
+            if limit <= 0:
+                await matcher.finish("查询数量必须大于0")
+            title_suffix = f"最近 {limit} 条，15天内"
+        else:
+            try:
+                target_date = datetime.strptime(param, "%Y-%m-%d").date()
+                start_dt = datetime.combine(target_date, datetime.min.time())
+                end_dt = datetime.combine(target_date, datetime.max.time())
+                start_ts = int(start_dt.timestamp())
+                end_ts = int(end_dt.timestamp())
+                title_suffix = param
+            except ValueError:
+                await matcher.finish("参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)")
+    else:
+        # 默认查询当天
+        target_date = datetime.now().date()
+        start_dt = datetime.combine(target_date, datetime.min.time())
+        end_dt = datetime.combine(target_date, datetime.max.time())
+        start_ts = int(start_dt.timestamp())
+        end_ts = int(end_dt.timestamp())
+        title_suffix = target_date.strftime("%Y-%m-%d")
+
+    # 根据解析结果执行不同的查询
+    if limit is not None:
+        events = list_recent_events_by_uid(room_id, uid, limit)
+    else:
+        events = list_events_by_uid(room_id, uid, start_ts, end_ts)
+
     if not events:
         await matcher.finish("暂无记录")
 
-    title = f"{display_name} {day.strftime('%Y-%m-%d')} 记录"
-    pages = render_event_pages(title, events, page_size=100)
+    uname = await get_name_by_uid(uid) or str(uid)
+    title = f"{uname} 的弹幕记录（{title_suffix}）"
+
+    pages = render_event_pages(title, events, show_date=(limit is not None))
     if not pages:
         await matcher.finish("暂无记录")
 
