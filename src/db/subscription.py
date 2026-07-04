@@ -8,6 +8,7 @@ VALID_FEATURES = {
     "dev",
     "mention_all",
     "leave_notice",
+    "join_notice",
     "enable_asr"
 }
 
@@ -22,11 +23,20 @@ def init_subscription_db() -> None:
                 dev INTEGER NOT NULL DEFAULT 0,
                 mention_all INTEGER NOT NULL DEFAULT 0,
                 leave_notice INTEGER NOT NULL DEFAULT 1,
+                join_notice INTEGER NOT NULL DEFAULT 1,
                 enable_asr INTEGER NOT NULL DEFAULT 1,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
         )
+
+        # 如果是老表没有 join_notice 列，尝试 ALTER TABLE 添加该列
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(subscription)").fetchall()]
+        if "join_notice" not in cols:
+            execute_write(
+                conn,
+                "ALTER TABLE subscription ADD COLUMN join_notice INTEGER NOT NULL DEFAULT 1",
+            )
 
 
 def set_subscription(group_id: int, room_id: int) -> None:

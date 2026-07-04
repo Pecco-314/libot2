@@ -178,6 +178,8 @@ def _parse_feature_name(text: str) -> str | None:
         return "艾特全体"
     if normalized in {"退群通知", "退群提醒"}:
         return "退群通知"
+    if normalized in {"进群欢迎", "进群通知", "欢迎"}:
+        return "进群欢迎"
     return normalized
 
 
@@ -185,6 +187,7 @@ FEATURE_REGISTRY = {
     "测试": {"col": "dev", "name": "测试功能"},
     "艾特全体": {"col": "mention_all", "name": "开播通知艾特全体"},
     "退群通知": {"col": "leave_notice", "name": "退群通知"},
+    "进群欢迎": {"col": "join_notice", "name": "进群欢迎"},
     "听歌识曲": {"col": "enable_asr", "name": "听歌识曲"},
 }
 
