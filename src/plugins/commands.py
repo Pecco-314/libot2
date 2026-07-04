@@ -650,7 +650,7 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
             limit = int(param)
             if limit <= 0:
                 await matcher.finish("查询数量必须大于0")
-            title_suffix = f"最近 {limit} 条，15天内"
+            title_suffix = f"最近 {limit} 条"
         else:
             try:
                 target_date = datetime.strptime(param, "%Y-%m-%d").date()

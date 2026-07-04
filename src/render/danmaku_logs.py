@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
+import re
 from datetime import datetime
 from typing import Any
 
@@ -112,6 +113,16 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
     # 动态决定时间格式
     time_format = "%Y-%m-%d %H:%M:%S" if show_date else "%H:%M:%S"
 
+    # 清理特殊不可见字符的内部函数
+    def clean_text(s: str) -> str:
+        if not s:
+            return ""
+        # 移除常见的零宽字符
+        s = re.sub(r'[\u200b\u200c\u200d\uFEFF]', '', s)
+        # 将特殊空格替换为普通半角空格
+        s = s.replace('\xa0', ' ')
+        return s
+
     for page_idx in range(total_pages):
         header_text = f"{title}（{page_idx + 1}/{total_pages}页）"
         header_t2i = Text2Image.from_text(header_text, 24, weight="bold", fill=(34, 34, 34))
@@ -127,30 +138,47 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
 
         y = padding + header_t2i.height + 16
         for i in range(lines_count):
+            # 渲染左侧栏
             if i < len(left):
                 event = left[i]
                 time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
                 text, color, suffix = _format_event_text(event)
-                text = truncate_name(text, max_len=48)
+                
+                text = clean_text(truncate_name(text, max_len=48))
+                suffix = clean_text(suffix)
                 line = f"{time_str}  {text}"
-                base_img = Text2Image.from_text(line, font_size, fill=color)
-                base_img.draw_on_image(canvas.image, (padding, y))
-                if suffix:
-                    Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
-                        canvas.image, (padding + base_img.width + 4, y)
-                    )
+                
+                try:
+                    base_img = Text2Image.from_text(line, font_size, fill=color)
+                    base_img.draw_on_image(canvas.image, (padding, y))
+                    if suffix:
+                        Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
+                            canvas.image, (padding + base_img.width + 4, y)
+                        )
+                except ValueError:
+                    # 如果仍有未过滤干净的崩溃字符，绘制一个占位符避免整张图失败
+                    Text2Image.from_text(f"{time_str}  [文本渲染失败]", font_size, fill=(255, 0, 0)).draw_on_image(canvas.image, (padding, y))
+
+            # 渲染右侧栏
             if i < len(right):
                 event = right[i]
                 time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
                 text, color, suffix = _format_event_text(event)
-                text = truncate_name(text, max_len=48)
+                
+                text = clean_text(truncate_name(text, max_len=48))
+                suffix = clean_text(suffix)
                 line = f"{time_str}  {text}"
-                base_img = Text2Image.from_text(line, font_size, fill=color)
-                base_img.draw_on_image(canvas.image, (padding + column_width + gutter, y))
-                if suffix:
-                    Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
-                        canvas.image, (padding + column_width + gutter + base_img.width + 4, y)
-                    )
+                
+                try:
+                    base_img = Text2Image.from_text(line, font_size, fill=color)
+                    base_img.draw_on_image(canvas.image, (padding + column_width + gutter, y))
+                    if suffix:
+                        Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
+                            canvas.image, (padding + column_width + gutter + base_img.width + 4, y)
+                        )
+                except ValueError:
+                    Text2Image.from_text(f"{time_str}  [文本渲染失败]", font_size, fill=(255, 0, 0)).draw_on_image(canvas.image, (padding + column_width + gutter, y))
+
             y += line_height
 
         save_dir = ROOT / "data" / "images" / "events"
