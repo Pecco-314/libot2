@@ -8,7 +8,7 @@ from typing import Any
 
 from nonebot_plugin_imageutils import BuildImage, Text2Image
 
-from src.common.utils import ROOT, truncate_name
+from src.common.utils import ROOT
 
 
 def _format_price(value: int | None, *, is_thousandth: bool) -> str:
@@ -110,76 +110,122 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
     pages: list[str] = []
     total_pages = math.ceil(len(events) / page_size)
 
-    # 动态决定时间格式
     time_format = "%Y-%m-%d %H:%M:%S" if show_date else "%H:%M:%S"
 
-    # 清理特殊不可见字符的内部函数
-    def clean_text(s: str) -> str:
+    def clean_text(s: str | None) -> str:
         if not s:
             return ""
-        # 移除常见的零宽字符
         s = re.sub(r'[\u200b\u200c\u200d\uFEFF]', '', s)
-        # 将特殊空格替换为普通半角空格
         s = s.replace('\xa0', ' ')
         return s
+
+    def layout_event(time_str: str, text: str, text_color: tuple, suffix: str, max_width: int):
+        time_part = f"{time_str}  "
+        try:
+            indent_width = Text2Image.from_text(time_part, font_size).width
+        except ValueError:
+            indent_width = len(time_part) * (font_size // 2)
+
+        lines = []
+        current_line = [(time_part, text_color)]
+        current_width = indent_width
+        
+        def add_segment(content: str, color: tuple):
+            nonlocal current_line, current_width, lines
+            accum = ""
+            for char in content:
+                cw = font_size if ord(char) > 255 else font_size // 2 + 1
+                if current_width + cw > max_width:
+                    if accum:
+                        current_line.append((accum, color))
+                    lines.append(current_line)
+                    current_line = []
+                    current_width = indent_width
+                    accum = char
+                else:
+                    accum += char
+                    current_width += cw
+            if accum:
+                current_line.append((accum, color))
+
+        if text:
+            add_segment(text, text_color)
+        if suffix:
+            add_segment(suffix, (160, 160, 160))
+            
+        if current_line:
+            lines.append(current_line)
+            
+        return lines, indent_width
 
     for page_idx in range(total_pages):
         header_text = f"{title}（{page_idx + 1}/{total_pages}页）"
         header_t2i = Text2Image.from_text(header_text, 24, weight="bold", fill=(34, 34, 34))
         chunk = events[page_idx * page_size : (page_idx + 1) * page_size]
-        left = chunk[: page_size // 2]
-        right = chunk[page_size // 2 :]
+        
+        left_chunk = chunk[: page_size // 2]
+        right_chunk = chunk[page_size // 2 :]
 
-        lines_count = max(len(left), len(right))
-        content_h = padding + header_t2i.height + 16 + lines_count * line_height + padding
+        # 独立预计算左列排版和高度
+        left_layouts = []
+        left_height = 0
+        for event in left_chunk:
+            t_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
+            txt, clr, sfx = _format_event_text(event)
+            lines, indent_w = layout_event(t_str, clean_text(txt), clr, clean_text(sfx), column_width)
+            left_height += len(lines) * line_height
+            left_layouts.append((lines, indent_w))
 
+        # 独立预计算右列排版和高度
+        right_layouts = []
+        right_height = 0
+        for event in right_chunk:
+            t_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
+            txt, clr, sfx = _format_event_text(event)
+            lines, indent_w = layout_event(t_str, clean_text(txt), clr, clean_text(sfx), column_width)
+            right_height += len(lines) * line_height
+            right_layouts.append((lines, indent_w))
+
+        # 页面内容高度取决于较长的一列
+        content_h = padding + header_t2i.height + 16 + max(left_height, right_height) + padding
         canvas = BuildImage.new("RGBA", (width, int(content_h)), (255, 255, 255, 255))
         header_t2i.draw_on_image(canvas.image, (padding, padding))
 
-        y = padding + header_t2i.height + 16
-        for i in range(lines_count):
-            # 渲染左侧栏
-            if i < len(left):
-                event = left[i]
-                time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
-                text, color, suffix = _format_event_text(event)
-                
-                text = clean_text(truncate_name(text, max_len=48))
-                suffix = clean_text(suffix)
-                line = f"{time_str}  {text}"
-                
-                try:
-                    base_img = Text2Image.from_text(line, font_size, fill=color)
-                    base_img.draw_on_image(canvas.image, (padding, y))
-                    if suffix:
-                        Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
-                            canvas.image, (padding + base_img.width + 4, y)
-                        )
-                except ValueError:
-                    # 如果仍有未过滤干净的崩溃字符，绘制一个占位符避免整张图失败
-                    Text2Image.from_text(f"{time_str}  [文本渲染失败]", font_size, fill=(255, 0, 0)).draw_on_image(canvas.image, (padding, y))
+        start_y = padding + header_t2i.height + 16
+        
+        # 独立绘制左列
+        curr_y_left = start_y
+        for lines, indent_w in left_layouts:
+            for line_idx, line in enumerate(lines):
+                curr_x = padding + (indent_w if line_idx > 0 else 0)
+                for seg_text, seg_color in line:
+                    if not seg_text: continue
+                    try:
+                        seg_img = Text2Image.from_text(seg_text, font_size, fill=seg_color)
+                        seg_img.draw_on_image(canvas.image, (curr_x, curr_y_left))
+                        curr_x += seg_img.width
+                    except ValueError:
+                        err_img = Text2Image.from_text("[渲染失败]", font_size, fill=(255, 0, 0))
+                        err_img.draw_on_image(canvas.image, (curr_x, curr_y_left))
+                        curr_x += err_img.width
+                curr_y_left += line_height
 
-            # 渲染右侧栏
-            if i < len(right):
-                event = right[i]
-                time_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
-                text, color, suffix = _format_event_text(event)
-                
-                text = clean_text(truncate_name(text, max_len=48))
-                suffix = clean_text(suffix)
-                line = f"{time_str}  {text}"
-                
-                try:
-                    base_img = Text2Image.from_text(line, font_size, fill=color)
-                    base_img.draw_on_image(canvas.image, (padding + column_width + gutter, y))
-                    if suffix:
-                        Text2Image.from_text(suffix, font_size, fill=(160, 160, 160)).draw_on_image(
-                            canvas.image, (padding + column_width + gutter + base_img.width + 4, y)
-                        )
-                except ValueError:
-                    Text2Image.from_text(f"{time_str}  [文本渲染失败]", font_size, fill=(255, 0, 0)).draw_on_image(canvas.image, (padding + column_width + gutter, y))
-
-            y += line_height
+        # 独立绘制右列
+        curr_y_right = start_y
+        for lines, indent_w in right_layouts:
+            for line_idx, line in enumerate(lines):
+                curr_x = padding + column_width + gutter + (indent_w if line_idx > 0 else 0)
+                for seg_text, seg_color in line:
+                    if not seg_text: continue
+                    try:
+                        seg_img = Text2Image.from_text(seg_text, font_size, fill=seg_color)
+                        seg_img.draw_on_image(canvas.image, (curr_x, curr_y_right))
+                        curr_x += seg_img.width
+                    except ValueError:
+                        err_img = Text2Image.from_text("[渲染失败]", font_size, fill=(255, 0, 0))
+                        err_img.draw_on_image(canvas.image, (curr_x, curr_y_right))
+                        curr_x += err_img.width
+                curr_y_right += line_height
 
         save_dir = ROOT / "data" / "images" / "events"
         save_dir.mkdir(parents=True, exist_ok=True)
