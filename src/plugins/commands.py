@@ -647,31 +647,23 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     end_ts = None
     title_suffix = ""
 
-    # 解析第二个参数：日期或数量
-    if param:
-        if param.isdigit():
-            limit = int(param)
-            if limit <= 0:
-                await matcher.finish("查询数量必须大于0")
-            title_suffix = f"最近 {limit} 条"
-        else:
-            try:
-                target_date = datetime.strptime(param, "%Y-%m-%d").date()
-                start_dt = datetime.combine(target_date, datetime.min.time())
-                end_dt = datetime.combine(target_date, datetime.max.time())
-                start_ts = int(start_dt.timestamp())
-                end_ts = int(end_dt.timestamp())
-                title_suffix = param
-            except ValueError:
-                await matcher.finish("参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)")
+    if not param:
+        param = "100" # 默认100条
+    if param.isdigit():
+        limit = int(param)
+        if limit <= 0 or limit > 1000:
+            await matcher.finish("查询数量必须在1到1000之间")
+        title_suffix = f"最近 {limit} 条"
     else:
-        # 默认查询当天
-        target_date = datetime.now().date()
-        start_dt = datetime.combine(target_date, datetime.min.time())
-        end_dt = datetime.combine(target_date, datetime.max.time())
-        start_ts = int(start_dt.timestamp())
-        end_ts = int(end_dt.timestamp())
-        title_suffix = target_date.strftime("%Y-%m-%d")
+        try:
+            target_date = datetime.strptime(param, "%Y-%m-%d").date()
+            start_dt = datetime.combine(target_date, datetime.min.time())
+            end_dt = datetime.combine(target_date, datetime.max.time())
+            start_ts = int(start_dt.timestamp())
+            end_ts = int(end_dt.timestamp())
+            title_suffix = param
+        except ValueError:
+            await matcher.finish("参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)")
 
     # 根据解析结果执行不同的查询
     if limit is not None:

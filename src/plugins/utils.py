@@ -85,7 +85,7 @@ def subscription_dev_required(func):
                 return None
             
             if not get_subscription_feature(group_id, "dev"):
-                await matcher.finish("此功能测试中")
+                await matcher.finish("没有这样的功能")
                 return None
             return await func(*args, **kwargs)
 
