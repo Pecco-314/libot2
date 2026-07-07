@@ -16,6 +16,7 @@ from src.render.song import render_songs_by_keyword, render_random_song, render_
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
+from src.render.live_sessions import render_live_sessions_image
 from src.render.live_list import render_live_list_image
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
@@ -102,6 +103,7 @@ live_list_remove_cmd = on_command("删除直播", priority=5, block=True)
 live_list_show_cmd = on_command("开播列表", aliases={"开播"}, priority=5, block=True)
 live_list_add_tag_cmd = on_command("添加标签", aliases={"增加标签"}, priority=5, block=True)
 live_list_set_tag_cmd = on_command("修改标签", priority=5, block=True)
+live_sessions_cmd = on_command("直播记录", aliases={"查直播"}, priority=5, block=True)
 
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
@@ -1059,5 +1061,40 @@ async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()
         # 当数据全被 API 给过滤掉(都处于未开播状态)的情况
         msg = f"当前 {'标签 ['+filter_tag+'] 内的' if filter_tag else ''}列表未发现正在直播的主播！"
         await matcher.finish(msg)
+        
+    await matcher.finish(MessageSegment.image(file=str(image_path)))
+
+@live_sessions_cmd.handle()
+async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+        
+    arg_str = arg.extract_plain_text().strip()
+    
+    if not arg_str:
+        month_str = datetime.now().strftime("%Y%m")
+    else:
+        if re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", arg_str):
+            month_str = arg_str.replace("-", "")
+        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", arg_str):
+            month_str = arg_str
+        elif re.match(r"^(0[1-9]|1[0-2])$", arg_str):
+            month_str = f"{datetime.now().year}{arg_str}"
+        else:
+            await matcher.finish("月份格式错误，请使用如 202509 或 2025-09 的格式")
+            
+    try:
+        image_path = await render_live_sessions_image(room_id, month_str)
+    except Exception as e:
+        logger.error(f"渲染直播记录图片失败: {e}")
+        await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
+        
+    if not image_path:
+        await matcher.finish(f"未找到房间 {room_id} 在 {month_str} 的直播记录")
         
     await matcher.finish(MessageSegment.image(file=str(image_path)))
