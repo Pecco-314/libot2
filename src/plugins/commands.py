@@ -12,7 +12,7 @@ from nonebot.params import CommandArg
 from src.render.superchat import get_daily_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
-from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer
+from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer, render_songs_by_date
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
@@ -95,6 +95,7 @@ danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
 events_cmd = on_command("查弹幕", priority=5, block=True)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
+song_list_cmd = on_command("查歌单", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
 dc_cmd = on_command("斗虫", priority=5, block=True)
@@ -758,6 +759,33 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
             await matcher.finish("请在群聊中使用该命令")
     except Exception as e:
         logger.error(f"发送合并转发消息失败: {e}")
+
+
+@song_list_cmd.handle()
+async def handle_song_list(matcher: Matcher, arg=CommandArg()):
+    date_str = arg.extract_plain_text().strip()
+    if not date_str:
+        await matcher.finish("用法：/查歌单 <日期>，日期格式：YYYY-MM-DD")
+
+    try:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+
+    try:
+        result = await render_songs_by_date(target_date)
+    except Exception as exc:
+        logger.error("渲染日期歌单失败: %s", exc)
+        await matcher.finish("图片渲染失败")
+
+    if not result:
+        await matcher.finish(f"{date_str} 没有找到歌单记录")
+
+    message = Message([
+        MessageSegment.text(f"{date_str} 的歌单："),
+        MessageSegment.image(file=str(result["image_path"])),
+    ])
+    await matcher.finish(message)
 
 
 @song_singer_cmd.handle()

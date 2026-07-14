@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 from typing import Any
 
 from src.db.sqlite import execute_write, write_transaction, connect_sqlite
@@ -290,6 +291,12 @@ def delete_songs_not_in(valid_ids: list[int]) -> None:
             f"DELETE FROM song_list WHERE id NOT IN ({placeholders})",
             tuple(valid_ids)
         )
+
+
+def get_songs_of_date(date: datetime.date) -> list[dict[str, Any]]:
+    songs = get_all_songs()
+    date_str = date.strftime("%Y-%m-%d")
+    return [i for i in songs if date_str in i["records"]]
 
 
 if __name__ == "__main__":

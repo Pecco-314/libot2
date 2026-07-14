@@ -1,11 +1,11 @@
 import uuid
 import re
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any
 
 from nonebot_plugin_imageutils import BuildImage, Text2Image
 
-from src.db.song_list import search_songs_by_title, random_song, list_songs_by_singer
+from src.db.song_list import search_songs_by_title, random_song, list_songs_by_singer, get_songs_of_date
 from src.common.utils import ROOT, truncate_name
 
 def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
@@ -228,6 +228,77 @@ async def render_songs_by_singer(singer: str) -> dict[str, Any] | None:
         "image_path": image_path,
         "data": {
             "singer": singer,
+            "count": len(songs),
+        },
+    }
+
+
+def _draw_song_list_by_date(target_date: date, songs: list[dict[str, Any]]) -> BuildImage:
+    width = 760
+    padding = 40
+    max_text_width = width - padding * 2
+    bg_color = (255, 255, 255, 255)
+
+    date_text = target_date.strftime("%Y-%m-%d")
+    title_t2i = Text2Image.from_text(f"歌单：{date_text}", 36, weight="bold", fill=(34, 34, 34))
+    count_t2i = Text2Image.from_text(f"共 {len(songs)} 首", 24, fill=(80, 80, 80))
+
+    line_items: list[Text2Image] = []
+    for index, song in enumerate(songs, start=1):
+        singer = song.get("original_singer") or "未知"
+        line = f"{index}. {song['title']} - {truncate_name(singer, max_len=24)}（{song.get('count', 0)}）"
+        wrapped = _smart_wrap(line, 24, max_text_width)
+        line_items.append(Text2Image.from_text(wrapped, 24, fill=(50, 50, 50)))
+
+    footer_text = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
+    footer_t2i = Text2Image.from_text(footer_text, 18, fill=(180, 180, 180))
+
+    content_h = (
+        padding
+        + title_t2i.height
+        + 12
+        + count_t2i.height
+        + 24
+        + sum(item.height + 10 for item in line_items)
+        + 20
+        + footer_t2i.height
+        + padding
+    )
+
+    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
+    curr_y = padding
+    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
+    curr_y += title_t2i.height + 12
+    count_t2i.draw_on_image(canvas.image, (padding, curr_y))
+    curr_y += count_t2i.height + 24
+    for item in line_items:
+        item.draw_on_image(canvas.image, (padding, curr_y))
+        curr_y += item.height + 10
+    curr_y += 20
+    footer_t2i.draw_on_image(canvas.image, (width - footer_t2i.width - padding, curr_y))
+
+    return canvas
+
+
+def _save_song_list_by_date(target_date: date, songs: list[dict[str, Any]]) -> str:
+    save_dir = ROOT / "data" / "images" / "song_list"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    canvas = _draw_song_list_by_date(target_date, songs)
+    file_name = f"song_list_{target_date.strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}.png"
+    save_path = save_dir / file_name
+    canvas.image.save(save_path)
+    return str(save_path)
+
+
+async def render_songs_by_date(target_date: date) -> dict[str, Any] | None:
+    songs = get_songs_of_date(target_date)
+    if not songs:
+        return None
+    image_path = _save_song_list_by_date(target_date, songs)
+    return {
+        "image_path": image_path,
+        "data": {
+            "date": target_date.strftime("%Y-%m-%d"),
             "count": len(songs),
         },
     }
