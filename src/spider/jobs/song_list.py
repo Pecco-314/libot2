@@ -48,6 +48,7 @@ def _parse_clips(clips_str: str) -> str:
     if not clips_str:
         return "[]"
     
+    clips_str = clips_str.replace("，", ",")
     clips = [c.strip() for c in clips_str.split(",") if c.strip()]
     return json.dumps(clips, ensure_ascii=False)
 
