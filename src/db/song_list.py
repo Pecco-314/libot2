@@ -445,6 +445,41 @@ def export_songs_to_csv(path: str | Path) -> None:
             writer.writerow(row)
 
 
+def add_new_song(title: str, singer: str = "", language: str = "", title_trans: str = "") -> int:
+    """
+    新建一首歌曲，返回它的新 ID。
+    """
+    with write_transaction() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO song_info (title, original_singer, language, title_trans, count, clips, tags, lyrics, lyrics_cleaned) 
+            VALUES (?, ?, ?, ?, 0, '[]', '', '', '')
+            """,
+            (title, singer, language, title_trans)
+        )
+        return cursor.lastrowid
+
+
+def add_song_record(song_id: int, record_date: str) -> None:
+    """
+    为指定歌曲新增一条演唱记录，并同步更新计数字段
+    """
+    with write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO song_record (song_id, record_date) VALUES (?, ?)", 
+            (song_id, record_date)
+        )
+        conn.execute(
+            """
+            UPDATE song_info 
+            SET count = count + 1, updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+            """, 
+            (song_id,)
+        )
+
+
 if __name__ == "__main__":
     import sys
 
