@@ -1224,7 +1224,14 @@ async def handle_generate_list(event: GroupMessageEvent, arg: Message = CommandA
     
     for line in lines:
         clean_line = re.sub(r"^\d+[\.、]\s*", "", line)
-        search_res = search_songs_by_title(clean_line, limit=1)
+        
+        # 兼容中英文竖杠，分割出歌名和可选的歌手
+        parts = [p.strip() for p in re.split(r'[|｜]', clean_line)]
+        search_title = parts[0]
+        search_singer = parts[1] if len(parts) > 1 else None
+        
+        # 携带可选的歌手参数进行精确防碰撞搜索
+        search_res = search_songs_by_title(search_title, singer=search_singer, limit=1)
         if search_res:
             song = search_res[0]
             result_lines.append(f"{song['id']} # {song['title']} - {song['original_singer']}")

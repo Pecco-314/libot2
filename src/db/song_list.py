@@ -102,34 +102,61 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
                 execute_write(conn, sql_ins_record, (song_id, record_date))
 
 
-def search_songs_by_title(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
+def search_songs_by_title(keyword: str, limit: int = 5, singer: str | None = None) -> list[dict[str, Any]]:
     clean_keyword = keyword.strip()
     like_query = f"%{clean_keyword}%"
 
     with connect_sqlite() as conn:
-        query = """
-            SELECT id, title, title_trans, original_singer, 
-                   (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                   (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
-            FROM song_info
-            WHERE title LIKE ? OR title_trans LIKE ?
-            ORDER BY 
-                (CASE 
-                    WHEN title = ? THEN 0
-                    WHEN title_trans = ? THEN 1
-                    WHEN title LIKE ? THEN 2
-                    ELSE 3 
-                END),
-                count DESC
-            LIMIT ?
-        """
-        
-        params = (
-            like_query, like_query,
-            clean_keyword, clean_keyword,
-            f"{clean_keyword}%",
-            limit
-        )
+        if singer:
+            clean_singer = singer.strip()
+            singer_query = f"%{clean_singer}%"
+            query = """
+                SELECT id, title, title_trans, original_singer, 
+                       (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
+                       (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
+                FROM song_info
+                WHERE (title LIKE ? OR title_trans LIKE ?)
+                  AND original_singer LIKE ?
+                ORDER BY 
+                    (CASE 
+                        WHEN title = ? THEN 0
+                        WHEN title_trans = ? THEN 1
+                        WHEN title LIKE ? THEN 2
+                        ELSE 3 
+                    END),
+                    count DESC
+                LIMIT ?
+            """
+            params = (
+                like_query, like_query,
+                singer_query,
+                clean_keyword, clean_keyword,
+                f"{clean_keyword}%",
+                limit
+            )
+        else:
+            query = """
+                SELECT id, title, title_trans, original_singer, 
+                       (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
+                       (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
+                FROM song_info
+                WHERE title LIKE ? OR title_trans LIKE ?
+                ORDER BY 
+                    (CASE 
+                        WHEN title = ? THEN 0
+                        WHEN title_trans = ? THEN 1
+                        WHEN title LIKE ? THEN 2
+                        ELSE 3 
+                    END),
+                    count DESC
+                LIMIT ?
+            """
+            params = (
+                like_query, like_query,
+                clean_keyword, clean_keyword,
+                f"{clean_keyword}%",
+                limit
+            )
         
         rows = conn.execute(query, params).fetchall()
         
