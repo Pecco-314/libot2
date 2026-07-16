@@ -21,7 +21,6 @@ def init_song_list_db() -> None:
                 original_singer TEXT,
                 notes TEXT,
                 language TEXT,
-                count INTEGER,
                 clips TEXT,
                 tags TEXT,
                 lyrics TEXT,
@@ -47,15 +46,14 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
     sql_info = """
     INSERT INTO song_info (
         id, title, title_trans, original_singer, 
-        notes, language, count, clips, tags, lyrics, lyrics_cleaned, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        notes, language, clips, tags, lyrics, lyrics_cleaned, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
         title = COALESCE(excluded.title, title),
         title_trans = COALESCE(excluded.title_trans, title_trans),
         original_singer = COALESCE(excluded.original_singer, original_singer),
         notes = COALESCE(excluded.notes, notes),
         language = COALESCE(excluded.language, language),
-        count = COALESCE(excluded.count, count),
         clips = COALESCE(excluded.clips, clips),
         tags = COALESCE(excluded.tags, tags),
         lyrics = COALESCE(excluded.lyrics, lyrics),
@@ -78,7 +76,6 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
                     song.get("original_singer"),
                     song.get("notes"),
                     song.get("language"),
-                    song.get("count"),
                     song.get("clips"),
                     song.get("tags"),
                     song.get("lyrics"),
@@ -113,7 +110,7 @@ def search_songs_by_title(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
         query = """
             SELECT id, title, title_trans, original_singer, 
                    (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                   count
+                   (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
             FROM song_info
             WHERE title LIKE ? OR title_trans LIKE ?
             ORDER BY 
@@ -160,9 +157,9 @@ def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
             """
             SELECT id, title, title_trans, original_singer, 
                    (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                   count
+                   (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
             FROM song_info
-            WHERE count >= ?
+            WHERE (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) >= ?
             ORDER BY RANDOM()
             LIMIT 1
             """,
@@ -191,7 +188,8 @@ def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
-            SELECT id, title, original_singer, count
+            SELECT id, title, original_singer, 
+                   (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
             FROM song_info
             WHERE original_singer IS NOT NULL AND original_singer != ''
             ORDER BY count DESC, id ASC
@@ -292,7 +290,9 @@ def get_all_songs() -> list[dict[str, Any]]:
             """
             SELECT i.id, i.title, i.title_trans, i.original_singer, 
                    (SELECT json_group_array(record_date) FROM song_record WHERE song_id = i.id), 
-                   i.notes, i.language, i.count, i.clips, i.tags, i.lyrics, i.lyrics_cleaned
+                   i.notes, i.language, 
+                   (SELECT COUNT(1) FROM song_record WHERE song_id = i.id) AS count, 
+                   i.clips, i.tags, i.lyrics, i.lyrics_cleaned
             FROM song_info i
             ORDER BY i.id ASC
             """
@@ -340,7 +340,9 @@ def get_songs_of_date(date: datetime.date) -> list[dict[str, Any]]:
             """
             SELECT i.id, i.title, i.title_trans, i.original_singer, 
                    (SELECT json_group_array(record_date) FROM song_record WHERE song_id = i.id), 
-                   i.notes, i.language, i.count, i.clips, i.tags, i.lyrics, i.lyrics_cleaned
+                   i.notes, i.language, 
+                   (SELECT COUNT(1) FROM song_record WHERE song_id = i.id) AS count, 
+                   i.clips, i.tags, i.lyrics, i.lyrics_cleaned
             FROM song_info i
             JOIN song_record r ON i.id = r.song_id
             WHERE r.record_date = ?

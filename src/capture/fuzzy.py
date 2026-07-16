@@ -99,7 +99,7 @@ class LyricsMatcher:
                     title_trans, 
                     original_singer, 
                     (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                    count, 
+                    (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count, 
                     lyrics_cleaned
                 FROM song_info
                 WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
