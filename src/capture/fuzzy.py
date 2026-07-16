@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from rapidfuzz import fuzz
+from src.db.sqlite import connect_sqlite
 
 
 def _has_hangul(text: str) -> bool:
@@ -13,8 +14,6 @@ def _has_hangul(text: str) -> bool:
 
 def _normalize_korean_spacing(text: str) -> str:
     return re.sub(r"\s+", "", text) if text else ""
-
-from src.db.sqlite import connect_sqlite
 
 
 def _score(keyword: str, text: str) -> float:
@@ -68,7 +67,8 @@ class LyricsSearchIndex:
         results = []
         for score, row in ranked[:limit]:
             try:
-                records_list = json.loads(row[4]) if row[4] else []
+                # 兼容聚合查询返回的空数组字符串
+                records_list = json.loads(row[4]) if row[4] and row[4] != '[]' else []
             except Exception:
                 records_list = []
             results.append(
@@ -93,8 +93,15 @@ class LyricsMatcher:
         with connect_sqlite() as conn:
             rows = conn.execute(
                 """
-                SELECT id, title, title_trans, original_singer, records, count, lyrics_cleaned
-                FROM song_list
+                SELECT 
+                    id, 
+                    title, 
+                    title_trans, 
+                    original_singer, 
+                    (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
+                    count, 
+                    lyrics_cleaned
+                FROM song_info
                 WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
                 """
             ).fetchall()
@@ -108,6 +115,7 @@ class LyricsMatcher:
         if self._index is None:
             return []
         return self._index.search(keyword, limit=limit)
+
 
 if __name__ == "__main__":
     matcher = LyricsMatcher()
