@@ -482,8 +482,8 @@ def add_new_song(title: str, singer: str = "", language: str = "", title_trans: 
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO song_info (title, original_singer, language, title_trans, count, clips, tags, lyrics, lyrics_cleaned) 
-            VALUES (?, ?, ?, ?, 0, '[]', '', '', '')
+            INSERT INTO song_info (title, original_singer, language, title_trans, clips, tags, lyrics, lyrics_cleaned) 
+            VALUES (?, ?, ?, ?, '[]', '', '', '')
             """,
             (title, singer, language, title_trans)
         )
@@ -498,14 +498,6 @@ def add_song_record(song_id: int, record_date: str) -> None:
         conn.execute(
             "INSERT INTO song_record (song_id, record_date) VALUES (?, ?)", 
             (song_id, record_date)
-        )
-        conn.execute(
-            """
-            UPDATE song_info 
-            SET count = count + 1, updated_at = CURRENT_TIMESTAMP 
-            WHERE id = ?
-            """, 
-            (song_id,)
         )
 
 
