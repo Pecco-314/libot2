@@ -178,16 +178,17 @@ async def sync_song_list() -> None:
         logger.warning("song list sync failed: %s", exc)
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
-    init_song_list_db()
-    scheduler.add_job(
-        sync_song_list,
-        "cron",
-        hour=4,
-        minute=0,
-        id="song_list_sync",
-        name="song_list_sync",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
+    pass
+    # init_song_list_db()
+    # scheduler.add_job(
+    #     sync_song_list,
+    #     "cron",
+    #     hour=4,
+    #     minute=0,
+    #     id="song_list_sync",
+    #     name="song_list_sync",
+    #     replace_existing=True,
+    #     max_instances=1,
+    #     coalesce=True,
+    #     misfire_grace_time=300,
+    # )
