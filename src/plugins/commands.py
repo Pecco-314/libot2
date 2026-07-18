@@ -1169,7 +1169,7 @@ async def handle_add_song(event: Event, arg: Message = CommandArg()):
 async def handle_generate_list(event: GroupMessageEvent, arg: Message = CommandArg()):
     raw_text = arg.extract_plain_text().strip()
     
-    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     if not lines:
         await cmd_generate_list.finish(
             "请提供歌单文本，每行一首。\n"
