@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
 
@@ -82,6 +83,10 @@ async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25
     data_list = await get_dc_data(filter_type, time_str)
     if not data_list:
         return []
+
+    await prefetch_emoji_assets([
+        *(str(item.get("anchor_name") or "") for item in data_list),
+    ])
 
     save_dir = ROOT / "data" / "images" / "dc"
     save_dir.mkdir(parents=True, exist_ok=True)

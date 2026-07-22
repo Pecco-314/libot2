@@ -17,6 +17,7 @@ dependencies = [
     "nonebot-adapter-onebot>=2.4.6",
     "nonebot-plugin-apscheduler>=0.5.0",
     "nonebot-plugin-imageutils>=0.1.17",
+    "emoji>=2.15.0",
 ]
 
 [project.scripts]

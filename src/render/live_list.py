@@ -4,15 +4,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
 from src.spider.api import get_room_info, get_master_info
 from src.db.liver import get_name_by_uid
 from src.db.live_list import update_live_list_uname
-
-from PIL import ImageDraw, ImageFont
-from nonebot_plugin_imageutils import BuildImage, Text2Image
 
 logger = logging.getLogger("render.live_list")
 
@@ -95,6 +93,12 @@ async def render_live_list_image(room_infos: list[dict], filter_tag: str | None 
     if not data_list:
         return None
 
+    await prefetch_emoji_assets([
+        str(filter_tag or ""),
+        *(str(item.get("uname") or "") for item in data_list),
+        *(str(item.get("title") or "") for item in data_list),
+    ])
+
     save_dir = ROOT / "data" / "images" / "live_list"
     save_dir.mkdir(parents=True, exist_ok=True)
     
@@ -138,35 +142,26 @@ async def render_live_list_image(room_infos: list[dict], filter_tag: str | None 
     
     y += header_h
     
-    font_path = str(ROOT / "fonts" / "NotoSansCJKsc-Regular.otf")
-    
-    try:
-        font_normal = ImageFont.truetype(font_path, 26)
-        # 如果你没有专门的粗体文件，就继续用常规字体；如果有，可以加载为 font_bold
-        font_bold = font_normal 
-    except OSError:
-        logger.warning(f"无法加载字体文件: {font_path}，使用默认字体")
-        font_normal = ImageFont.load_default()
-        font_bold = ImageFont.load_default()
-
-    # 提取 PIL 原生的画笔工具
-    draw = ImageDraw.Draw(canvas.image)
-
-    # 3. 绘制列表行数据 (高频循环，全部切为原生绘制)
+    # 3. 绘制列表行数据
     for item in data_list:
         x_offset = padding
-        
+
         name = truncate_name(item["uname"], max_len=24)
-        # 耗时毫秒级：跳过分词和回退，直接写像素
-        draw.text((x_offset, y), name, font=font_normal, fill=(30, 30, 30))
+        Text2Image.from_text(name, 26, fill=(30, 30, 30)).draw_on_image(
+            canvas.image, (x_offset, y)
+        )
         x_offset += cols[0][1]
-        
+
         title = truncate_name(item["title"], max_len=34)
-        draw.text((x_offset, y), title, font=font_bold, fill=(30, 30, 30))
+        Text2Image.from_text(title, 26, fill=(30, 30, 30)).draw_on_image(
+            canvas.image, (x_offset, y)
+        )
         x_offset += cols[1][1]
-        
-        draw.text((x_offset, y), item["duration"], font=font_normal, fill=(80, 80, 80))
-        
+
+        Text2Image.from_text(
+            item["duration"], 26, fill=(80, 80, 80)
+        ).draw_on_image(canvas.image, (x_offset, y))
+
         y += row_h
 
     # 保存图片

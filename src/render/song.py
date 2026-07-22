@@ -1,40 +1,20 @@
 import uuid
-import re
 from datetime import datetime, date
 from typing import Any
 
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.db.song_list import search_songs_by_title, random_song, list_songs_by_singer, get_songs_of_date
 from src.common.utils import ROOT, truncate_name
 
 def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
-    """基于英文单词和汉字的智能换行"""
-    # 拆分：连续字母数字 / 连续空白 / 单个全角字符(汉字等) / 单个其他字符(标点等)
-    tokens = re.findall(r'[a-zA-Z0-9]+|\s+|[^\x00-\xff]|.', text)
-    
-    lines = []
-    curr_line = ""
-    
-    for token in tokens:
-        test_line = curr_line + token
-        # 使用 Text2Image 获取真实渲染的像素宽度
-        if Text2Image.from_text(test_line, font_size, weight=weight).width > max_width:
-            if curr_line:
-                lines.append(curr_line.rstrip())
-                # 如果当前引发超宽的 token 是个空格，直接丢弃，不放到下一行行首
-                curr_line = "" if token.isspace() else token
-            else:
-                # 极端情况：单个超长单词本身就超过了最大宽度
-                lines.append(token)
-                curr_line = ""
-        else:
-            curr_line = test_line
-            
-    if curr_line:
-        lines.append(curr_line.rstrip())
-        
-    return "\n".join(lines)
+    """按英文单词、汉字和完整 Emoji 序列换行。"""
+    return (
+        Text2Image.from_text(text, font_size, weight=weight)
+        .wrap(max_width)
+        .wrapped_text
+    )
 
 def _get_relative_time(date_str: str) -> str:
     """计算演唱时间的相对描述"""
@@ -153,6 +133,11 @@ def save_song_card(song: dict) -> dict[str, Any]:
 async def render_songs_by_keyword(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
     """搜索歌曲并渲染"""
     songs = search_songs_by_title(keyword, limit)
+    await prefetch_emoji_assets([
+        keyword,
+        *(str(song.get("title") or "") for song in songs),
+        *(str(song.get("original_singer") or "") for song in songs),
+    ])
     return [save_song_card(song) for song in songs]
 
 
@@ -162,6 +147,10 @@ async def render_random_song(limit: int = 3) -> dict[str, Any] | None:
     if song is None:
         return None
     else:
+        await prefetch_emoji_assets([
+            str(song.get("title") or ""),
+            str(song.get("original_singer") or ""),
+        ])
         return save_song_card(song)
 
 
@@ -223,6 +212,10 @@ async def render_songs_by_singer(singer: str) -> dict[str, Any] | None:
     songs = list_songs_by_singer(singer)
     if not songs:
         return None
+    await prefetch_emoji_assets([
+        singer,
+        *(str(song.get("title") or "") for song in songs),
+    ])
     image_path = _save_singer_song_list(singer, songs)
     return {
         "image_path": image_path,
@@ -294,6 +287,9 @@ async def render_songs_by_date(target_date: date) -> dict[str, Any] | None:
     songs = get_songs_of_date(target_date)
     if not songs:
         return None
+    await prefetch_emoji_assets([
+        *(str(song.get("title") or "") for song in songs),
+    ])
     image_path = _save_song_list_by_date(target_date, songs)
     return {
         "image_path": image_path,

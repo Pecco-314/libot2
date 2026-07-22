@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import logging
 import smtplib
-import unicodedata
 from email.mime.text import MIMEText
 from email.header import Header
 from pathlib import Path
@@ -69,25 +68,22 @@ def send_notification_email(subject: str, content: str) -> None:
 
 
 def truncate_name(name: str, max_len: int = 18) -> str:
-    current_width = 0
-    truncated_str = ""
-    
-    # 预留出省略号 "..." 的宽度
-    limit = max_len - 3
-    
-    # 首先检查总宽度，如果没超限直接返回
-    total_width = sum(2 if unicodedata.east_asian_width(c) in 'WFA' else 1 for c in name)
+    from src.common.text import split_text_units, text_unit_width
+
+    units = split_text_units(name)
+    total_width = sum(text_unit_width(unit) for unit in units)
     if total_width <= max_len:
         return name
 
-    for char in name:
-        # 判断当前字符宽度
-        width = 2 if unicodedata.east_asian_width(char) in 'WFA' else 1
-        
+    current_width = 0
+    truncated_units: list[str] = []
+    limit = max_len - 3
+    for unit in units:
+        width = text_unit_width(unit)
         if current_width + width <= limit:
-            truncated_str += char
+            truncated_units.append(unit)
             current_width += width
         else:
             break
-            
-    return truncated_str + "..."
+
+    return "".join(truncated_units) + "..."

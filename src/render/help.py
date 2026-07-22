@@ -1,33 +1,21 @@
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
 
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image
 
 from src.common.utils import ROOT
 
 
 def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
-    """基于英文单词和汉字的智能换行"""
-    tokens = re.findall(r"[a-zA-Z0-9]+|\s+|[^\x00-\xff]|.", text)
-    lines = []
-    curr_line = ""
-    for token in tokens:
-        test_line = curr_line + token
-        if Text2Image.from_text(test_line, font_size, weight=weight).width > max_width:
-            if curr_line:
-                lines.append(curr_line.rstrip())
-                curr_line = "" if token.isspace() else token
-            else:
-                lines.append(token)
-                curr_line = ""
-        else:
-            curr_line = test_line
-    if curr_line:
-        lines.append(curr_line.rstrip())
-    return "\n".join(lines)
+    """按英文单词、汉字和完整 Emoji 序列换行。"""
+    return (
+        Text2Image.from_text(text, font_size, weight=weight)
+        .wrap(max_width)
+        .wrapped_text
+    )
 
 
 def draw_help_card(sections: list[dict[str, Any]], subtitle: str = "") -> BuildImage:

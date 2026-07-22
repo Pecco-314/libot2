@@ -7,7 +7,9 @@ from datetime import datetime
 from typing import Dict, Optional, Any
 
 from nonebot.log import logger
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.common.text import split_text_units
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 # 全局图片缓存
 IMG_CACHE: Dict[str, BuildImage] = {}
@@ -130,6 +132,7 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
     """渲染正文：处理文字、自定义表情和配图"""
     if not text and not pic_urls:
         return None
+    await prefetch_emoji_assets([text])
 
     # 预估行高和布局
     line_height = int(font_size * 1.5)
@@ -160,34 +163,34 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
             curr_line.append({'type': 'emoji', 'url': emoji_dict[token], 'w': w, 'x': curr_x})
             curr_x += w
         else:
-            for char in token:
-                if char == '\n':
+            for unit in split_text_units(token):
+                if "\n" in unit or "\r" in unit:
                     lines.append(curr_line)
                     curr_line = []
                     curr_x = 0
                     continue
 
-                if char not in char_width_cache:
-                    char_image = Text2Image.from_text(char, font_size)
-                    if char_image.width <= 0 or char_image.height <= 0:
-                        char_width_cache[char] = 0
+                if unit not in char_width_cache:
+                    unit_image = Text2Image.from_text(unit, font_size)
+                    if unit_image.width <= 0 or unit_image.height <= 0:
+                        char_width_cache[unit] = 0
                     else:
-                        char_width_cache[char] = char_image.width
-                char_w = char_width_cache[char]
+                        char_width_cache[unit] = unit_image.width
+                unit_width = char_width_cache[unit]
 
-                if char_w <= 0:
+                if unit_width <= 0:
                     continue
                 
-                if curr_x + char_w > width and curr_line:
+                if curr_x + unit_width > width and curr_line:
                     lines.append(curr_line)
                     curr_line = []
                     curr_x = 0
                     
                 if curr_line and curr_line[-1]['type'] == 'text':
-                    curr_line[-1]['content'] += char
+                    curr_line[-1]['content'] += unit
                 else:
-                    curr_line.append({'type': 'text', 'content': char, 'x': curr_x})
-                curr_x += char_w
+                    curr_line.append({'type': 'text', 'content': unit, 'x': curr_x})
+                curr_x += unit_width
                 
     if curr_line:
         lines.append(curr_line)
@@ -242,6 +245,7 @@ async def render_text_and_images(text: str, pic_urls: list, width: int, font_siz
 async def render_bilibili_card(item: dict[str, Any]) -> BuildImage:
     """直接接收新版 API 的 item 字典并渲染"""
     main_info = extract_dynamic_info(item)
+    await prefetch_emoji_assets([main_info["username"]])
     timestamp = int(item.get("modules", {}).get("module_author", {}).get("pub_ts", 0))
     
     # 准备画布尺寸

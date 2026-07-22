@@ -1,7 +1,8 @@
 import uuid
 from typing import Any
 
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
 
@@ -124,4 +125,8 @@ def save_danmaku_rank(title: str, items: list[dict[str, Any]]) -> dict[str, Any]
 
 
 async def render_danmaku_rank(title: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    await prefetch_emoji_assets([
+        title,
+        *(str(item.get("uname") or "") for item in items),
+    ])
     return save_danmaku_rank(title, items)

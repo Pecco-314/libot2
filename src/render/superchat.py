@@ -3,7 +3,7 @@ import math
 from PIL import Image, ImageDraw
 
 from pathlib import Path
-from nonebot_plugin_imageutils import Text2Image
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.db.event import list_superchat_event_by_day, list_superchat_events_by_uid
 from src.spider.wrapper import get_name_by_roomid
@@ -40,10 +40,8 @@ def draw_text(base_image: Image.Image, x: int, y: int, text: str, fill: tuple, f
     if max_width > 0:
         t2i.wrap(max_width) # 如果设置了最大宽度，自动折行
     
-    text_img = t2i.to_image()
-    # paste 需要第三个参数作为 mask 保证透明背景正常
-    base_image.paste(text_img, (int(x), int(y)), text_img)
-    return text_img.height
+    t2i.draw_on_image(base_image, (x, y))
+    return t2i.height
 
 def generate_superchat_image(
     data_list: list,
@@ -168,6 +166,12 @@ async def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk
         return []
 
     room_name = await get_name_by_roomid(room_id)
+    await prefetch_emoji_assets([
+        room_name,
+        *(str(item["uname"]) for item in data_list),
+        *(str(item["content"]) for item in data_list),
+    ])
+
     total_chunks = max(1, math.ceil(len(data_list) / chunk_size))
     generated_paths = []
 
@@ -214,6 +218,13 @@ async def get_user_superchat_images(
         return []
 
     room_name = await get_name_by_roomid(room_id)
+    await prefetch_emoji_assets([
+        room_name,
+        user_name,
+        *(str(item["uname"]) for item in data_list),
+        *(str(item["content"]) for item in data_list),
+    ])
+
     image_dir = (
         ROOT
         / "data"

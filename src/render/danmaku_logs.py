@@ -6,7 +6,9 @@ import re
 from datetime import datetime
 from typing import Any
 
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.common.text import split_text_units
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT
 
@@ -93,9 +95,17 @@ def _merge_events(events: list[dict[str, Any]], merge_window: int = 30) -> list[
     return merged
 
 
-def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int = 100, show_date: bool = False) -> list[str]:
+async def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int = 100, show_date: bool = False) -> list[str]:
     if not events:
         return []
+
+    await prefetch_emoji_assets([
+        title,
+        *(str(event.get("uname") or "") for event in events),
+        *(str(event.get("content") or "") for event in events),
+        *(str(event.get("gift_name") or "") for event in events),
+        *(str(event.get("title") or "") for event in events),
+    ])
 
     events = _merge_events(events)
 
@@ -115,7 +125,7 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
     def clean_text(s: str | None) -> str:
         if not s:
             return ""
-        s = re.sub(r'[\u200b\u200c\u200d\uFEFF]', '', s)
+        s = re.sub(r'[\u200b\uFEFF]', '', s)
         s = s.replace('\xa0', ' ')
         return s
 
@@ -129,22 +139,28 @@ def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int 
         lines = []
         current_line = [(time_part, text_color)]
         current_width = indent_width
+        unit_width_cache: dict[str, int] = {}
         
         def add_segment(content: str, color: tuple):
             nonlocal current_line, current_width, lines
             accum = ""
-            for char in content:
-                cw = font_size if ord(char) > 255 else font_size // 2 + 1
-                if current_width + cw > max_width:
+            for unit in split_text_units(content):
+                if unit not in unit_width_cache:
+                    unit_width_cache[unit] = Text2Image.from_text(
+                        unit, font_size
+                    ).width
+                unit_width = unit_width_cache[unit]
+                if current_width + unit_width > max_width:
                     if accum:
                         current_line.append((accum, color))
                     lines.append(current_line)
                     current_line = []
                     current_width = indent_width
-                    accum = char
+                    accum = unit
+                    current_width += unit_width
                 else:
-                    accum += char
-                    current_width += cw
+                    accum += unit
+                    current_width += unit_width
             if accum:
                 current_line.append((accum, color))
 

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from nonebot_plugin_imageutils import BuildImage, Text2Image
+from nonebot_plugin_imageutils import BuildImage
+from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
 
@@ -28,6 +29,10 @@ async def render_live_sessions_image(room_id: int, month: str) -> Path | None:
     sessions = data.get("sessions", [])
     if not sessions:
         return None
+
+    await prefetch_emoji_assets([
+        *(str(item.get("title") or "") for item in sessions),
+    ])
 
     queried_user = data.get("queried_user", str(room_id))
     refresh_time = data.get("refresh_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
