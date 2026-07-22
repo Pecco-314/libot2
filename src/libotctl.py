@@ -205,6 +205,15 @@ def _start(spec: ModuleSpec) -> int:
     log_handle = spec.log_file.open("a", encoding="utf-8") if spec.redirect_output else None
 
     work_dir = spec.cwd if spec.cwd else ROOT
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.lower().endswith("_proxy")
+    }
+    if spec.name == "napcat":
+        child_env = os.environ.copy()
+        child_env["NO_PROXY"] = "*"
+        child_env["no_proxy"] = "*"
 
     try:
         process = subprocess.Popen(
@@ -213,6 +222,7 @@ def _start(spec: ModuleSpec) -> int:
             stdin=subprocess.DEVNULL,
             stdout=log_handle if spec.redirect_output else subprocess.DEVNULL,
             stderr=log_handle if spec.redirect_output else subprocess.DEVNULL,
+            env=child_env,
             start_new_session=True,
         )
     except FileNotFoundError as exc:

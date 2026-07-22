@@ -12,7 +12,7 @@ from src.common.utils import ROOT, truncate_name
 
 async def fetch_dc_data(filter_type: str, month: str) -> list[dict[str, Any]]:
     url = f"https://dc.hihivr.top/gift/by_month?month={month}&filter={filter_type}"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         resp = await client.get(url, timeout=15)
         resp.raise_for_status()
         return resp.json().get("anchors", [])

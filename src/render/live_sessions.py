@@ -12,7 +12,7 @@ from src.common.utils import ROOT, truncate_name
 
 async def fetch_live_sessions_data(room_id: int, month: str) -> dict[str, Any]:
     url = f"https://dc.hihivr.top/gift/live_sessions?room_id={room_id}&union=VirtuaReal&month={month}"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=False) as client:
         resp = await client.get(url, timeout=15)
         resp.raise_for_status()
         return resp.json()
