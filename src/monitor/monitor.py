@@ -191,6 +191,14 @@ class MetricsDB:
                 ON event(cmd, timestamp)
                 """,
             )
+            _execute_write(
+                conn,
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_event_sc_unique
+                ON event(room_id, uid, content, total_coin, timestamp)
+                WHERE cmd = 'SUPER_CHAT_MESSAGE'
+                """,
+            )
 
     def insert_many(self, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
@@ -199,7 +207,7 @@ class MetricsDB:
             _execute_many_write(
                 conn,
                 """
-                INSERT INTO event (
+                INSERT OR IGNORE INTO event (
                     room_id, cmd, uid, uname, content, gift_name, gift_num,
                     total_coin, title, timestamp
                 )
