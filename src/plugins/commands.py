@@ -665,8 +665,8 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         param = "100" # 默认100条
     if param.isdigit():
         limit = int(param)
-        if limit <= 0 or limit > 1000:
-            await matcher.finish("查询数量必须在1到1000之间")
+        if limit <= 0 or limit > 2000:
+            await matcher.finish("查询数量必须在1到2000之间")
         title_suffix = f"最近 {limit} 条"
     else:
         try:
