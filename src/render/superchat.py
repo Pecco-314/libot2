@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw
 from pathlib import Path
 from nonebot_plugin_imageutils import Text2Image
 
-from src.db.event import list_superchat_event_by_day
+from src.db.event import list_superchat_event_by_day, list_superchat_events_by_uid
 from src.spider.wrapper import get_name_by_roomid
 from src.common.utils import ROOT, truncate_name
 
@@ -45,7 +45,13 @@ def draw_text(base_image: Image.Image, x: int, y: int, text: str, fill: tuple, f
     base_image.paste(text_img, (int(x), int(y)), text_img)
     return text_img.height
 
-def generate_superchat_image(data_list: list, room_name: str, date_str: str, part_idx: int) -> Image.Image | None:
+def generate_superchat_image(
+    data_list: list,
+    room_name: str,
+    date_str: str,
+    part_idx: int,
+    show_date: bool = False,
+) -> Image.Image | None:
     if len(data_list) == 0:
         return None
 
@@ -55,7 +61,7 @@ def generate_superchat_image(data_list: list, room_name: str, date_str: str, par
     header_height = 40
     
     col_widths = {
-        'time': 80,
+        'time': 130 if show_date else 80,
         'uname': 140,
         'price': 60,
         'content': 350
@@ -114,7 +120,8 @@ def generate_superchat_image(data_list: list, room_name: str, date_str: str, par
 
         draw.rectangle([0, current_y, img_width, current_y + row_height], fill=bg_color)
         
-        time_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime("%H:%M:%S")
+        time_format = "%Y-%m-%d %H:%M" if show_date else "%H:%M:%S"
+        time_str = datetime.datetime.fromtimestamp(item['timestamp']).strftime(time_format)
         uname = truncate_name(str(item['uname']))
         price = f"￥{item['price']}"
 
@@ -192,5 +199,49 @@ async def get_daily_superchat_images(room_id: int, day: datetime.datetime, chunk
         if is_full:
             if today.exists():
                 today.unlink()
+
+    return generated_paths
+
+
+async def get_user_superchat_images(
+    room_id: int,
+    uid: int,
+    user_name: str,
+    chunk_size: int = 40,
+) -> list[Path]:
+    data_list = list_superchat_events_by_uid(room_id, uid)
+    if not data_list:
+        return []
+
+    room_name = await get_name_by_roomid(room_id)
+    image_dir = (
+        ROOT
+        / "data"
+        / "images"
+        / "superchat"
+        / str(room_id)
+        / "users"
+        / str(uid)
+    )
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    total_chunks = max(1, math.ceil(len(data_list) / chunk_size))
+    generated_paths: list[Path] = []
+    scope_label = f"{user_name}，UID {uid}，全部记录"
+    for i in range(total_chunks):
+        part_idx = i + 1
+        chunk_data = data_list[i * chunk_size : (i + 1) * chunk_size]
+        image = generate_superchat_image(
+            chunk_data,
+            room_name,
+            scope_label,
+            part_idx,
+            show_date=True,
+        )
+        if image is None:
+            continue
+        image_path = image_dir / f"part_{part_idx}.png"
+        image.save(image_path)
+        generated_paths.append(image_path)
 
     return generated_paths

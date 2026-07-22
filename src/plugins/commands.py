@@ -16,7 +16,7 @@ from nonebot.permission import SUPERUSER
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
 from src.db.song_list import search_songs_by_title, add_new_song, add_song_record
-from src.render.superchat import get_daily_superchat_images
+from src.render.superchat import get_daily_superchat_images, get_user_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
 from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer, render_songs_by_date
@@ -138,18 +138,36 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
     if room_id is None:
         await matcher.finish("请先设置订阅")
 
-    date_str = arg.extract_plain_text().strip()
-    if date_str:
+    query = arg.extract_plain_text().strip()
+    if not query:
+        images = await get_daily_superchat_images(room_id, datetime.now(), chunk_size=40)
+        empty_message = "今天没有找到醒目留言"
+    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", query):
         try:
-            day = datetime.strptime(date_str, "%Y-%m-%d")
+            day = datetime.strptime(query, "%Y-%m-%d")
         except ValueError:
             await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+        images = await get_daily_superchat_images(room_id, day, chunk_size=40)
+        empty_message = f"{query} 没有找到醒目留言"
     else:
-        day = datetime.now()
+        if query.isdigit():
+            uid = int(query)
+        else:
+            uid = get_latest_uid_by_uname(room_id, query)
+            if uid is None:
+                await matcher.finish(f"未找到用户：{query}")
 
-    images = await get_daily_superchat_images(room_id, day, chunk_size=40)
+        user_name = await get_name_by_uid(uid) or query
+        images = await get_user_superchat_images(
+            room_id,
+            uid,
+            user_name,
+            chunk_size=40,
+        )
+        empty_message = f"没有找到 {user_name}（UID {uid}）的醒目留言"
+
     if not images:
-        await matcher.finish("没有找到醒目留言")
+        await matcher.finish(empty_message)
     
     nodes = []
     for img in images:

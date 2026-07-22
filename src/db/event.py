@@ -148,6 +148,28 @@ def list_superchat_events(room_id: int, from_time: int, to_time: int) -> list[di
         for row in rows
     ]
 
+
+def list_superchat_events_by_uid(room_id: int, uid: int) -> list[dict[str, object]]:
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT uname, content, total_coin, timestamp FROM event
+            WHERE room_id = ? AND cmd = 'SUPER_CHAT_MESSAGE' AND uid = ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id, uid),
+        ).fetchall()
+    return [
+        {
+            "uname": row[0],
+            "content": row[1],
+            "price": row[2],
+            "timestamp": row[3],
+        }
+        for row in rows
+    ]
+
+
 def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, object]]:
     start_of_day = int(day.replace(hour=0, minute=0, second=0).timestamp())
     end_of_day = int(day.replace(hour=23, minute=59, second=59).timestamp())
