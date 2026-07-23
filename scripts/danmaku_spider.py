@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+import httpx
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,6 +20,7 @@ BASE_URL = "https://ukamnads.icu/api/v3/lives"
 DEFAULT_LIMIT = 10000
 TRACKED_TYPES = {0, 1, 2, 3, 5, 11, 12}
 DEDUPE_WINDOW_SECONDS = 3
+SESSION_MARKER_DEDUPE_WINDOW_SECONDS = 60
 DB_PATH = PROJECT_ROOT / "data" / "libot.db"
 EMOJI_JSON_PATH = PROJECT_ROOT / "scripts" / "emoji.json"
 
@@ -42,11 +44,16 @@ def _save_emoji_dict(emoji_dict: dict[str, str]) -> None:
 EMOJI_DICT = _load_emoji_dict()
 
 def _request_json(url: str, timeout: int = 30) -> Any:
-    req = Request(url, headers={"User-Agent": "libot2-danmaku-spider/1.0"})
-    with urlopen(req, timeout=timeout) as resp:
-        charset = resp.headers.get_content_charset() or "utf-8"
-        data = resp.read().decode(charset)
-    return json.loads(data)
+    transport = httpx.HTTPTransport(retries=3, local_address="0.0.0.0")
+    with httpx.Client(
+        headers={"User-Agent": "libot2-danmaku-spider/1.0"},
+        timeout=timeout,
+        transport=transport,
+        trust_env=False,
+    ) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.json()
 
 def _extract_frame(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], bool, int | None]:
     if not isinstance(payload, dict):
@@ -316,12 +323,17 @@ def _filter_duplicates(rows: list[EventRow], existing_map: dict[tuple[Any, ...],
 
     for row in rows:
         key = _event_key(row)
+        window = (
+            SESSION_MARKER_DEDUPE_WINDOW_SECONDS
+            if row.cmd in {"LIVE", "PREPARING"}
+            else DEDUPE_WINDOW_SECONDS
+        )
         timestamps = existing_map.get(key, [])
-        if any(abs(row.timestamp - ts) <= DEDUPE_WINDOW_SECONDS for ts in timestamps):
+        if any(abs(row.timestamp - ts) <= window for ts in timestamps):
             removed_by_cmd[row.cmd] = removed_by_cmd.get(row.cmd, 0) + 1
             continue
         new_ts = new_map.get(key, [])
-        if any(abs(row.timestamp - ts) <= DEDUPE_WINDOW_SECONDS for ts in new_ts):
+        if any(abs(row.timestamp - ts) <= window for ts in new_ts):
             removed_by_cmd[row.cmd] = removed_by_cmd.get(row.cmd, 0) + 1
             continue
         new_ts.append(row.timestamp)
@@ -367,8 +379,8 @@ def main() -> int:
         print(f"处理了 0 行数据 (总记录数: {total_records})")
         return 0
 
-    min_ts = min(row.timestamp for row in rows) - DEDUPE_WINDOW_SECONDS
-    max_ts = max(row.timestamp for row in rows) + DEDUPE_WINDOW_SECONDS
+    min_ts = min(row.timestamp for row in rows) - SESSION_MARKER_DEDUPE_WINDOW_SECONDS
+    max_ts = max(row.timestamp for row in rows) + SESSION_MARKER_DEDUPE_WINDOW_SECONDS
     existing = _load_existing_events(room_id, min_ts, max_ts)
     rows, removed_by_cmd = _filter_duplicates(rows, existing)
 
