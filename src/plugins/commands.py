@@ -1196,7 +1196,7 @@ async def handle_add_song(event: Event, arg: Message = CommandArg()):
     if not raw_text:
         await cmd_add_song.finish(
             "请提供歌曲信息，参数使用 | 隔开，格式如下：\n"
-            "/新增歌曲 歌名 | 歌手 | 语言 | 翻译名(可选)"
+            "新增歌曲 歌名 | 歌手 | 语言 | 翻译名(可选)"
         )
         
     parts = [p.strip() for p in re.split(r'[|｜]', raw_text)]
