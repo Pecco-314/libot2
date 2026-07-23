@@ -42,10 +42,12 @@ def _format_event_text(event: dict[str, Any]) -> tuple[str, tuple[int, int, int]
         price_value = merge_amount if merge_amount is not None else total_coin
         price = _format_price(price_value, is_thousandth=True)
         price_text = f"（{price}）" if price else ""
-        return f"送出了{name}*{num}{price_text}", (199, 52, 122), suffix
+        return f"送出了{name}*{num}{price_text}", (199, 52, 122), None
     if cmd == "GUARD_BUY":
         name = str(gift_name or "大航海")
-        return f"开通了{name}", (230, 126, 34), suffix
+        num = int(gift_num or 1)
+        num_text = f"*{num}" if num > 1 else ""
+        return f"开通了{name}{num_text}", (230, 126, 34), suffix
     if cmd == "SUPER_CHAT_MESSAGE":
         price = _format_price(total_coin, is_thousandth=False)
         text_suffix = f"（{price}）：{content}" if price else f"：{content}" if content else ""
