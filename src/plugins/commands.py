@@ -640,13 +640,38 @@ async def handle_danmaku_rank(matcher: Matcher, event: Event, arg=CommandArg()):
     await matcher.finish(message)
 
 
-def _parse_events_args(text: str) -> tuple[str | None, str | None]:
+def _parse_events_args(text: str) -> tuple[str | None, str | None, int | None]:
     parts = [p for p in text.strip().split() if p]
     if not parts:
-        return None, None
+        return None, None, None
+    if len(parts) > 3:
+        raise ValueError(
+            "用法：/查弹幕 <UID/用户名> [日期/数量] [日期/数量]"
+        )
+
     target = parts[0]
-    date_str = parts[1] if len(parts) > 1 else None
-    return target, date_str
+    date_str: str | None = None
+    limit: int | None = None
+    for param in parts[1:]:
+        if param.isdigit():
+            if limit is not None:
+                raise ValueError("日期和数量各只能填写一次")
+            limit = int(param)
+            if limit <= 0 or limit > 2000:
+                raise ValueError("查询数量必须在1到2000之间")
+            continue
+
+        try:
+            datetime.strptime(param, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                "参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)"
+            ) from exc
+        if date_str is not None:
+            raise ValueError("日期和数量各只能填写一次")
+        date_str = param
+
+    return target, date_str, limit
 
 
 @events_cmd.handle()
@@ -659,12 +684,16 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     if room_id is None:
         await matcher.finish("请先设置订阅")
 
-    args = arg.extract_plain_text().strip().split()
-    if not args:
-        await matcher.finish("用法：/查弹幕 <UID/用户名> [日期/数量]")
-
-    query_user = args[0]
-    param = args[1] if len(args) > 1 else None
+    try:
+        query_user, date_str, limit = _parse_events_args(
+            arg.extract_plain_text()
+        )
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+    if query_user is None:
+        await matcher.finish(
+            "用法：/查弹幕 <UID/用户名> [日期/数量] [日期/数量]"
+        )
 
     # 获取 UID
     if query_user.isdigit():
@@ -674,33 +703,37 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         if uid is None:
             await matcher.finish(f"未找到用户：{query_user}")
 
-    limit = None
     start_ts = None
     end_ts = None
     title_suffix = ""
 
-    if not param:
-        param = "100" # 默认100条
-    if param.isdigit():
-        limit = int(param)
-        if limit <= 0 or limit > 2000:
-            await matcher.finish("查询数量必须在1到2000之间")
-        title_suffix = f"最近 {limit} 条"
-    else:
-        try:
-            target_date = datetime.strptime(param, "%Y-%m-%d").date()
-            start_dt = datetime.combine(target_date, datetime.min.time())
-            end_dt = datetime.combine(target_date, datetime.max.time())
-            start_ts = int(start_dt.timestamp())
-            end_ts = int(end_dt.timestamp())
-            title_suffix = param
-        except ValueError:
-            await matcher.finish("参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)")
+    if date_str is None and limit is None:
+        limit = 100
 
-    # 根据解析结果执行不同的查询
+    if date_str is not None:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        start_dt = datetime.combine(target_date, datetime.min.time())
+        end_dt = datetime.combine(target_date, datetime.max.time())
+        start_ts = int(start_dt.timestamp())
+        end_ts = int(end_dt.timestamp())
+
     if limit is not None:
-        events = list_recent_events_by_uid(room_id, uid, limit)
+        if date_str is not None:
+            title_suffix = f"截至 {date_str} 最近 {limit} 条"
+        else:
+            title_suffix = f"最近 {limit} 条"
     else:
+        title_suffix = date_str or ""
+
+    if limit is not None:
+        events = list_recent_events_by_uid(
+            room_id,
+            uid,
+            limit,
+            end_ts=end_ts,
+        )
+    else:
+        assert start_ts is not None and end_ts is not None
         events = list_events_by_uid(room_id, uid, start_ts, end_ts)
 
     if not events:

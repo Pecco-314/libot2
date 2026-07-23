@@ -433,17 +433,29 @@ def list_name_history_by_name_or_uid(query: str) -> list[dict[str, object]]:
         return list_name_history_by_name(query)
 
 
-def list_recent_events_by_uid(room_id: int, uid: int, limit: int) -> list[dict[str, Any]]:
+def list_recent_events_by_uid(
+    room_id: int,
+    uid: int,
+    limit: int,
+    end_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    end_condition = "AND timestamp <= ?" if end_ts is not None else ""
+    params: tuple[Any, ...] = (
+        (room_id, uid, end_ts, limit)
+        if end_ts is not None
+        else (room_id, uid, limit)
+    )
     with connect_sqlite() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp
             FROM event
             WHERE room_id = ? AND uid = ?
+              {end_condition}
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """,
-            (room_id, uid, limit),
+            params,
         ).fetchall()
 
     return [
