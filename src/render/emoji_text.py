@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import logging
-import os
 import unicodedata
-import uuid
 from dataclasses import dataclass
 from functools import lru_cache
-from io import BytesIO
 from pathlib import Path
 from typing import Iterable
 
 import emoji
-import httpx
 from PIL import Image
 from nonebot_plugin_imageutils import Text2Image as PlainText2Image
 
@@ -22,33 +16,28 @@ from src.common.utils import ROOT
 
 logger = logging.getLogger(__name__)
 
-_EMOJI_CACHE_DIR = ROOT / "data" / "cache" / "emoji"
-_EMOJI_CDN = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.3/assets/72x72"
-_DEFAULT_HTTP_TIMEOUT = 15.0
+_EMOJI_ASSET_DIR = ROOT / "data" / "assets" / "twemoji" / "17.0.3" / "72x72"
 
 
-def _emoji_cache_path(value: str) -> Path:
-    codepoints = "-".join(f"{ord(char):x}" for char in value)
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-    return _EMOJI_CACHE_DIR / f"{codepoints}-{digest}.png"
-
-
-def _twemoji_filename(value: str) -> str:
-    codepoints = "-".join(
+def _twemoji_key(value: str) -> str:
+    return "-".join(
         f"{ord(char):x}" for char in value if char not in {"\ufe0e", "\ufe0f"}
     )
-    return f"{codepoints}.png"
 
 
-def _http_timeout() -> float:
-    try:
-        return max(0.5, float(os.environ.get("EMOJI_HTTP_TIMEOUT", _DEFAULT_HTTP_TIMEOUT)))
-    except ValueError:
-        return _DEFAULT_HTTP_TIMEOUT
+@lru_cache(maxsize=1)
+def _emoji_asset_index() -> dict[str, Path]:
+    index: dict[str, Path] = {}
+    for path in _EMOJI_ASSET_DIR.glob("*.png"):
+        key = "-".join(
+            part for part in path.stem.split("-") if part not in {"fe0e", "fe0f"}
+        )
+        index[key] = path
+    return index
 
 
-def _read_image(data: bytes) -> Image.Image:
-    with Image.open(BytesIO(data)) as image:
+def _read_image(path: Path) -> Image.Image:
+    with Image.open(path) as image:
         return image.convert("RGBA")
 
 
@@ -73,67 +62,26 @@ def _unpremultiply_alpha(image: Image.Image) -> Image.Image:
 
 @lru_cache(maxsize=512)
 def _load_emoji_asset(value: str) -> Image.Image | None:
-    """只从本地磁盘缓存读取彩色 Emoji，不在渲染阶段阻塞网络。"""
-    cache_path = _emoji_cache_path(value)
-    if not cache_path.exists():
+    """从固定版本的本地 Twemoji 资源读取彩色 Emoji。"""
+    asset_path = _emoji_asset_index().get(_twemoji_key(value))
+    if asset_path is None:
+        logger.warning("本地 Twemoji 资源缺失：%r", value)
         return None
 
     try:
-        return _read_image(cache_path.read_bytes())
-    except Exception:
-        logger.warning("Emoji 缓存损坏，将在下次预取时重新下载：%s", cache_path)
-        cache_path.unlink(missing_ok=True)
+        return _read_image(asset_path)
+    except Exception as exc:
+        logger.warning("读取本地 Twemoji 资源失败 %s: %r", asset_path, exc)
         return None
-
-
-def _save_emoji_asset(value: str, image: Image.Image) -> None:
-    cache_path = _emoji_cache_path(value)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = cache_path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        image.save(temporary_path, format="PNG")
-        temporary_path.replace(cache_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 async def prefetch_emoji_assets(texts: Iterable[str]) -> None:
-    """并发预取文本中的完整 Emoji 序列；渲染器随后只读取本地缓存。"""
-    values = {
-        unit
-        for text in texts
-        for unit in split_text_units(str(text))
-        if emoji.is_emoji(unit)
-    }
-    missing = [value for value in values if _load_emoji_asset(value) is None]
-    if not missing:
-        return
-
-    semaphore = asyncio.Semaphore(6)
-    timeout = httpx.Timeout(_http_timeout())
-
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-    ) as client:
-        async def fetch(value: str) -> None:
-            url = f"{_EMOJI_CDN}/{_twemoji_filename(value)}"
-            async with semaphore:
-                try:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    image = _read_image(response.content)
-                    _save_emoji_asset(value, image)
-                except Exception as exc:
-                    logger.warning("预取 Emoji 资源失败 %r: %r", value, exc)
-
-        await asyncio.gather(*(fetch(value) for value in missing))
-
-    _load_emoji_asset.cache_clear()
+    """兼容旧调用；完整 Twemoji 已内置，不再需要网络预取。"""
+    return None
 
 
 def _safe_fallback_text(value: str) -> str:
-    """CDN 不可用时保留基础符号，丢弃本身不可见的序列控制字符。"""
+    """本地资源缺失时保留基础符号，丢弃不可见的序列控制字符。"""
     return "".join(
         char
         for char in value
