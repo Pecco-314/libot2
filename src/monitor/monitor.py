@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import http.cookies
 import json
 import os
@@ -26,6 +27,7 @@ logger = init_logger("monitor")
 TRACKED_CMDS = {
     "DANMU_MSG",
     "SEND_GIFT",
+    "SEND_GIFT_V2",
     "GUARD_BUY",
     "SUPER_CHAT_MESSAGE",
     "LIVE",
@@ -240,10 +242,157 @@ def _extract_heartbeat_popularity(command: dict[str, Any]) -> int | None:
     return None
 
 
+def _payload_for_log(command: dict[str, Any], limit: int = 12000) -> str:
+    try:
+        payload = json.dumps(command, ensure_ascii=False, default=str)
+    except Exception:
+        payload = repr(command)
+    if len(payload) > limit:
+        return f"{payload[:limit]}...<truncated {len(payload) - limit} chars>"
+    return payload
+
+
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _timestamp_seconds(value: Any) -> int:
+    timestamp = _int_value(value)
+    if timestamp >= 10_000_000_000:
+        return timestamp // 1000
+    if timestamp <= 0:
+        return int(datetime.now().timestamp())
+    return timestamp
+
+
+def _read_proto_varint(payload: bytes, pos: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while True:
+        if pos >= len(payload):
+            raise ValueError("protobuf varint 截断")
+        byte = payload[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value, pos
+        shift += 7
+        if shift > 63:
+            raise ValueError("protobuf varint 过长")
+
+
+def _decode_proto_fields(payload: bytes) -> dict[int, list[int | bytes]]:
+    fields: dict[int, list[int | bytes]] = {}
+    pos = 0
+    while pos < len(payload):
+        key, pos = _read_proto_varint(payload, pos)
+        field_number = key >> 3
+        wire_type = key & 0x07
+        if field_number <= 0:
+            raise ValueError("protobuf 字段号非法")
+        if wire_type == 0:
+            value, pos = _read_proto_varint(payload, pos)
+        elif wire_type == 1:
+            end = pos + 8
+            value = payload[pos:end]
+            pos = end
+        elif wire_type == 2:
+            size, pos = _read_proto_varint(payload, pos)
+            end = pos + size
+            value = payload[pos:end]
+            pos = end
+        elif wire_type == 5:
+            end = pos + 4
+            value = payload[pos:end]
+            pos = end
+        else:
+            raise ValueError(f"不支持的 protobuf wire type: {wire_type}")
+        if pos > len(payload):
+            raise ValueError("protobuf 字段截断")
+        fields.setdefault(field_number, []).append(value)
+    return fields
+
+
+def _proto_int(fields: dict[int, list[int | bytes]], number: int, default: int = 0) -> int:
+    for value in reversed(fields.get(number, [])):
+        if isinstance(value, int):
+            return value
+    return default
+
+
+def _proto_bytes(fields: dict[int, list[int | bytes]], number: int) -> bytes:
+    for value in reversed(fields.get(number, [])):
+        if isinstance(value, bytes):
+            return value
+    raise ValueError(f"protobuf 缺少 bytes 字段 {number}")
+
+
+def _extract_v2_gift_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...]:
+    data = command.get("data")
+    if not isinstance(data, dict):
+        raise TypeError(f"SEND_GIFT_V2 data 不是对象: {type(data).__name__}")
+    encoded = data.get("pb")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("SEND_GIFT_V2 缺少 data.pb")
+    payload = base64.b64decode(encoded, validate=True)
+    root_fields = _decode_proto_fields(payload)
+    gift_fields = _decode_proto_fields(_proto_bytes(root_fields, 10))
+    uid = _proto_int(root_fields, 1)
+    uname = _proto_bytes(root_fields, 2).decode("utf-8")
+    gift_name = _proto_bytes(gift_fields, 2).decode("utf-8")
+    gift_num = max(1, _proto_int(gift_fields, 3, 1))
+    price = _proto_int(gift_fields, 5)
+    total_coin = (
+        _proto_int(gift_fields, 7)
+        or _proto_int(gift_fields, 6)
+        or price * gift_num
+    )
+    timestamp = _timestamp_seconds(_proto_int(gift_fields, 10))
+    if not uid or not gift_name:
+        raise ValueError(f"SEND_GIFT_V2 缺少关键字段: uid={uid} gift_name={gift_name!r}")
+    logger.info(
+        "房间 %d 收到礼物，parser=protobuf-v2 uid=%d uname=%s "
+        "gift_name=%s gift_num=%d total_coin=%d timestamp=%d",
+        room_id,
+        uid,
+        uname,
+        gift_name,
+        gift_num,
+        total_coin,
+        timestamp,
+    )
+    return (
+        int(room_id),
+        "SEND_GIFT",
+        uid,
+        uname,
+        None,
+        gift_name,
+        gift_num,
+        total_coin,
+        None,
+        timestamp,
+    )
+
+
 def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | None:
     cmd = _normalized_cmd(command)
     if cmd not in TRACKED_CMDS:
         return None
+    if cmd == "SEND_GIFT_V2":
+        try:
+            return _extract_v2_gift_row(room_id, command)
+        except Exception:
+            logger.exception(
+                "房间 %d 解析 SEND_GIFT_V2 失败，事件不会入库；raw=%s",
+                room_id,
+                _payload_for_log(command),
+            )
+            return None
+
 
     uid: int | None = None
     uname: str | None = None
@@ -269,15 +418,59 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             timestamp = msg.timestamp // 1000
             logger.info("房间 %d 收到弹幕，uid=%d uname=%s content=%s", room_id, uid, uname, content)
         elif cmd == "SEND_GIFT":
-            msg = web_models.GiftMessage.from_command(command["data"])
-            uid = int(msg.uid)
-            uname = msg.uname
-            gift_name = msg.gift_name
-            gift_num = int(msg.num)
-            total_coin = int(msg.total_coin)
-            timestamp = msg.timestamp
-            logger.info("房间 %d 收到礼物，uid=%d uname=%s gift_name=%s gift_num=%d total_coin=%d",
-                        room_id, uid, uname, gift_name, gift_num, total_coin)
+            data = command.get("data")
+            if not isinstance(data, dict):
+                raise TypeError(f"SEND_GIFT data 不是对象: {type(data).__name__}")
+            logger.info(
+                "房间 %d 收到 SEND_GIFT 原始信号，data_keys=%s raw=%s",
+                room_id,
+                sorted(data.keys()),
+                _payload_for_log(command),
+            )
+            try:
+                msg = web_models.GiftMessage.from_command(data)
+                uid = int(msg.uid)
+                uname = msg.uname
+                gift_name = msg.gift_name
+                gift_num = int(msg.num)
+                total_coin = int(msg.total_coin)
+                timestamp = _timestamp_seconds(msg.timestamp)
+                parser = "blivedm"
+            except Exception as exc:
+                logger.warning(
+                    "房间 %d blivedm 解析 SEND_GIFT 失败，改用兼容解析：%s: %s",
+                    room_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                uid = _int_value(data.get("uid"))
+                uname = str(data.get("uname") or data.get("username") or "")
+                gift_name = str(data.get("giftName") or data.get("gift_name") or "")
+                gift_num = max(1, _int_value(data.get("num") or data.get("gift_num"), 1))
+                total_coin = _int_value(data.get("total_coin"))
+                if total_coin <= 0:
+                    total_coin = _int_value(data.get("price")) * gift_num
+                timestamp = _timestamp_seconds(
+                    data.get("timestamp") or data.get("send_time") or command.get("send_time")
+                )
+                parser = "fallback"
+            if not uid or not gift_name:
+                raise ValueError(
+                    f"SEND_GIFT 缺少关键字段: uid={uid} gift_name={gift_name!r} "
+                    f"total_coin={total_coin}"
+                )
+            logger.info(
+                "房间 %d 收到礼物，parser=%s uid=%d uname=%s gift_name=%s "
+                "gift_num=%d total_coin=%d timestamp=%d",
+                room_id,
+                parser,
+                uid,
+                uname,
+                gift_name,
+                gift_num,
+                total_coin,
+                timestamp,
+            )
         elif cmd == "GUARD_BUY":
             msg = web_models.GuardBuyMessage.from_command(command["data"])
             uid = int(msg.uid)
@@ -319,7 +512,13 @@ def _extract_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...] | Non
             timestamp = int(datetime.now().timestamp())
             logger.info("房间 %d 在线观众数=%s", room_id, content)
     except Exception:
-        pass
+        logger.exception(
+            "房间 %d 解析事件失败 cmd=%s，事件不会入库；raw=%s",
+            room_id,
+            cmd,
+            _payload_for_log(command),
+        )
+        return None
 
     return (
         int(room_id),
@@ -353,12 +552,29 @@ class RawEventHandler(handlers.HandlerInterface):
             except Exception:
                 pass
             return
+        if cmd not in TRACKED_CMDS and any(
+            token in cmd.upper() for token in ("GIFT", "COMBO", "BLIND_BOX")
+        ):
+            logger.warning(
+                "房间 %d 收到未识别的礼物相关命令 cmd=%s raw=%s",
+                client.room_id,
+                cmd,
+                _payload_for_log(command),
+            )
 
         row = _extract_row(client.room_id, command)
         if row is None:
             return
         try:
             self.queue.put_nowait(row)
+            if row[1] == "SEND_GIFT":
+                logger.info(
+                    "房间 %d 礼物已入队，queue_size=%d uid=%s gift_name=%s",
+                    client.room_id,
+                    self.queue.qsize(),
+                    row[2],
+                    row[5],
+                )
         except asyncio.QueueFull:
             logger.warning("事件队列已满，丢弃一条消息")
 
@@ -417,6 +633,18 @@ async def _writer_loop(
                     await asyncio.sleep(0.5)
                     continue
                 raise
+            gift_rows = [row for row in buffer if row[1] == "SEND_GIFT"]
+            for row in gift_rows:
+                logger.info(
+                    "房间 %s 礼物已落库，uid=%s gift_name=%s gift_num=%s "
+                    "total_coin=%s timestamp=%s",
+                    row[0],
+                    row[2],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[9],
+                )
             buffer.clear()
             last_flush = now
 
