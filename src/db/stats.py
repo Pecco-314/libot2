@@ -131,13 +131,23 @@ def list_stats(room_id: int, days: int) -> list[dict[str, Any]]:
     ]
 
 
-def get_stat_start_date(room_id: int) -> datetime:
+_STAT_VALUE_COLUMNS = {
+    "fans": "fans_num",
+    "guards": "guard_num",
+    "club": "fan_club_num",
+}
+
+
+def get_stat_start_date(room_id: int, stat_type: str = "fans") -> datetime:
+    value_column = _STAT_VALUE_COLUMNS.get(stat_type)
+    if value_column is None:
+        raise ValueError(f"未知统计类型: {stat_type}")
     with connect_sqlite() as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT datetime(created_at, '+8 hours') as local_time
             FROM stats
-            WHERE room_id = ?
+            WHERE room_id = ? AND {value_column} != -1
             ORDER BY local_time ASC
             LIMIT 1
             """,
@@ -145,5 +155,4 @@ def get_stat_start_date(room_id: int) -> datetime:
         ).fetchone()
     if row and row[0]:
         return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-    else:
-        return datetime.now()
+    return datetime.now()

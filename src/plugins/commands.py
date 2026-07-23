@@ -436,7 +436,7 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
     days = 1
     if query_text.isdigit():
         days = int(query_text)
-    stat_start_date = get_stat_start_date(room_id)
+    stat_start_date = get_stat_start_date(room_id, stat_type)
     days_since_stat_start = (datetime.now() - stat_start_date).days
 
     uname = await get_name_by_roomid(room_id) or str(room_id)
