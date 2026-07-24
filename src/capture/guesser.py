@@ -2,7 +2,6 @@ import time
 from typing import Any
 
 from src.db.transcript import get_recent_transcripts
-from src.db.ocr_record import get_recent_ocr_texts
 # 修正了导入路径
 from src.capture.fuzzy import LyricsMatcher
 
@@ -31,14 +30,17 @@ def guess_song(room_id: int, target_ts: int | None = None, window: int = 60) -> 
         _matcher.refresh()
 
     asr_texts = get_recent_transcripts(room_id, target_ts, window_seconds=window, limit=15)
-    ocr_texts = get_recent_ocr_texts(room_id, target_ts, window_seconds=window, limit=10)
 
-    # 数据结构变为收集证据数组：{song_id: {'info': ..., 'asr_evidences': [], 'ocr_evidences': []}}
+    # Each song accumulates independent ASR evidence from recent windows.
     song_scores_map = {}
 
-    def _process_and_score(texts: list[str], source_type: str):
+    def _process_and_score(texts: list[str]):
+        seen_texts: set[str] = set()
         for text in texts:
             text = text.strip()
+            if not text or text in seen_texts:
+                continue
+            seen_texts.add(text)
             # 计算有效字符长度（剔除空格，因为英文单词间的空格会虚报长度）
             eff_len = len(text.replace(" ", ""))
             if eff_len < 2:
@@ -60,31 +62,23 @@ def guess_song(room_id: int, target_ts: int | None = None, window: int = 60) -> 
                 if song_id not in song_scores_map:
                     song_scores_map[song_id] = {
                         'info': res,
-                        'asr_evidences': [],
-                        'ocr_evidences': []
+                        'evidences': [],
                     }
                 
-                song_scores_map[song_id][f"{source_type}_evidences"].append(evidence_score)
+                song_scores_map[song_id]['evidences'].append(evidence_score)
 
-    _process_and_score(asr_texts, 'asr')
-    _process_and_score(ocr_texts, 'ocr')
+    _process_and_score(asr_texts)
 
     final_results = []
     for song_id, data in song_scores_map.items():
-        # 分别计算 ASR 和 OCR 的模态内置信度
-        p = _calc_combined_probability(data['asr_evidences'], top_n=3)
-        q = _calc_combined_probability(data['ocr_evidences'], top_n=3)
-        
-        # 跨模态综合得分：1 - (1-p)(1-q)
-        final_score = 1.0 - (1.0 - p) * (1.0 - q)
+        final_score = _calc_combined_probability(data['evidences'], top_n=3)
         
         # 提高门槛：综合得分大于 0.4 才进入候选，彻底砍掉高频词噪音
         if final_score > 0.4:
             final_results.append({
                 'title': data['info']['title'],
                 'singer': data['info']['original_singer'],
-                'asr_score': p,
-                'ocr_score': q,
+                'asr_score': final_score,
                 'final_score': final_score
             })
 

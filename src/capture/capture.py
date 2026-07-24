@@ -19,8 +19,6 @@ from src.capture.transcribe import SenseVoiceEngine
 from src.db.subscription import list_asr_enabled_room_ids
 from src.db.event import is_streaming_event, get_latest_live_cmd, get_latest_live_event_id, list_live_events_after
 from src.db.transcript import init_transcript_db, insert_transcript
-from src.db.ocr_record import init_ocr_db, insert_ocr_record
-from src.capture.ocr_engine import OCREnginePool
 from src.spider.api import BILI_HEADERS, build_cookies
 
 
@@ -31,17 +29,20 @@ BASE_RESTART_BACKOFF = 2.0
 MAX_RESTART_BACKOFF = 60.0
 FAST_FAIL_SECONDS = 8.0
 LIVE_GRACE_SECONDS = 180.0
+AUDIO_STALL_SECONDS = 30.0
+HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
 class LiveCaptureConfig:
     room_ids: list[int]
     qn: int = 150
-    frame_interval_seconds: int = 10
-    output_root: Path | None = None
     cookies: dict[str, str] | None = None
     user_agent: str = DEFAULT_USER_AGENT
-    enable_ocr: bool = True
+    asr_window_seconds: float = 15.0
+    asr_overlap_seconds: float = 5.0
+    asr_decode_timeout_seconds: float = 45.0
+    asr_queue_size: int = 12
 
 
 class BilibiliLiveStreamResolver:
@@ -113,35 +114,22 @@ class LiveCapture:
         self._restart_backoff: dict[int, float] = {}
         self._next_start_at: dict[int, float] = {}
         self._live_start_at: dict[int, float] = {}
+        self._last_audio_at: dict[int, float] = {}
+        self._last_heartbeat_at = 0.0
         self._lock = threading.Lock()
         
         init_transcript_db()
-        self._asr_engine = SenseVoiceEngine()
+        self._asr_engine = SenseVoiceEngine(
+            window_seconds=config.asr_window_seconds,
+            overlap_seconds=config.asr_overlap_seconds,
+            decode_timeout_seconds=config.asr_decode_timeout_seconds,
+            queue_size=config.asr_queue_size,
+        )
 
-        if self._config.enable_ocr:
-            init_ocr_db()
-            self._ocr_pool = OCREnginePool(max_workers=3)
-        else:
-            self._ocr_pool = None
-        self._frame_monitor_threads: dict[int, threading.Thread] = {}
-        self._monitor_running = True
-
-    def _resolve_output_root(self) -> Path:
-        if self._config.output_root:
-            return self._config.output_root
-        return Path(__file__).resolve().parents[2] / "data" / "live"
-
-    def _build_frame_path(self, room_id: str) -> Path:
-        root = self._resolve_output_root()
-        frame_dir = root / "frames" / room_id
-        frame_dir.mkdir(parents=True, exist_ok=True)
-        return frame_dir / "frame_%Y%m%d_%H%M%S.jpg"
-
-    def _build_ffmpeg_command(self, url: str, frame_pattern: Path) -> list[str]:
+    def _build_ffmpeg_command(self, url: str) -> list[str]:
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg is not available in PATH")
 
-        fps_value = 1 / max(self._config.frame_interval_seconds, 1)
         header_parts = [
             f"User-Agent: {self._config.user_agent}",
             "Referer: https://live.bilibili.com/",
@@ -160,29 +148,18 @@ class LiveCapture:
             "-reconnect", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "2",
+            # ffmpeg expects this network read timeout in microseconds.
+            "-rw_timeout", "15000000",
             "-headers", headers_value,
             "-i", url,
-        ]
-
-        # 如果开启了 OCR，才去拉取视频流并截帧
-        if self._config.enable_ocr:
-            cmd.extend([
-                "-map", "0:v?",
-                "-strict", "-2",
-                "-vf", f"fps={fps_value},crop=660:160:613:554,format=yuv420p",
-                "-pix_fmt", "yuv420p",
-                "-color_range", "2",
-                "-strftime", "1", str(frame_pattern),
-            ])
-
-        cmd.extend([
-            "-map", "0:a",
+            "-map", "0:a:0",
+            "-vn",
             "-c:a", "pcm_s16le",
             "-f", "s16le",
             "-ar", "16000",
             "-ac", "1",
             "pipe:1"
-        ])
+        ]
         
         return cmd
 
@@ -204,9 +181,8 @@ class LiveCapture:
             self._register_failure(room_id, "resolve url failed")
             return
             
-        frame_pattern = self._build_frame_path(str(room_id))
         try:
-            command = self._build_ffmpeg_command(url, frame_pattern)
+            command = self._build_ffmpeg_command(url)
         except RuntimeError as exc:
             logger.error("ffmpeg unavailable for room_id=%s: %s", room_id, exc)
             self._register_failure(room_id, "ffmpeg unavailable")
@@ -214,6 +190,7 @@ class LiveCapture:
             
         self._processes[room_id] = self._spawn_ffmpeg(room_id, command)
         self._last_restart_at[room_id] = time.monotonic()
+        self._last_audio_at[room_id] = time.monotonic()
         self._restart_backoff.setdefault(room_id, BASE_RESTART_BACKOFF)
         logger.info("started ffmpeg capture & stream for room_id=%s", room_id)
 
@@ -232,6 +209,7 @@ class LiveCapture:
         self._stdout_threads.pop(room_id, None)
         self._force_restart_at.pop(room_id, None)
         self._next_start_at.pop(room_id, None)
+        self._last_audio_at.pop(room_id, None)
         logger.info("stopped ffmpeg capture for room_id=%s", room_id)
 
     def _spawn_ffmpeg(self, room_id: int, command: list[str]) -> subprocess.Popen:
@@ -286,10 +264,10 @@ class LiveCapture:
         if process.stdout is None:
             return
             
-        # 为当前直播间创建一个包含 VAD 状态的处理器
+        # Keep fixed segmentation in the reader; native inference runs elsewhere.
         room_stream = self._asr_engine.create_room_stream()
         
-        # 每次读取 0.25 秒的数据: 16000(采样率) * 2(16bit) * 1(声道) = 8000 bytes
+        # 0.25 seconds of mono, signed 16-bit, 16 kHz PCM.
         CHUNK_SIZE = 8000 
         
         try:
@@ -297,18 +275,16 @@ class LiveCapture:
                 raw_bytes = process.stdout.read(CHUNK_SIZE)
                 if not raw_bytes:
                     break
-                    
-                # 将这 1 秒音频喂给 VAD，它会自动分段丢给 SenseVoice 并返回文字列表
-                texts = room_stream.process_audio_chunk(raw_bytes)
-                
-                for text in texts:
-                    if text:
-                        logger.info("ASR[%s]: %s", room_id, text)
-                        insert_transcript(
-                            room_id=room_id,
-                            content=text,
-                            timestamp=int(time.time()),
-                        )
+
+                if self._processes.get(room_id) is process:
+                    self._last_audio_at[room_id] = time.monotonic()
+
+                for audio_window in room_stream.process_audio_chunk(raw_bytes):
+                    self._asr_engine.submit(
+                        room_id=room_id,
+                        raw_pcm_bytes=audio_window,
+                        captured_at=int(time.time()),
+                    )
         except Exception as exc:
             logger.warning("ffmpeg[%s] stdout error: %s", room_id, exc)
         finally:
@@ -354,6 +330,15 @@ class LiveCapture:
         # 1. 检查并清理已经退出的进程
         for room_id, process in list(self._processes.items()):
             if process.poll() is None:
+                last_audio_at = self._last_audio_at.get(room_id, now)
+                if now - last_audio_at > AUDIO_STALL_SECONDS:
+                    self._force_restart(
+                        room_id,
+                        process,
+                        reason=f"no audio for {now - last_audio_at:.1f}s",
+                    )
+                    continue
+
                 # 进程仍在运行，如果稳定运行超过 60 秒，重置退避时间
                 last_restart = self._last_restart_at.get(room_id, 0.0)
                 if now - last_restart > 60:
@@ -376,21 +361,46 @@ class LiveCapture:
                 # 如果还在 backoff 冷却期内，它会自动打印 skip start 并 return，不会重复拉起
                 self._start_capture(room_id)
 
+    def _poll_asr(self) -> None:
+        for result in self._asr_engine.poll():
+            if result.error:
+                logger.error("ASR[%s] inference failed: %s", result.room_id, result.error)
+                continue
+            if not result.text:
+                continue
+            logger.info(
+                "ASR[%s] (%.2fs): %s",
+                result.room_id,
+                result.inference_seconds,
+                result.text,
+            )
+            try:
+                insert_transcript(
+                    room_id=result.room_id,
+                    content=result.text,
+                    timestamp=result.captured_at,
+                )
+            except Exception as exc:
+                logger.error("ASR[%s] database write failed: %s", result.room_id, exc)
+
+    def _log_heartbeat_if_due(self) -> None:
+        now = time.monotonic()
+        if now - self._last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS:
+            return
+        self._last_heartbeat_at = now
+        logger.info(
+            "capture heartbeat: active_rooms=%s, asr_ready=%s, asr_dropped=%s",
+            len(self._processes),
+            self._asr_engine.ready,
+            self._asr_engine.dropped_tasks,
+        )
+
     def _fetch_events_since(self, last_id: int) -> list[dict[str, Any]]:
         return list_live_events_after(self._config.room_ids, last_id)
 
     def run(self) -> int:
         logger.info("capture service starting")
 
-        if self._config.enable_ocr:
-            for room_id in self._config.room_ids:
-                monitor_thread = threading.Thread(
-                    target=self._monitor_frames,
-                    args=(room_id,),
-                    daemon=True,
-                )
-                monitor_thread.start()
-                self._frame_monitor_threads[room_id] = monitor_thread
         
         last_id = get_latest_live_event_id(self._config.room_ids)
         for room_id in self._config.room_ids:
@@ -402,6 +412,8 @@ class LiveCapture:
                     self._start_capture(room_id)
         try:
             while True:
+                self._poll_asr()
+                self._log_heartbeat_if_due()
                 rows = self._fetch_events_since(last_id)
                 if not rows:
                     self._restart_if_needed()
@@ -426,11 +438,9 @@ class LiveCapture:
         except KeyboardInterrupt:
             pass
         finally:
-            self._monitor_running = False  # 通知线程停止
-            if self._ocr_pool:
-                self._ocr_pool.shutdown()  # 安全关闭进程池
             for room_id in list(self._processes.keys()):
                 self._stop_capture(room_id)
+            self._asr_engine.shutdown()
         logger.info("capture service stopped")
 
         return 0
@@ -486,29 +496,24 @@ class LiveCapture:
 def _parse_args(argv: list[str]) -> LiveCaptureConfig:
     parser = argparse.ArgumentParser(description="Capture Bilibili live streaming with real-time ASR (SenseVoice)")
     parser.add_argument("--qn", type=int, default=150, help="quality level, default 150")
-    parser.add_argument(
-        "--frame-interval",
-        type=int,
-        default=5,
-        help="keyframe interval in seconds",
-    )
+    parser.add_argument("--asr-window", type=float, default=15.0)
+    parser.add_argument("--asr-overlap", type=float, default=5.0)
+    parser.add_argument("--asr-timeout", type=float, default=45.0)
+    parser.add_argument("--asr-queue-size", type=int, default=12)
 
     args = parser.parse_args(argv)
-    output_root = None
     room_ids = list_asr_enabled_room_ids()
     if not room_ids:
         raise ValueError("subscription 表为空，无法获取直播间房间号")
 
-    enable_ocr_env = os.getenv("ENABLE_OCR", "true").lower()
-    enable_ocr = enable_ocr_env == "true" or enable_ocr_env == "1"
-
     return LiveCaptureConfig(
         room_ids=room_ids,
         qn=args.qn,
-        frame_interval_seconds=args.frame_interval,
-        output_root=output_root,
         cookies=build_cookies(),
-        enable_ocr=enable_ocr,
+        asr_window_seconds=args.asr_window,
+        asr_overlap_seconds=args.asr_overlap,
+        asr_decode_timeout_seconds=args.asr_timeout,
+        asr_queue_size=args.asr_queue_size,
     )
 
 
