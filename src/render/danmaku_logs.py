@@ -97,7 +97,14 @@ def _merge_events(events: list[dict[str, Any]], merge_window: int = 30) -> list[
     return merged
 
 
-async def render_event_pages(title: str, events: list[dict[str, Any]], page_size: int = 100, show_date: bool = False) -> list[str]:
+async def render_event_pages(
+    title: str,
+    events: list[dict[str, Any]],
+    page_size: int = 100,
+    show_date: bool = False,
+    show_uname: bool = False,
+    merge_events: bool = True,
+) -> list[str]:
     if not events:
         return []
 
@@ -109,7 +116,10 @@ async def render_event_pages(title: str, events: list[dict[str, Any]], page_size
         *(str(event.get("title") or "") for event in events),
     ])
 
-    events = _merge_events(events)
+    if merge_events:
+        events = _merge_events(events)
+    else:
+        events = [{**event, "merge_count": 1} for event in events]
 
     font_size = 14
     line_height = int(font_size * 1.6)
@@ -190,6 +200,9 @@ async def render_event_pages(title: str, events: list[dict[str, Any]], page_size
         for event in left_chunk:
             t_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
             txt, clr, sfx = _format_event_text(event)
+            if show_uname:
+                speaker = str(event.get("uname") or event.get("uid") or "未知用户")
+                txt = f"{speaker}：{txt}"
             lines, indent_w = layout_event(t_str, clean_text(txt), clr, clean_text(sfx), column_width)
             left_height += len(lines) * line_height
             left_layouts.append((lines, indent_w))
@@ -200,6 +213,9 @@ async def render_event_pages(title: str, events: list[dict[str, Any]], page_size
         for event in right_chunk:
             t_str = datetime.fromtimestamp(event["timestamp"]).strftime(time_format) if event.get("timestamp") else "--"
             txt, clr, sfx = _format_event_text(event)
+            if show_uname:
+                speaker = str(event.get("uname") or event.get("uid") or "未知用户")
+                txt = f"{speaker}：{txt}"
             lines, indent_w = layout_event(t_str, clean_text(txt), clr, clean_text(sfx), column_width)
             right_height += len(lines) * line_height
             right_layouts.append((lines, indent_w))

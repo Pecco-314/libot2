@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import wraps
 
-from nonebot.adapters.onebot.v11 import Event, Message, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, Event, Message, GroupMessageEvent
 from nonebot.matcher import Matcher
 
 from src.db.manager import ensure_initial_manager, is_manager
@@ -85,7 +85,7 @@ def subscription_dev_required(func):
                 return None
             
             if not get_subscription_feature(group_id, "dev"):
-                await matcher.finish("没有这样的功能")
+                await matcher.finish("没有这种功能")
                 return None
             return await func(*args, **kwargs)
 

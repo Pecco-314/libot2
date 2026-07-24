@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import asyncio
+import time
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -65,6 +66,7 @@ from src.db.event import (
     get_latest_uid_by_uname,
     list_events_by_uid,
     list_recent_events_by_uid,
+    list_recent_events_by_content,
 )
 from src.db.live_list import add_live_list, remove_live_list, get_live_list
 from src.capture.guesser import guess_song
@@ -102,6 +104,11 @@ club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
 concurrent_cmd = on_command("查同接", priority=5, block=True)
 danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
 events_cmd = on_command("查弹幕", priority=5, block=True)
+content_search_cmd = on_command(
+    "有谁说过", aliases={"谁说过"}, priority=5, block=True
+)
+_CONTENT_SEARCH_COOLDOWN_SECONDS = 180
+_content_search_last_used: dict[int, float] = {}
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 song_list_cmd = on_command("查歌单", priority=5, block=True)
@@ -762,6 +769,117 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
     except Exception as exc:
         logger.error("发送弹幕记录失败: %s", exc)
+
+
+@content_search_cmd.handle()
+async def handle_content_search(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    raw_arg = arg.extract_plain_text().strip()
+    if not raw_arg:
+        await matcher.finish("用法：/有谁说过 <关键词> [数量]")
+
+    argument_text = raw_arg
+    tokens = raw_arg.split()
+    search_all_history = len(tokens) >= 2 and tokens[-1].lower() == "more"
+    if search_all_history:
+        argument_text = " ".join(tokens[:-1]).strip()
+
+    parts = argument_text.rsplit(maxsplit=1)
+    limit = 100
+    start_ts = int((datetime.now() - timedelta(days=7)).timestamp())
+
+    if INITIAL_MANAGER_QQ is not None:
+        ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
+    user_id = int(event.get_user_id())
+    user_is_manager = is_manager(group_id, user_id)
+
+    if search_all_history:
+        if not user_is_manager:
+            await matcher.finish("权限不足：more 仅管理员可用")
+        start_ts = None
+
+    if len(parts) == 2 and parts[1].isdigit():
+        keyword = parts[0].strip()
+        limit = int(parts[1])
+        if limit < 1 or limit > 2000:
+            await matcher.finish("数量必须在1到2000之间")
+    else:
+        keyword = argument_text
+
+    if len(keyword) > 100:
+        await matcher.finish("关键词不能超过100个字符")
+
+    if not user_is_manager:
+        now = time.monotonic()
+        last_used = _content_search_last_used.get(user_id)
+        if (
+            last_used is not None
+            and now - last_used < _CONTENT_SEARCH_COOLDOWN_SECONDS
+        ):
+            await matcher.finish(
+                Message([
+                    MessageSegment.at(user_id),
+                    MessageSegment.text(" CD中"),
+                ])
+            )
+        _content_search_last_used[user_id] = now
+
+    events = await asyncio.to_thread(
+        list_recent_events_by_content,
+        room_id,
+        keyword,
+        limit,
+        start_ts,
+    )
+    if not events:
+        scope = "全部历史中" if search_all_history else "最近7天内"
+        await matcher.finish(f"{scope}未找到包含“{keyword}”的记录")
+
+    display_keyword = keyword if len(keyword) <= 30 else f"{keyword[:30]}…"
+    scope = "全部历史" if search_all_history else "最近7天"
+    title = f"{scope}包含“{display_keyword}”的最近 {len(events)} 条发言"
+    pages = await render_event_pages(
+        title,
+        events,
+        page_size=100,
+        show_date=True,
+        show_uname=True,
+        merge_events=False,
+    )
+    if not pages:
+        await matcher.finish("暂无记录")
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(img)),
+            },
+        }
+        for img in pages
+    ]
+    try:
+        await bot.call_api(
+            "send_group_forward_msg",
+            group_id=group_id,
+            messages=nodes,
+        )
+    except Exception as exc:
+        logger.error("发送关键词搜索结果失败: %s", exc)
 
 
 @song_search_cmd.handle()

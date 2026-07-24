@@ -106,6 +106,10 @@ def save_help_card() -> dict[str, Any]:
                     "查弹幕 <UID/用户名> [日期/数量] [日期/数量]",
                     "查询互动记录，可指定结束日期和/或数量"
                 ),
+                (
+                    "有谁说过 <关键词> [数量]",
+                    "查询近7天内包含关键词的发言，默认100条，最多2000条"
+                ),
             ],
         },
         {
@@ -151,7 +155,7 @@ def save_help_card() -> dict[str, Any]:
     save_path, _ = _get_cache_path("help", sections, "")
     if not Path(save_path).exists():
         canvas = draw_help_card(sections)
-        canvas.image.save(save_path)
+        canvas.image.convert("RGB").save(save_path, format="PNG")
 
     return {"image_path": str(save_path)}
 
@@ -179,7 +183,7 @@ def save_admin_help_card() -> dict[str, Any]:
     save_path, _ = _get_cache_path("admin_help", sections, subtitle)
     if not Path(save_path).exists():
         canvas = draw_help_card(sections, subtitle)
-        canvas.image.save(save_path)
+        canvas.image.convert("RGB").save(save_path, format="PNG")
 
     return {"image_path": str(save_path)}
 

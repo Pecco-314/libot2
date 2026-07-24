@@ -470,3 +470,48 @@ def list_recent_events_by_uid(
         }
         for row in reversed(rows)
     ]
+
+
+def list_recent_events_by_content(
+    room_id: int,
+    keyword: str,
+    limit: int = 100,
+    start_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    start_condition = "AND timestamp >= ?" if start_ts is not None else ""
+    params: tuple[Any, ...] = (
+        (room_id, keyword, start_ts, limit)
+        if start_ts is not None
+        else (room_id, keyword, limit)
+    )
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT uid, uname, cmd, content, gift_name, gift_num,
+                   total_coin, title, timestamp
+            FROM event
+            WHERE room_id = ?
+              AND uid IS NOT NULL
+              AND content IS NOT NULL
+              AND instr(content, ?) > 0
+              {start_condition}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+    return [
+        {
+            "uid": int(row[0]) if row[0] is not None else 0,
+            "uname": str(row[1]) if row[1] is not None else "",
+            "cmd": str(row[2]),
+            "content": row[3],
+            "gift_name": row[4],
+            "gift_num": row[5],
+            "total_coin": row[6],
+            "title": row[7],
+            "timestamp": int(row[8]) if row[8] is not None else 0,
+        }
+        for row in reversed(rows)
+    ]
