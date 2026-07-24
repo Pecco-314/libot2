@@ -30,7 +30,6 @@ MAX_RESTART_BACKOFF = 60.0
 FAST_FAIL_SECONDS = 8.0
 LIVE_GRACE_SECONDS = 180.0
 AUDIO_STALL_SECONDS = 30.0
-HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -115,7 +114,6 @@ class LiveCapture:
         self._next_start_at: dict[int, float] = {}
         self._live_start_at: dict[int, float] = {}
         self._last_audio_at: dict[int, float] = {}
-        self._last_heartbeat_at = 0.0
         self._lock = threading.Lock()
         
         init_transcript_db()
@@ -383,18 +381,6 @@ class LiveCapture:
             except Exception as exc:
                 logger.error("ASR[%s] database write failed: %s", result.room_id, exc)
 
-    def _log_heartbeat_if_due(self) -> None:
-        now = time.monotonic()
-        if now - self._last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS:
-            return
-        self._last_heartbeat_at = now
-        logger.info(
-            "capture heartbeat: active_rooms=%s, asr_ready=%s, asr_dropped=%s",
-            len(self._processes),
-            self._asr_engine.ready,
-            self._asr_engine.dropped_tasks,
-        )
-
     def _fetch_events_since(self, last_id: int) -> list[dict[str, Any]]:
         return list_live_events_after(self._config.room_ids, last_id)
 
@@ -413,7 +399,6 @@ class LiveCapture:
         try:
             while True:
                 self._poll_asr()
-                self._log_heartbeat_if_due()
                 rows = self._fetch_events_since(last_id)
                 if not rows:
                     self._restart_if_needed()
