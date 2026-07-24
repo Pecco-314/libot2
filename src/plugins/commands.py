@@ -818,6 +818,11 @@ async def handle_content_search(
     else:
         keyword = argument_text
 
+    quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
+    if len(keyword) >= 2 and (keyword[0], keyword[-1]) in quote_pairs:
+        keyword = keyword[1:-1]
+    if not keyword:
+        await matcher.finish("关键词不能为空")
     if len(keyword) > 100:
         await matcher.finish("关键词不能超过100个字符")
 
