@@ -4,13 +4,13 @@ import logging
 import re
 import asyncio
 from datetime import datetime, timedelta
+from functools import partial
 
-from nonebot import on_command
+from nonebot import on_command as _on_command
 from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment, Message
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from datetime import datetime
-from nonebot import on_command
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
@@ -80,6 +80,7 @@ from .utils import (
 )
 
 logger = logging.getLogger("libot.commands")
+on_command = partial(_on_command, force_whitespace=True)
 
 help_cmd = on_command("帮助", priority=5)
 superchat_cmd = on_command("查SC", aliases={"查sc", "查Sc"}, priority=5, block=True)
