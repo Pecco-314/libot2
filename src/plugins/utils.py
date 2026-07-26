@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import time
 from functools import wraps
 
-from nonebot.adapters.onebot.v11 import Bot, Event, Message, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    Event,
+    GroupMessageEvent,
+    Message,
+    MessageSegment,
+)
 from nonebot.matcher import Matcher
 
 from src.db.manager import ensure_initial_manager, is_manager
@@ -66,6 +73,47 @@ def group_manager_required(func):
         return await func(*args, **kwargs)
 
     return wrapper
+
+def user_cooldown(seconds: float = 180, *, manager_exempt: bool = True):
+    last_used: dict[int, float] = {}
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            matcher = next(
+                (arg for arg in args if isinstance(arg, Matcher)),
+                kwargs.get("matcher"),
+            )
+            event = next(
+                (arg for arg in args if isinstance(arg, Event)),
+                kwargs.get("event"),
+            )
+
+            if isinstance(matcher, Matcher) and isinstance(event, Event):
+                user_id = int(event.get_user_id())
+                group_id = get_group_id(event)
+                is_exempt = (
+                    manager_exempt
+                    and group_id is not None
+                    and is_manager(group_id, user_id)
+                )
+                if not is_exempt:
+                    now = time.monotonic()
+                    previous = last_used.get(user_id)
+                    if previous is not None and now - previous < seconds:
+                        await matcher.finish(
+                            Message([
+                                MessageSegment.at(user_id),
+                                MessageSegment.text(" CD中"),
+                            ])
+                        )
+                    last_used[user_id] = now
+
+            return await func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 def subscription_dev_required(func):
     @wraps(func)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 import asyncio
-import time
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -107,8 +106,11 @@ events_cmd = on_command("查弹幕", priority=5, block=True)
 content_search_cmd = on_command(
     "有谁说过", aliases={"谁说过"}, priority=5, block=True
 )
-_CONTENT_SEARCH_COOLDOWN_SECONDS = 180
-_content_search_last_used: dict[int, float] = {}
+_CONTENT_SEARCH_REVEAL_WORD = "reveal"
+_CONTENT_SEARCH_HIDDEN_RANGE = (
+    int(datetime(2026, 3, 18).timestamp()),
+    int(datetime(2026, 3, 22).timestamp()),
+)
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
 song_list_cmd = on_command("查歌单", priority=5, block=True)
@@ -792,23 +794,23 @@ async def handle_content_search(
 
     argument_text = raw_arg
     tokens = raw_arg.split()
-    search_all_history = len(tokens) >= 2 and tokens[-1].lower() == "more"
-    if search_all_history:
+    reveal_hidden = (
+        len(tokens) >= 2
+        and tokens[-1].lower() == _CONTENT_SEARCH_REVEAL_WORD
+    )
+    if reveal_hidden:
         argument_text = " ".join(tokens[:-1]).strip()
 
     parts = argument_text.rsplit(maxsplit=1)
     limit = 100
-    start_ts = int((datetime.now() - timedelta(days=7)).timestamp())
 
     if INITIAL_MANAGER_QQ is not None:
         ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
     user_id = int(event.get_user_id())
     user_is_manager = is_manager(group_id, user_id)
 
-    if search_all_history:
-        if not user_is_manager:
-            await matcher.finish("权限不足：more 仅管理员可用")
-        start_ts = None
+    if reveal_hidden and not user_is_manager:
+        await matcher.finish("没有这样的功能")
 
     if len(parts) == 2 and parts[1].isdigit():
         keyword = parts[0].strip()
@@ -826,35 +828,18 @@ async def handle_content_search(
     if len(keyword) > 100:
         await matcher.finish("关键词不能超过100个字符")
 
-    if not user_is_manager:
-        now = time.monotonic()
-        last_used = _content_search_last_used.get(user_id)
-        if (
-            last_used is not None
-            and now - last_used < _CONTENT_SEARCH_COOLDOWN_SECONDS
-        ):
-            await matcher.finish(
-                Message([
-                    MessageSegment.at(user_id),
-                    MessageSegment.text(" CD中"),
-                ])
-            )
-        _content_search_last_used[user_id] = now
-
     events = await asyncio.to_thread(
         list_recent_events_by_content,
         room_id,
         keyword,
         limit,
-        start_ts,
+        None if reveal_hidden else _CONTENT_SEARCH_HIDDEN_RANGE,
     )
     if not events:
-        scope = "全部历史中" if search_all_history else "最近7天内"
-        await matcher.finish(f"{scope}未找到包含“{keyword}”的记录")
+        await matcher.finish(f"未找到包含“{keyword}”的记录")
 
     display_keyword = keyword if len(keyword) <= 30 else f"{keyword[:30]}…"
-    scope = "全部历史" if search_all_history else "最近7天"
-    title = f"{scope}包含“{display_keyword}”的最近 {len(events)} 条发言"
+    title = f"包含“{display_keyword}”的最近 {len(events)} 条发言"
     pages = await render_event_pages(
         title,
         events,
