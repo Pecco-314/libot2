@@ -1035,66 +1035,66 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
         message += f"{i}. {res['title']} - {res['singer']} ({res['final_score']:.2%})\n"
     await matcher.finish(message)
 
-# @dc_cmd.handle()
-# async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
-#     group_id = get_group_id(event)
-#     if group_id is None:
-#         await matcher.finish("请在群聊中使用该命令")
+@dc_cmd.handle()
+async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
         
-#     args = arg.extract_plain_text().strip().split()
+    args = arg.extract_plain_text().strip().split()
     
-#     # 默认选项设置
-#     filter_type = "vr"
-#     time_str = datetime.now().strftime("%Y-%m")
+    # 默认选项设置
+    filter_type = "vr"
+    time_str = datetime.now().strftime("%Y-%m")
     
-#     # 解析参数选项
-#     for a in args:
-#         a_upper = a.upper()
-#         if a_upper in ["VR", "PSP", "VRPSP", "ALL"]:
-#             filter_type = a_upper.lower()
-#             if filter_type == "vrpsp":
-#                 filter_type = "all"
-#         elif re.match(r"^20\d{2}$", a):  # 例如 2026
-#             time_str = a
-#         elif re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", a):  # 例如 2026-06
-#             time_str = a
-#         elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", a):  # 兼容 202606 这种连续格式
-#             time_str = f"{a[:4]}-{a[4:]}"
+    # 解析参数选项
+    for a in args:
+        a_upper = a.upper()
+        if a_upper in ["VR", "PSP", "VRPSP", "ALL"]:
+            filter_type = a_upper.lower()
+            if filter_type == "vrpsp":
+                filter_type = "all"
+        elif re.match(r"^20\d{2}$", a):  # 例如 2026
+            time_str = a
+        elif re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", a):  # 例如 2026-06
+            time_str = a
+        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", a):  # 兼容 202606 这种连续格式
+            time_str = f"{a[:4]}-{a[4:]}"
             
-#     try:
-#         images = await render_dc_images(filter_type, time_str)
-#     except Exception as e:
-#         logger.error(f"渲染斗虫图片失败: {e}")
-#         await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
+    try:
+        images = await render_dc_images(filter_type, time_str)
+    except Exception as e:
+        logger.error(f"渲染斗虫图片失败: {e}")
+        await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
         
-#     if not images:
-#         await matcher.finish(f"未找到 {filter_type.upper()} 在 {time_str} 的相关营收数据")
+    if not images:
+        await matcher.finish(f"未找到 {filter_type.upper()} 在 {time_str} 的相关营收数据")
         
-#     # 构造合并转发节点
-#     nodes = []
-#     info = f"统计区间：{time_str} 社团：{filter_type.upper()}"
-#     nodes.append({
-#         "type": "node",
-#         "data": {
-#             "name": "LiBot",
-#             "uin": bot.self_id,
-#             "content": info
-#         }
-#     })
-#     for img in images:
-#         nodes.append({
-#             "type": "node",
-#             "data": {
-#                 "name": "Libot",
-#                 "uin": bot.self_id,
-#                 "content": MessageSegment.image(file=str(img))
-#             }
-#         })
+    # 构造合并转发节点
+    nodes = []
+    info = f"统计区间：{time_str} 社团：{filter_type.upper()}"
+    nodes.append({
+        "type": "node",
+        "data": {
+            "name": "LiBot",
+            "uin": bot.self_id,
+            "content": info
+        }
+    })
+    for img in images:
+        nodes.append({
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(img))
+            }
+        })
     
-#     try:
-#         await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
-#     except Exception as e:
-#         logger.error(f"发送群转发消息失败: {e}")
+    try:
+        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+    except Exception as e:
+        logger.error(f"发送群转发消息失败: {e}")
 
 
 @live_list_add_cmd.handle()
@@ -1263,40 +1263,40 @@ async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()
         
     await matcher.finish(MessageSegment.image(file=str(image_path)))
 
-# @live_sessions_cmd.handle()
-# async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg()):
-#     group_id = get_group_id(event)
-#     if group_id is None:
-#         await matcher.finish("请在群聊中使用该命令")
+@live_sessions_cmd.handle()
+async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
 
-#     room_id = get_subscription(group_id)
-#     if room_id is None:
-#         await matcher.finish("请先设置订阅")
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
         
-#     arg_str = arg.extract_plain_text().strip()
+    arg_str = arg.extract_plain_text().strip()
     
-#     if not arg_str:
-#         month_str = datetime.now().strftime("%Y%m")
-#     else:
-#         if re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", arg_str):
-#             month_str = arg_str.replace("-", "")
-#         elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", arg_str):
-#             month_str = arg_str
-#         elif re.match(r"^(0[1-9]|1[0-2])$", arg_str):
-#             month_str = f"{datetime.now().year}{arg_str}"
-#         else:
-#             await matcher.finish("月份格式错误，请使用如 202509 或 2025-09 的格式")
+    if not arg_str:
+        month_str = datetime.now().strftime("%Y%m")
+    else:
+        if re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", arg_str):
+            month_str = arg_str.replace("-", "")
+        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", arg_str):
+            month_str = arg_str
+        elif re.match(r"^(0[1-9]|1[0-2])$", arg_str):
+            month_str = f"{datetime.now().year}{arg_str}"
+        else:
+            await matcher.finish("月份格式错误，请使用如 202509 或 2025-09 的格式")
             
-#     try:
-#         image_path = await render_live_sessions_image(room_id, month_str)
-#     except Exception as e:
-#         logger.error(f"渲染直播记录图片失败: {e}")
-#         await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
+    try:
+        image_path = await render_live_sessions_image(room_id, month_str)
+    except Exception as e:
+        logger.error(f"渲染直播记录图片失败: {e}")
+        await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
         
-#     if not image_path:
-#         await matcher.finish(f"未找到房间 {room_id} 在 {month_str} 的直播记录")
+    if not image_path:
+        await matcher.finish(f"未找到房间 {room_id} 在 {month_str} 的直播记录")
         
-#     await matcher.finish(MessageSegment.image(file=str(image_path)))
+    await matcher.finish(MessageSegment.image(file=str(image_path)))
 
 @cmd_add_song.handle()
 @group_manager_required
