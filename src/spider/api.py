@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
 import asyncio
 import logging
 from typing import Any
 
 import httpx
 
-from src.common.utils import load_env_file
-
-load_env_file()
+from src.common.bilibili_auth import build_bilibili_cookies
 
 logger = logging.getLogger("spider.api")
 
@@ -23,14 +20,7 @@ BILI_HEADERS = {
 
 
 def build_cookies() -> dict[str, str]:
-    cookies: dict[str, str] = {}
-    cookie_str = os.getenv("COOKIE", "").strip()
-    if cookie_str:
-        for pair in cookie_str.split(";"):
-            if "=" in pair:
-                key, value = pair.split("=", 1)
-                cookies[key.strip()] = value.strip()
-    return cookies
+    return build_bilibili_cookies()
 
 
 async def request_json(

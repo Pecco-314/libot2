@@ -5,7 +5,6 @@ import asyncio
 import base64
 import http.cookies
 import json
-import os
 import signal
 import sqlite3
 import time
@@ -17,6 +16,7 @@ from datetime import datetime
 import aiohttp
 import blivedm
 from blivedm import handlers
+from src.common.bilibili_auth import get_bilibili_auth
 from src.common.utils import load_env_file, init_logger
 from src.db.sqlite import connect_sqlite, write_transaction
 from src.db.subscription import list_subscribed_room_ids
@@ -44,8 +44,6 @@ class MonitorConfig:
     database: Path
     run_seconds: int
     verbose: bool
-    sessdata: str
-    buvid3: str
 
 
 def _execute_write(
@@ -134,17 +132,12 @@ def _load_config(config_path: Path | None, args: argparse.Namespace) -> MonitorC
     if args.verbose:
         verbose = True
 
-    sessdata = os.getenv("SESSDATA", "")
-    buvid3 = os.getenv("BUVID3", "")
-
     return MonitorConfig(
         rooms=rooms,
         rooms_from_db=rooms_from_db,
         database=db_path,
         run_seconds=run_seconds,
         verbose=verbose,
-        sessdata=sessdata,
-        buvid3=buvid3,
     )
 
 
@@ -579,7 +572,32 @@ class RawEventHandler(handlers.HandlerInterface):
             logger.warning("事件队列已满，丢弃一条消息")
 
 
-def _build_session(sessdata: str, buvid3: str) -> aiohttp.ClientSession:
+def _replace_session_cookies(
+    session: aiohttp.ClientSession,
+    cookie_values: dict[str, str],
+) -> None:
+    session.cookie_jar.clear(
+        lambda morsel: str(morsel["domain"])
+        .lstrip(".")
+        .endswith("bilibili.com")
+    )
+
+    cookies = http.cookies.SimpleCookie()
+    for name, value in cookie_values.items():
+        if not name or value is None:
+            continue
+        try:
+            cookies[name] = value
+            cookies[name]["domain"] = ".bilibili.com"
+            cookies[name]["path"] = "/"
+        except http.cookies.CookieError:
+            logger.warning("忽略非法 Bilibili Cookie 名称: %s", name)
+
+    if cookies:
+        session.cookie_jar.update_cookies(cookies)
+
+
+def _build_session(cookie_values: dict[str, str]) -> aiohttp.ClientSession:
     session = aiohttp.ClientSession(
         headers={
             "Accept-Encoding": "gzip, deflate",
@@ -588,17 +606,7 @@ def _build_session(sessdata: str, buvid3: str) -> aiohttp.ClientSession:
             "Origin": "https://live.bilibili.com",
         }
     )
-
-    cookies = http.cookies.SimpleCookie()
-    if sessdata:
-        cookies["SESSDATA"] = sessdata
-        cookies["SESSDATA"]["domain"] = "bilibili.com"
-    if buvid3:
-        cookies["buvid3"] = buvid3
-        cookies["buvid3"]["domain"] = "bilibili.com"
-
-    if cookies:
-        session.cookie_jar.update_cookies(cookies)
+    _replace_session_cookies(session, cookie_values)
     return session
 
 
@@ -667,7 +675,9 @@ async def run_monitor(config: MonitorConfig) -> None:
     queue: asyncio.Queue[tuple[Any, ...]] = asyncio.Queue(maxsize=10000)
     stop_event = asyncio.Event()
 
-    session = _build_session(config.sessdata, config.buvid3)
+    auth = get_bilibili_auth()
+    auth_revision = auth.revision
+    session = _build_session(auth.cookies)
     loop = asyncio.get_running_loop()
 
     def _request_stop() -> None:
@@ -740,7 +750,30 @@ async def run_monitor(config: MonitorConfig) -> None:
             except asyncio.TimeoutError:
                 continue
 
+    async def _sync_auth_loop() -> None:
+        nonlocal auth_revision
+        while not stop_event.is_set():
+            try:
+                latest_auth = get_bilibili_auth()
+                if latest_auth.revision != auth_revision:
+                    _replace_session_cookies(session, latest_auth.cookies)
+                    auth_revision = latest_auth.revision
+                    logger.info(
+                        "已原地更新 monitor CookieJar，revision=%d",
+                        auth_revision,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("热加载 Bilibili Cookie 失败: %s", exc)
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                continue
+
     sync_task: asyncio.Task[None] | None = None
+    auth_sync_task = asyncio.create_task(_sync_auth_loop())
     try:
         for room_id in config.rooms:
             await _start_room(room_id)
@@ -751,6 +784,11 @@ async def run_monitor(config: MonitorConfig) -> None:
         logger.info("monitor 已启动完成，共监听 %d 个房间", len(clients))
         await stop_event.wait()
     finally:
+        auth_sync_task.cancel()
+        try:
+            await auth_sync_task
+        except asyncio.CancelledError:
+            pass
         if sync_task is not None:
             sync_task.cancel()
             try:
@@ -797,12 +835,17 @@ def main() -> None:
     config = _load_config(config_path, args)
 
     logger.info("启动 monitor，rooms=%s db=%s", config.rooms, config.database)
+    auth = get_bilibili_auth()
     logger.info(
-        "Cookie 状态：SESSDATA=%s",
-        "已设置" if config.sessdata else "未设置",
+        "Cookie 状态：SESSDATA=%s refresh_token=%s revision=%d",
+        "已设置" if auth.has_sessdata else "未设置",
+        "已设置" if auth.refresh_token else "未设置",
+        auth.revision,
     )
-    if not config.sessdata:
-        logger.warning("未设置 SESSDATA：可连接，但用户名可能打码、UID 可能为 0")
+    if not auth.has_sessdata:
+        logger.warning(
+            "COOKIE 中未设置 SESSDATA：可连接，但用户名可能打码、UID 可能为 0"
+        )
 
     asyncio.run(run_monitor(config))
 

@@ -36,7 +36,6 @@ AUDIO_STALL_SECONDS = 30.0
 class LiveCaptureConfig:
     room_ids: list[int]
     qn: int = 150
-    cookies: dict[str, str] | None = None
     user_agent: str = DEFAULT_USER_AGENT
     asr_window_seconds: float = 15.0
     asr_overlap_seconds: float = 5.0
@@ -45,9 +44,8 @@ class LiveCaptureConfig:
 
 
 class BilibiliLiveStreamResolver:
-    def __init__(self, user_agent: str = DEFAULT_USER_AGENT, cookies: dict[str, str] | None = None):
+    def __init__(self, user_agent: str = DEFAULT_USER_AGENT):
         self._user_agent = user_agent
-        self._cookies = cookies
 
     def get_stream_url(self, room_id: str, qn: int = 150) -> str | None:
         play_api = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
@@ -64,7 +62,11 @@ class BilibiliLiveStreamResolver:
         }
 
         try:
-            with httpx.Client(timeout=10.0, headers=headers, cookies=self._cookies) as client:
+            with httpx.Client(
+                timeout=10.0,
+                headers=headers,
+                cookies=build_cookies(),
+            ) as client:
                 response = client.get(play_api, params=params)
                 response.raise_for_status()
                 payload = response.json()
@@ -100,7 +102,6 @@ class LiveCapture:
         self._config = config
         self._resolver = BilibiliLiveStreamResolver(
             user_agent=config.user_agent,
-            cookies=config.cookies,
         )
         self._processes: dict[int, subprocess.Popen] = {}
         self._last_cmd_by_room: dict[int, str] = {}
@@ -133,10 +134,10 @@ class LiveCapture:
             "Referer: https://live.bilibili.com/",
             "Origin: https://live.bilibili.com",
         ]
-        if self._config.cookies:
-            cookie_value = "; ".join(f"{k}={v}" for k, v in self._config.cookies.items())
-            if cookie_value:
-                header_parts.append(f"Cookie: {cookie_value}")
+        cookies = build_cookies()
+        cookie_value = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if cookie_value:
+            header_parts.append(f"Cookie: {cookie_value}")
         headers_value = "\r\n".join(header_parts) + "\r\n"
         
         cmd = [
@@ -494,7 +495,6 @@ def _parse_args(argv: list[str]) -> LiveCaptureConfig:
     return LiveCaptureConfig(
         room_ids=room_ids,
         qn=args.qn,
-        cookies=build_cookies(),
         asr_window_seconds=args.asr_window,
         asr_overlap_seconds=args.asr_overlap,
         asr_decode_timeout_seconds=args.asr_timeout,
