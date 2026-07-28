@@ -1,6 +1,7 @@
 import re
 import math
 import httpx
+import json
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Optional, Any
@@ -139,9 +140,20 @@ def extract_dynamic_info(item: dict) -> dict:
         # 直播推荐
         elif major_type == "MAJOR_TYPE_LIVE_RCMD":
             live_content = major.get("live_rcmd", {}).get("content", {})
-            parts.append(f"📺 直播间：{live_content.get('title', '')}")
-            if live_content.get("live_play_info", {}).get("cover"):
-                res["pic_urls"].append(live_content["live_play_info"]["cover"])
+            if isinstance(live_content, str):
+                try:
+                    live_content = json.loads(live_content)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    live_content = {}
+            if not isinstance(live_content, dict):
+                live_content = {}
+            live_play_info = live_content.get("live_play_info", {})
+            if not isinstance(live_play_info, dict):
+                live_play_info = {}
+            live_title = live_content.get("title") or live_play_info.get("title") or ""
+            parts.append(f"📺 直播间：{live_title}")
+            if live_play_info.get("cover"):
+                res["pic_urls"].append(live_play_info["cover"])
 
     # 合并所有的文本分段
     res["text"] = "\n".join(parts)

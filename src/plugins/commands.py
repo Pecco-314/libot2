@@ -25,6 +25,8 @@ from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
 from src.render.live_sessions import render_live_sessions_image
 from src.render.live_list import render_live_list_image
+from src.render.activity import render_bilibili_card
+from src.render.activity_list import render_activity_list
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
 from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
@@ -55,6 +57,11 @@ from src.db.subscription import (
 )
 from src.db.stats import get_stat_start_date
 from src.db.state import get_state, set_state
+from src.db.activity import (
+    get_activity_by_date_index,
+    list_activities_by_date,
+    list_activities_by_month,
+)
 from src.db.liver import upsert_liver
 from src.db.event import (
     list_name_history_by_name_or_uid,
@@ -123,6 +130,8 @@ live_list_show_cmd = on_command("开播列表", aliases={"开播"}, priority=5, 
 live_list_add_tag_cmd = on_command("添加标签", aliases={"增加标签"}, priority=5, block=True)
 live_list_set_tag_cmd = on_command("修改标签", priority=5, block=True)
 live_sessions_cmd = on_command("直播记录", aliases={"查直播"}, priority=5, block=True)
+activity_list_cmd = on_command("查动态", priority=5, block=True)
+activity_generate_cmd = on_command("生成动态", priority=5, block=True)
 cmd_add_song = on_command("新增歌曲", priority=5, block=True)
 cmd_generate_list = on_command("生成歌单", priority=5, block=True)
 cmd_update_list = on_command("提交歌单", aliases={"提交"}, priority=5, block=True)
@@ -1297,6 +1306,183 @@ async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg())
         await matcher.finish(f"未找到房间 {room_id} 在 {month_str} 的直播记录")
         
     await matcher.finish(MessageSegment.image(file=str(image_path)))
+
+
+def _parse_activity_month(text: str) -> tuple[int, int] | None:
+    value = text.strip()
+    if not value:
+        now = datetime.now()
+        return now.year, now.month
+
+    match = re.fullmatch(r"(20\d{2})-?(0[1-9]|1[0-2])", value)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    match = re.fullmatch(r"0?([1-9]|1[0-2])", value)
+    if match:
+        return datetime.now().year, int(match.group(1))
+    return None
+
+
+@activity_list_cmd.handle()
+async def handle_activity_list(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    target_month = _parse_activity_month(arg.extract_plain_text())
+    if target_month is None:
+        await matcher.finish(
+            "月份格式错误，请使用如 202607、2026-07 或 7 的格式"
+        )
+    year, month = target_month
+    activities = list_activities_by_month(room_id, year, month)
+    if not activities:
+        await matcher.finish(f"{year:04d} 年 {month:02d} 月没有动态记录")
+
+    try:
+        images = await render_activity_list(
+            room_id,
+            year,
+            month,
+            activities,
+        )
+    except Exception as exc:
+        logger.error("渲染动态列表失败: %s", exc)
+        await matcher.finish("动态列表渲染失败")
+
+    if len(images) == 1:
+        await matcher.finish(MessageSegment.image(file=str(images[0])))
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "LiBot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(image_path)),
+            },
+        }
+        for image_path in images
+    ]
+    try:
+        await bot.call_api(
+            "send_group_forward_msg",
+            group_id=group_id,
+            messages=nodes,
+        )
+    except Exception as exc:
+        logger.error("发送动态列表合并转发失败: %s", exc)
+        await matcher.finish("动态列表发送失败，请稍后再试")
+
+
+@activity_generate_cmd.handle()
+async def handle_activity_generate(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    room_id = get_subscription(group_id)
+    if room_id is None:
+        await matcher.finish("请先设置订阅")
+
+    parts = arg.extract_plain_text().strip().split()
+    if len(parts) not in {1, 2}:
+        await matcher.finish("用法：/生成动态 <日期> [序号]")
+    date_text = parts[0]
+    try:
+        datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError:
+        await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+
+    if len(parts) == 2:
+        index_text = parts[1]
+        if not index_text.isdigit() or int(index_text) < 1:
+            await matcher.finish("序号必须是大于 0 的整数")
+        activity = get_activity_by_date_index(
+            room_id,
+            date_text,
+            int(index_text),
+        )
+        if activity is None:
+            await matcher.finish(
+                f"没有找到 {date_text} 的第 {index_text} 条动态"
+            )
+        selected = [(int(index_text), activity)]
+    else:
+        activities = list_activities_by_date(room_id, date_text)
+        if not activities:
+            await matcher.finish(f"{date_text} 没有动态记录")
+        selected = list(enumerate(activities, 1))
+
+    nodes = []
+    for index, activity in selected:
+        safe_id = re.sub(
+            r"[^0-9A-Za-z_-]",
+            "_",
+            str(activity["activity_id"]),
+        )
+        image_path = (
+            ROOT / "data" / "images" / "activity" / f"{safe_id}.png"
+        )
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        if not image_path.exists():
+            try:
+                image = await render_bilibili_card(activity["item"])
+                output = image.image.convert("RGB")
+                await asyncio.to_thread(
+                    output.save,
+                    image_path,
+                    format="PNG",
+                )
+            except Exception as exc:
+                logger.error(
+                    "生成历史动态失败 activity_id=%s: %s",
+                    activity["activity_id"],
+                    exc,
+                )
+                await matcher.finish("历史动态图片生成失败")
+
+        nodes.append(
+            {
+                "type": "node",
+                "data": {
+                    "name": "LiBot",
+                    "uin": bot.self_id,
+                    "content": Message(
+                        [
+                            MessageSegment.text(f"{date_text} #{index}\n"),
+                            MessageSegment.image(file=str(image_path)),
+                        ]
+                    ),
+                },
+            }
+        )
+
+    try:
+        await bot.call_api(
+            "send_group_forward_msg",
+            group_id=group_id,
+            messages=nodes,
+        )
+    except Exception as exc:
+        logger.error("发送历史动态合并转发失败: %s", exc)
+        await matcher.finish("历史动态发送失败，请稍后再试")
+
 
 @cmd_add_song.handle()
 @group_manager_required

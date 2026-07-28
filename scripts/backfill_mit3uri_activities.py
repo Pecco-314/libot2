@@ -69,7 +69,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     parser.add_argument(
         "--since",
-        default="2025-03-01T00:00:00+08:00",
+        default="2025-02-27T00:00:00+08:00",
         help="只导入该时间之后的动态（ISO 8601）",
     )
     parser.add_argument("--request-interval", type=float, default=1.0)
@@ -582,7 +582,7 @@ def _import_rows(
                 INSERT INTO activity (
                     id, activity_id, room_id, uid, uname, timestamp,
                     item, dy_type_str, item_remote, assets_localized, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
                 """,
                 [
                     (

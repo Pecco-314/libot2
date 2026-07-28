@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,12 @@ def init_activity_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_activity_room_time
             ON activity(room_id, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_activity_room_timestamp
+            ON activity(room_id, timestamp, activity_id)
             """
         )
         conn.execute(
@@ -268,6 +275,74 @@ def list_activities_after(last_id: int, limit: int = 100) -> list[dict[str, Any]
             (last_id, limit),
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
+
+
+def list_activities_by_month(
+    room_id: int,
+    year: int,
+    month: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    start = datetime(year, month, 1)
+    if month == 12:
+        end = datetime(year + 1, 1, 1)
+    else:
+        end = datetime(year, month + 1, 1)
+
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {ACTIVITY_SELECT}
+            FROM activity
+            WHERE room_id = ?
+              AND timestamp >= ?
+              AND timestamp < ?
+              AND dy_type_str != 'DYNAMIC_TYPE_LIVE_RCMD'
+            ORDER BY timestamp ASC, activity_id ASC
+            """,
+            (room_id, int(start.timestamp()), int(end.timestamp())),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def list_activities_by_date(
+    room_id: int,
+    target_date: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    start = datetime.strptime(target_date, "%Y-%m-%d")
+    end = start + timedelta(days=1)
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {ACTIVITY_SELECT}
+            FROM activity
+            WHERE room_id = ?
+              AND timestamp >= ?
+              AND timestamp < ?
+              AND dy_type_str != 'DYNAMIC_TYPE_LIVE_RCMD'
+            ORDER BY timestamp ASC, activity_id ASC
+            """,
+            (
+                room_id,
+                int(start.timestamp()),
+                int(end.timestamp()),
+            ),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_activity_by_date_index(
+    room_id: int,
+    target_date: str,
+    index: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    if index < 1:
+        return None
+
+    rows = list_activities_by_date(room_id, target_date, db_path)
+    return rows[index - 1] if index <= len(rows) else None
 
 
 def _parse_item(value: Any) -> dict[str, Any]:
