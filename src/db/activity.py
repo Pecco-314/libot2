@@ -1,52 +1,160 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
-from src.db.sqlite import connect_sqlite, execute_write, write_transaction
+from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
 
 
-def init_activity_db() -> None:
-    with write_transaction() as conn:
-        # 兼容性迁移：检查表字段，如果不存在新版字段，则无损追加字段
-        cursor = execute_write(conn, "PRAGMA table_info(activity)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        if columns: # 表已存在
-            if "item" not in columns:
-                execute_write(conn, "ALTER TABLE activity ADD COLUMN item TEXT")
-            if "dy_type_str" not in columns:
-                execute_write(conn, "ALTER TABLE activity ADD COLUMN dy_type_str TEXT")
-        else:
-            # 首次运行，直接创建包含新老字段的表
-            execute_write(
-                conn,
-                """
-                CREATE TABLE activity (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    activity_id TEXT NOT NULL UNIQUE,
-                    room_id INTEGER NOT NULL,
-                    uid INTEGER NOT NULL,
-                    uname TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    dy_type INTEGER NOT NULL DEFAULT 0,     -- [遗留] 老版动态类型
-                    orig_type INTEGER NOT NULL DEFAULT 0,   -- [遗留] 老版源动态类型
-                    card TEXT NOT NULL DEFAULT '',          -- [遗留] 老版 JSON
-                    emoji_details TEXT,                     -- [遗留] 老版表情
-                    item TEXT,                              -- [新版] 完整动态字典 JSON
-                    dy_type_str TEXT,                       -- [新版] 字符串动态类型
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """,
-            )
-            
-        execute_write(
-            conn,
+ACTIVITY_COLUMNS = (
+    "id",
+    "activity_id",
+    "room_id",
+    "uid",
+    "uname",
+    "timestamp",
+    "item",
+    "dy_type_str",
+    "item_remote",
+    "assets_localized",
+    "created_at",
+)
+ACTIVITY_SELECT = ", ".join(ACTIVITY_COLUMNS)
+
+
+def _create_activity_table(
+    conn: sqlite3.Connection,
+    table_name: str = "activity",
+) -> None:
+    if table_name not in {"activity", "activity_new"}:
+        raise ValueError(f"unsupported activity table name: {table_name}")
+    conn.execute(
+        f"""
+        CREATE TABLE {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_id TEXT NOT NULL UNIQUE,
+            room_id INTEGER NOT NULL,
+            uid INTEGER NOT NULL,
+            uname TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            item TEXT NOT NULL,
+            dy_type_str TEXT NOT NULL DEFAULT '',
+            item_remote TEXT NOT NULL,
+            assets_localized INTEGER NOT NULL DEFAULT 0
+                CHECK (assets_localized IN (0, 1)),
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def _activity_columns(conn: sqlite3.Connection) -> tuple[str, ...]:
+    return tuple(
+        str(row[1]) for row in conn.execute("PRAGMA table_info(activity)")
+    )
+
+
+def _migrate_activity_table(conn: sqlite3.Connection) -> None:
+    source_columns = set(_activity_columns(conn))
+    required = {
+        "id",
+        "activity_id",
+        "room_id",
+        "uid",
+        "uname",
+        "timestamp",
+        "item",
+        "dy_type_str",
+        "item_remote",
+        "assets_localized",
+        "created_at",
+    }
+    missing = sorted(required - source_columns)
+    if missing:
+        raise RuntimeError(
+            "activity cannot be migrated to the item-only schema; "
+            f"missing columns: {', '.join(missing)}"
+        )
+
+    conn.execute("DROP TABLE IF EXISTS activity_new")
+    _create_activity_table(conn, "activity_new")
+    conn.execute(
+        """
+        INSERT INTO activity_new (
+            id, activity_id, room_id, uid, uname, timestamp,
+            item, dy_type_str, item_remote, assets_localized, created_at
+        )
+        SELECT
+            id, activity_id, room_id, uid, uname, timestamp,
+            item, COALESCE(dy_type_str, ''), item_remote,
+            assets_localized, COALESCE(created_at, CURRENT_TIMESTAMP)
+        FROM activity
+        ORDER BY id
+        """
+    )
+    conn.execute("DROP TABLE activity")
+    conn.execute("ALTER TABLE activity_new RENAME TO activity")
+
+
+def init_activity_db(db_path: Path = DEFAULT_DB_PATH) -> None:
+    conn = connect_sqlite(db_path)
+    try:
+        # Rebuilding a referenced table requires foreign keys to be disabled
+        # before the transaction. The asset rows are retained and checked before
+        # commit.
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        columns = _activity_columns(conn)
+        if not columns:
+            _create_activity_table(conn)
+        elif columns != ACTIVITY_COLUMNS:
+            _migrate_activity_table(conn)
+
+        conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_activity_room_time
             ON activity(room_id, id)
-            """,
+            """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_asset (
+                activity_id TEXT NOT NULL,
+                remote_url TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                content_type TEXT,
+                size_bytes INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (activity_id, remote_url),
+                FOREIGN KEY (activity_id)
+                    REFERENCES activity(activity_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_activity_asset_sha256
+            ON activity_asset(content_sha256)
+            """
+        )
+        violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if violations:
+            raise RuntimeError(
+                f"activity migration produced foreign key violations: "
+                f"{violations[:3]}"
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.close()
 
 
 def insert_activity(
@@ -58,18 +166,27 @@ def insert_activity(
     timestamp: int,
     dy_type_str: str,
     item_dict: dict[str, Any],
+    item_remote_dict: dict[str, Any] | None = None,
+    assets: Sequence[dict[str, Any]] = (),
+    assets_localized: bool = False,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> bool:
     item_json = json.dumps(item_dict, ensure_ascii=False)
-    with write_transaction() as conn:
-        # 新数据插入时，遗留字段用 0 或空字符串填充，满足旧版的 NOT NULL 约束
-        cursor = execute_write(
-            conn,
+    remote_json = json.dumps(
+        item_remote_dict if item_remote_dict is not None else item_dict,
+        ensure_ascii=False,
+    )
+    with write_transaction(db_path) as conn:
+        cursor = conn.execute(
             """
-            INSERT OR IGNORE INTO activity (
-                activity_id, room_id, uid, uname, timestamp, 
-                dy_type, orig_type, card, emoji_details,
-                item, dy_type_str
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, '', '[]', ?, ?)
+            INSERT INTO activity (
+                activity_id, room_id, uid, uname, timestamp,
+                item, dy_type_str, item_remote, assets_localized
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM activity WHERE activity_id = ?
+            )
             """,
             (
                 activity_id,
@@ -79,42 +196,70 @@ def insert_activity(
                 timestamp,
                 item_json,
                 dy_type_str,
+                remote_json,
+                int(assets_localized),
+                activity_id,
             ),
         )
+        if cursor.rowcount > 0 and assets:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO activity_asset (
+                    activity_id, remote_url, local_path, content_sha256,
+                    content_type, size_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        activity_id,
+                        str(asset["remote_url"]),
+                        str(asset["local_path"]),
+                        str(asset["content_sha256"]),
+                        str(asset.get("content_type") or ""),
+                        int(asset["size_bytes"]),
+                    )
+                    for asset in assets
+                ],
+            )
     return cursor.rowcount > 0
 
 
 def get_max_activity_id() -> int:
     with connect_sqlite() as conn:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM activity").fetchone()
-    if row is None:
-        return 0
-    return int(row[0])
+    return int(row[0]) if row is not None else 0
+
+
+def activity_exists(
+    activity_id: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM activity WHERE activity_id = ? LIMIT 1",
+            (activity_id,),
+        ).fetchone()
+    return row is not None
 
 
 def get_newest_activity() -> dict[str, Any] | None:
     with connect_sqlite() as conn:
-        # 修改 SELECT，显式提取追加的新字段 item 和 dy_type_str
         row = conn.execute(
-            """
-            SELECT id, activity_id, room_id, uid, uname, timestamp, dy_type,
-                   orig_type, card, emoji_details, created_at, item, dy_type_str
+            f"""
+            SELECT {ACTIVITY_SELECT}
             FROM activity
             ORDER BY id DESC
             LIMIT 1
             """
         ).fetchone()
-    if row is None:
-        return None
-    return _row_to_dict(row)
+    return _row_to_dict(row) if row is not None else None
 
 
 def list_activities_after(last_id: int, limit: int = 100) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
-            """
-            SELECT id, activity_id, room_id, uid, uname, timestamp, dy_type,
-                   orig_type, card, emoji_details, created_at, item, dy_type_str
+            f"""
+            SELECT {ACTIVITY_SELECT}
             FROM activity
             WHERE id > ?
             ORDER BY id ASC
@@ -125,16 +270,17 @@ def list_activities_after(last_id: int, limit: int = 100) -> list[dict[str, Any]
     return [_row_to_dict(row) for row in rows]
 
 
-def _row_to_dict(row) -> dict[str, Any]:
-    # 解析新版数据
-    item_dict: dict[str, Any] = {}
-    raw_item = row[11]
-    if raw_item:
-        try:
-            item_dict = json.loads(raw_item)
-        except Exception:
-            pass
+def _parse_item(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
+
+def _row_to_dict(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
     return {
         "id": int(row[0]),
         "activity_id": str(row[1]),
@@ -142,12 +288,9 @@ def _row_to_dict(row) -> dict[str, Any]:
         "uid": int(row[3]),
         "uname": str(row[4]),
         "timestamp": int(row[5]),
-        # 遗留字段予以保留以防系统其他角落引用
-        "dy_type": int(row[6]),
-        "orig_type": int(row[7]),
-        "card": str(row[8]),
-        "created_at": str(row[10]) if row[10] is not None else "",
-        # 新字段
-        "item": item_dict,
-        "dy_type_str": str(row[12]) if row[12] is not None else "",
+        "item": _parse_item(row[6]),
+        "dy_type_str": str(row[7]),
+        "item_remote": _parse_item(row[8]),
+        "assets_localized": bool(row[9]),
+        "created_at": str(row[10]),
     }
