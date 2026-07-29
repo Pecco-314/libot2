@@ -83,7 +83,9 @@ from .utils import (
     parse_user_id,
     _parse_room_id,
     _format_name,
+    get_query_room_id,
     group_manager_required,
+    send_forward_message,
     subscription_dev_required,
 )
 
@@ -149,13 +151,7 @@ async def handle_help(matcher: Matcher):
 
 @superchat_cmd.handle()
 async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     query = arg.extract_plain_text().strip()
     if not query:
@@ -200,9 +196,9 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
         })
     
     try:
-        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+        await send_forward_message(bot, event, nodes)
     except Exception as e:
-        logger.error("发送醒目留言群转发消息失败: %s", e)
+        logger.error("发送醒目留言转发消息失败: %s", e)
 
 
 @manager_help_cmd.handle()
@@ -441,14 +437,7 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
 
 
 async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegment, stat_type: str):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    # 获取本群订阅的房间号
-    room_id = get_subscription(group_id)
-    if not room_id:
-        await matcher.finish("本群未设置订阅，请先订阅后再查询")
+    room_id = get_query_room_id(event)
 
     # 提取参数中的天数，如果没写默认查过去 1 天
     query_text = arg.extract_plain_text().strip().rstrip("天日")
@@ -567,13 +556,7 @@ def _resolve_live_session(room_id: int, date_str: str | None, session_index: int
 
 @concurrent_cmd.handle()
 async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     raw = arg.extract_plain_text()
     date_str, session_index = _parse_concurrent_args(raw)
@@ -618,13 +601,7 @@ async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
 
 @danmaku_rank_cmd.handle()
 async def handle_danmaku_rank(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     raw = arg.extract_plain_text()
     date_str, session_index = _parse_concurrent_args(raw)
@@ -695,13 +672,7 @@ def _parse_events_args(text: str) -> tuple[str | None, str | None, int | None]:
 
 @events_cmd.handle()
 async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     try:
         query_user, date_str, limit = _parse_events_args(
@@ -777,7 +748,7 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         })
 
     try:
-        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+        await send_forward_message(bot, event, nodes)
     except Exception as exc:
         logger.error("发送弹幕记录失败: %s", exc)
 
@@ -790,12 +761,7 @@ async def handle_content_search(
     arg=CommandArg(),
 ):
     group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     raw_arg = arg.extract_plain_text().strip()
     if not raw_arg:
@@ -813,10 +779,13 @@ async def handle_content_search(
     parts = argument_text.rsplit(maxsplit=1)
     limit = 100
 
-    if INITIAL_MANAGER_QQ is not None:
+    if INITIAL_MANAGER_QQ is not None and group_id is not None:
         ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
     user_id = int(event.get_user_id())
-    user_is_manager = is_manager(group_id, user_id)
+    user_is_manager = (
+        (group_id is not None and is_manager(group_id, user_id))
+        or (INITIAL_MANAGER_QQ is not None and user_id == INITIAL_MANAGER_QQ)
+    )
 
     if reveal_hidden and not user_is_manager:
         await matcher.finish("没有这样的功能")
@@ -872,11 +841,7 @@ async def handle_content_search(
         for img in pages
     ]
     try:
-        await bot.call_api(
-            "send_group_forward_msg",
-            group_id=group_id,
-            messages=nodes,
-        )
+        await send_forward_message(bot, event, nodes)
     except Exception as exc:
         logger.error("发送关键词搜索结果失败: %s", exc)
 
@@ -926,17 +891,8 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
             }
         })
 
-    group_id = getattr(event, "group_id", None)
-
     try:
-        if group_id:
-            await bot.call_api(
-                "send_group_forward_msg",
-                group_id=group_id,
-                messages=forward_nodes
-            )
-        else:
-            await matcher.finish("请在群聊中使用该命令")
+        await send_forward_message(bot, event, forward_nodes)
     except Exception as e:
         logger.error(f"发送合并转发消息失败: {e}")
 
@@ -1016,13 +972,7 @@ async def handle_random_song(matcher: Matcher, arg=CommandArg()):
 
 @now_playing_cmd.handle()
 async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
     
     time_str = arg.extract_plain_text().strip()
     if time_str:
@@ -1046,10 +996,6 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
 
 @dc_cmd.handle()
 async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-        
     args = arg.extract_plain_text().strip().split()
     
     # 默认选项设置
@@ -1098,12 +1044,12 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
                 "uin": bot.self_id,
                 "content": MessageSegment.image(file=str(img))
             }
-        })
+    })
     
     try:
-        await bot.call_api("send_group_forward_msg", group_id=group_id, messages=nodes)
+        await send_forward_message(bot, event, nodes)
     except Exception as e:
-        logger.error(f"发送群转发消息失败: {e}")
+        logger.error(f"发送转发消息失败: {e}")
 
 
 @live_list_add_cmd.handle()
@@ -1274,13 +1220,7 @@ async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()
 
 @live_sessions_cmd.handle()
 async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
         
     arg_str = arg.extract_plain_text().strip()
     
@@ -1331,13 +1271,7 @@ async def handle_activity_list(
     event: Event,
     arg=CommandArg(),
 ):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     target_month = _parse_activity_month(arg.extract_plain_text())
     if target_month is None:
@@ -1375,11 +1309,7 @@ async def handle_activity_list(
         for image_path in images
     ]
     try:
-        await bot.call_api(
-            "send_group_forward_msg",
-            group_id=group_id,
-            messages=nodes,
-        )
+        await send_forward_message(bot, event, nodes)
     except Exception as exc:
         logger.error("发送动态列表合并转发失败: %s", exc)
         await matcher.finish("动态列表发送失败，请稍后再试")
@@ -1392,13 +1322,7 @@ async def handle_activity_generate(
     event: Event,
     arg=CommandArg(),
 ):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    room_id = get_subscription(group_id)
-    if room_id is None:
-        await matcher.finish("请先设置订阅")
+    room_id = get_query_room_id(event)
 
     parts = arg.extract_plain_text().strip().split()
     if len(parts) not in {1, 2}:
@@ -1474,11 +1398,7 @@ async def handle_activity_generate(
         )
 
     try:
-        await bot.call_api(
-            "send_group_forward_msg",
-            group_id=group_id,
-            messages=nodes,
-        )
+        await send_forward_message(bot, event, nodes)
     except Exception as exc:
         logger.error("发送历史动态合并转发失败: %s", exc)
         await matcher.finish("历史动态发送失败，请稍后再试")

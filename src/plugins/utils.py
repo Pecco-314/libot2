@@ -9,20 +9,61 @@ from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     Message,
     MessageSegment,
+    PrivateMessageEvent,
 )
 from nonebot.matcher import Matcher
 
 from src.db.manager import ensure_initial_manager, is_manager
-from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
+from src.db.subscription import (
+    get_subscription,
+    get_subscription_feature,
+    list_subscribed_group_ids,
+)
 from src.spider.wrapper import get_name_by_roomid
 
 from .config import INITIAL_MANAGER_QQ
 
+DEFAULT_QUERY_ROOM_ID = 1967216004
+
+
 def get_group_id(event: Event) -> int | None:
+    # 群临时私聊事件会额外携带来源 group_id，但发送目标仍应是私聊。
+    if isinstance(event, PrivateMessageEvent):
+        return None
     if isinstance(event, GroupMessageEvent):
         return int(event.group_id)
     group_id = getattr(event, "group_id", None)
     return int(group_id) if group_id is not None else None
+
+
+def get_query_room_id(event: Event) -> int:
+    """查询命令优先使用群订阅，私聊或未订阅群默认查询三理。"""
+    group_id = get_group_id(event)
+    if group_id is not None:
+        room_id = get_subscription(group_id)
+        if room_id is not None:
+            return room_id
+    return DEFAULT_QUERY_ROOM_ID
+
+
+async def send_forward_message(
+    bot: Bot,
+    event: Event,
+    messages: list[dict],
+):
+    """按事件来源发送群聊或私聊合并转发。"""
+    if isinstance(event, GroupMessageEvent):
+        return await bot.call_api(
+            "send_group_forward_msg",
+            group_id=int(event.group_id),
+            messages=messages,
+        )
+    return await bot.call_api(
+        "send_private_forward_msg",
+        user_id=int(event.get_user_id()),
+        messages=messages,
+    )
+
 
 def parse_user_id(arg: Message) -> int | None:
     text = arg.extract_plain_text().strip()
