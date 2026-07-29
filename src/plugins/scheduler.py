@@ -13,7 +13,11 @@ from nonebot_plugin_apscheduler import scheduler
 
 from src.common.utils import send_notification_email, ROOT
 from src.render.activity import render_bilibili_card
-from src.db.activity import get_max_activity_id, list_activities_after
+from src.db.activity import (
+    LIVE_RCMD_ACTIVITY_TYPE,
+    get_max_activity_id,
+    list_activities_after,
+)
 from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
 from src.db.state import get_state, set_state
 from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
@@ -193,6 +197,13 @@ async def watch_activities() -> None:
         timestamp = int(row.get("timestamp") or 0)
         upload_time = datetime.fromtimestamp(timestamp)
         activity_id = row.get("id")
+        if row.get("dy_type_str") == LIVE_RCMD_ACTIVITY_TYPE:
+            logger.info(
+                "跳过 B 站自动开播动态 activity_id=%s",
+                row.get("activity_id"),
+            )
+            set_state("last_activity_id", activity_id)
+            continue
         logger.info("发现新动态，开始渲染")
         image_path = await _render_activity_image(row)
         if image_path is None:

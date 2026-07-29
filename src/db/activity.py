@@ -24,6 +24,7 @@ ACTIVITY_COLUMNS = (
     "created_at",
 )
 ACTIVITY_SELECT = ", ".join(ACTIVITY_COLUMNS)
+LIVE_RCMD_ACTIVITY_TYPE = "DYNAMIC_TYPE_LIVE_RCMD"
 
 
 def _create_activity_table(
@@ -297,10 +298,15 @@ def list_activities_by_month(
             WHERE room_id = ?
               AND timestamp >= ?
               AND timestamp < ?
-              AND dy_type_str != 'DYNAMIC_TYPE_LIVE_RCMD'
+              AND dy_type_str != ?
             ORDER BY timestamp ASC, activity_id ASC
             """,
-            (room_id, int(start.timestamp()), int(end.timestamp())),
+            (
+                room_id,
+                int(start.timestamp()),
+                int(end.timestamp()),
+                LIVE_RCMD_ACTIVITY_TYPE,
+            ),
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
 
@@ -320,13 +326,14 @@ def list_activities_by_date(
             WHERE room_id = ?
               AND timestamp >= ?
               AND timestamp < ?
-              AND dy_type_str != 'DYNAMIC_TYPE_LIVE_RCMD'
+              AND dy_type_str != ?
             ORDER BY timestamp ASC, activity_id ASC
             """,
             (
                 room_id,
                 int(start.timestamp()),
                 int(end.timestamp()),
+                LIVE_RCMD_ACTIVITY_TYPE,
             ),
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
