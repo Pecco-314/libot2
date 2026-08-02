@@ -83,3 +83,30 @@ def get_recent_transcripts(room_id: int, end_ts: int, window_seconds: int = 60, 
             (room_id, end_ts - window_seconds, end_ts + 2, limit)
         ).fetchall()
     return [row[0] for row in rows if row[0]]
+
+
+def list_transcripts_in_range(
+    room_id: int,
+    start_ts: int,
+    end_ts: int,
+) -> list[dict[str, Any]]:
+    """按时间顺序返回指定范围内的 ASR 记录。"""
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, content, timestamp
+            FROM transcript
+            WHERE room_id = ? AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (room_id, start_ts, end_ts),
+        ).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "content": str(row[1]),
+            "timestamp": int(row[2]),
+        }
+        for row in rows
+        if row[1]
+    ]

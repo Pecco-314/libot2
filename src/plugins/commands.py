@@ -75,7 +75,11 @@ from src.db.event import (
     list_recent_events_by_content,
 )
 from src.db.live_list import add_live_list, remove_live_list, get_live_list
-from src.capture.guesser import guess_song
+from src.capture.guesser import (
+    collapse_song_timeline,
+    guess_song,
+    guess_song_timeline,
+)
 from src.spider.jobs.lyrics import sync_and_clean_lyrics
 
 from .utils import (
@@ -125,6 +129,7 @@ song_singer_cmd = on_command("查歌手", priority=5, block=True)
 song_list_cmd = on_command("查歌单", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
+song_preview_cmd = on_command("预览歌单", priority=5, block=True)
 dc_cmd = on_command("斗虫", priority=5, block=True)
 live_list_add_cmd = on_command("添加直播", aliases={"增加直播"}, priority=5, block=True)
 live_list_remove_cmd = on_command("删除直播", priority=5, block=True)
@@ -993,6 +998,118 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
     for i, res in enumerate(results, start=1):
         message += f"{i}. {res['title']} - {res['singer']} ({res['final_score']:.2%})\n"
     await matcher.finish(message)
+
+
+@song_preview_cmd.handle()
+@group_manager_required
+async def handle_song_preview(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    room_id = get_query_room_id(event)
+    parts = [
+        part
+        for part in arg.extract_plain_text().strip().split()
+        if part
+    ]
+    if len(parts) > 2 or (
+        len(parts) == 2 and not parts[1].isdigit()
+    ):
+        await matcher.finish("用法：/预览歌单 [日期] [场次]")
+    date_str = parts[0] if parts else None
+    session_index = int(parts[1]) if len(parts) == 2 else None
+    try:
+        target_session, session_label, _ongoing = _resolve_live_session(
+            room_id,
+            date_str,
+            session_index,
+        )
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+
+    start_ts = int(target_session["start_ts"])
+    end_ts = target_session["end_ts"]
+    if end_ts is None:
+        end_ts = int(datetime.now().timestamp())
+    end_ts = int(end_ts)
+
+    await matcher.send(f"正在粗略识别{session_label}的歌单……")
+    try:
+        timeline = await asyncio.to_thread(
+            guess_song_timeline,
+            room_id,
+            start_ts,
+            end_ts,
+        )
+        if not timeline:
+            await matcher.finish("该场直播没有 ASR 记录")
+
+        uname = await get_name_by_roomid(room_id) or str(room_id)
+        entries = collapse_song_timeline(timeline, min_score=0.9)
+    except Exception as exc:
+        logger.exception("生成预览歌单失败: %s", exc)
+        await matcher.finish("预览歌单生成失败")
+
+    if not entries:
+        await matcher.finish("该场直播没有识别到可能的歌曲")
+
+    start_dt = datetime.fromtimestamp(start_ts)
+    end_dt = datetime.fromtimestamp(end_ts)
+    lines = [
+        f"{uname} · {session_label}",
+        f"{start_dt:%Y-%m-%d %H:%M:%S} — {end_dt:%Y-%m-%d %H:%M:%S}",
+        f"粗略识别到 {len(entries)} 段歌曲：",
+        "",
+    ]
+    for entry in entries:
+        detected_at = datetime.fromtimestamp(int(entry["first_ts"]))
+        lines.append(
+            f"{detected_at:%Y-%m-%d %H:%M:%S}  "
+            f"{entry['title']} - {entry['singer']}"
+        )
+    lines.extend(
+        [
+            "",
+            "ASR 粗略识别；仅保留置信度>90%的结果。60 秒窗口互不重叠，"
+            "仅合并相邻相同结果，无法区分放歌与演唱。",
+        ]
+    )
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_length = 0
+    for line in lines:
+        added_length = len(line) + (1 if current_lines else 0)
+        if current_lines and current_length + added_length > 3000:
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_length = 0
+        current_lines.append(line)
+        current_length += len(line) + (1 if len(current_lines) > 1 else 0)
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    if len(chunks) == 1:
+        await matcher.finish(chunks[0])
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "LiBot",
+                "uin": bot.self_id,
+                "content": MessageSegment.text(chunk),
+            },
+        }
+        for chunk in chunks
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送预览歌单合并转发失败: %s", exc)
+        await matcher.finish("预览歌单发送失败，请稍后再试")
 
 @dc_cmd.handle()
 async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
