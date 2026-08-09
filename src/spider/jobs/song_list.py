@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import logging
 import os
@@ -129,3 +130,8 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
         coalesce=True,
         misfire_grace_time=300,
     )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(sync_song_list())

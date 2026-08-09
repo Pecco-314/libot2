@@ -67,6 +67,31 @@ def init_song_list_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             ON song_sync_source(song_id, source)
             """,
         )
+        execute_write(
+            conn,
+            """
+            CREATE TABLE IF NOT EXISTS song_clip_source (
+                song_id INTEGER NOT NULL,
+                bvid TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_payload TEXT NOT NULL DEFAULT '{}',
+                discovered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (song_id, bvid, source),
+                FOREIGN KEY(song_id) REFERENCES song_info(id) ON DELETE CASCADE
+            )
+            """,
+        )
+        execute_write(
+            conn,
+            """
+            CREATE TABLE IF NOT EXISTS song_clip_search_state (
+                song_id INTEGER PRIMARY KEY,
+                outcome TEXT NOT NULL,
+                searched_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(song_id) REFERENCES song_info(id) ON DELETE CASCADE
+            )
+            """,
+        )
 
 
 def _normalize_song_identity(value: Any) -> str:
@@ -679,6 +704,106 @@ def update_song_cleaned_lyrics(song_id: int, lyrics_cleaned: str) -> None:
             """,
             (lyrics_cleaned, song_id),
         )
+
+
+def list_songs_without_clips(limit: int | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT i.id, i.title, i.title_trans, i.original_singer, i.clips,
+               (SELECT json_group_array(record_date)
+                FROM song_record WHERE song_id = i.id)
+        FROM song_info i
+        LEFT JOIN song_clip_search_state state ON state.song_id = i.id
+        WHERE i.clips IS NULL OR trim(i.clips) = '' OR trim(i.clips) = '[]'
+        ORDER BY state.searched_at IS NOT NULL, state.searched_at, i.id
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    with connect_sqlite() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "title": str(row[1] or ""),
+            "title_trans": str(row[2] or ""),
+            "original_singer": str(row[3] or ""),
+            "records": _json_list(row[5]),
+        }
+        for row in rows
+        if not _json_list(row[4])
+    ]
+
+
+def mark_song_clip_search_attempt(song_id: int, outcome: str) -> None:
+    with write_transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO song_clip_search_state (song_id, outcome, searched_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(song_id) DO UPDATE SET
+                outcome = excluded.outcome,
+                searched_at = CURRENT_TIMESTAMP
+            """,
+            (song_id, outcome.strip() or "unknown"),
+        )
+
+
+def add_song_clip_if_missing(
+    song_id: int,
+    bvid: str,
+    *,
+    source: str,
+    source_payload: dict[str, Any] | None = None,
+) -> bool:
+    """Append a BVID without replacing clips added by another source."""
+
+    clean_bvid = bvid.strip()
+    if not re.fullmatch(r"BV[0-9A-Za-z]{10}", clean_bvid):
+        raise ValueError(f"invalid BVID: {bvid!r}")
+    clean_source = source.strip()
+    if not clean_source:
+        raise ValueError("song clip source must not be empty")
+    with write_transaction() as conn:
+        row = conn.execute(
+            "SELECT clips FROM song_info WHERE id = ?",
+            (song_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        clips = _json_list(row[0])
+        if clips:
+            return False
+        clips.append(clean_bvid)
+        conn.execute(
+            """
+            UPDATE song_info
+            SET clips = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (json.dumps(clips, ensure_ascii=False), song_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO song_clip_source (
+                song_id, bvid, source, source_payload, discovered_at
+            ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(song_id, bvid, source) DO UPDATE SET
+                source_payload = excluded.source_payload,
+                discovered_at = CURRENT_TIMESTAMP
+            """,
+            (
+                song_id,
+                clean_bvid,
+                clean_source,
+                json.dumps(
+                    source_payload or {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ),
+        )
+    return True
 
 
 def get_all_songs() -> list[dict[str, Any]]:
