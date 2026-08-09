@@ -25,9 +25,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RAW = ROOT / "data" / "mit3uri_replay_raw.json"
 DEFAULT_DB = ROOT / "data" / "libot.db"
 DEFAULT_OUTPUT = ROOT / "data" / "mit3uri_replay_catalog.json"
+DEFAULT_MERGE_OVERRIDES = (
+    ROOT / "scripts" / "resources" / "mit3uri_replay_session_merges.json"
+)
 TZ = timezone(timedelta(hours=8))
 ROOM_ID = 1967216004
 MIN_AUDITED_SESSION_SECONDS = 6 * 60
+DATABASE_SESSION_COVERAGE_START = date(2026, 4, 20)
+DATABASE_RECONNECT_GAP_SECONDS = 5 * 60
 
 SOURCE_RANK = {"danmakus": 0, "vtbcat": 1, "database": 2, "replay_title": 3}
 PRECISION_RANK = {"second": 0, "minute": 1, "hour": 2, "date": 3}
@@ -235,6 +240,106 @@ def _load_raw(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             }
         )
     return normalized, sources
+
+
+def _load_merge_overrides(
+    path: Path,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, str]],
+    list[dict[str, str]],
+]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"{path} 的 schema_version 必须为 1")
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        raise ValueError(f"{path} 缺少 groups 列表")
+
+    normalized: list[dict[str, Any]] = []
+    claimed: dict[str, int] = {}
+    for index, value in enumerate(groups, 1):
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} groups[{index}] 必须是对象")
+        anchor_bvid = str(value.get("anchor_bvid") or "").strip()
+        merge_bvids = [
+            str(item).strip()
+            for item in value.get("merge_bvids") or []
+            if str(item).strip()
+        ]
+        reason = str(value.get("reason") or "").strip()
+        if not anchor_bvid or not merge_bvids or not reason:
+            raise ValueError(
+                f"{path} groups[{index}] 必须提供 anchor_bvid/merge_bvids/reason"
+            )
+        bvids = [anchor_bvid, *merge_bvids]
+        if len(set(bvids)) != len(bvids):
+            raise ValueError(f"{path} groups[{index}] 内存在重复 BVID")
+        for bvid in bvids:
+            previous = claimed.get(bvid)
+            if previous is not None:
+                raise ValueError(
+                    f"{path} 的 {bvid} 同时出现在 groups[{previous}] 和 "
+                    f"groups[{index}]"
+                )
+            claimed[bvid] = index
+        normalized.append(
+            {
+                "anchor_bvid": anchor_bvid,
+                "merge_bvids": merge_bvids,
+                "reason": reason,
+            }
+        )
+    excluded_external = payload.get("excluded_external_bvids") or []
+    if not isinstance(excluded_external, list):
+        raise ValueError(f"{path} excluded_external_bvids 必须是列表")
+    normalized_external: list[dict[str, str]] = []
+    for index, value in enumerate(excluded_external, 1):
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"{path} excluded_external_bvids[{index}] 必须是对象"
+            )
+        bvid = str(value.get("bvid") or "").strip()
+        reason = str(value.get("reason") or "").strip()
+        if not bvid or not reason:
+            raise ValueError(
+                f"{path} excluded_external_bvids[{index}] 必须提供 bvid/reason"
+            )
+        if bvid in claimed:
+            raise ValueError(f"{path} 的 {bvid} 同时用于合并和外部直播排除")
+        claimed[bvid] = -index
+        normalized_external.append({"bvid": bvid, "reason": reason})
+    start_time_overrides = payload.get("start_time_overrides") or []
+    if not isinstance(start_time_overrides, list):
+        raise ValueError(f"{path} start_time_overrides 必须是列表")
+    normalized_starts: list[dict[str, str]] = []
+    for index, value in enumerate(start_time_overrides, 1):
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} start_time_overrides[{index}] 必须是对象")
+        bvid = str(value.get("bvid") or "").strip()
+        start_time = str(value.get("start_time") or "").strip()
+        reason = str(value.get("reason") or "").strip()
+        if not bvid or not start_time or not reason:
+            raise ValueError(
+                f"{path} start_time_overrides[{index}] "
+                "必须提供 bvid/start_time/reason"
+            )
+        parsed = _parse_iso(start_time)
+        if parsed is None:
+            raise ValueError(
+                f"{path} start_time_overrides[{index}] 的时间无效"
+            )
+        if bvid in claimed:
+            raise ValueError(f"{path} 的 {bvid} 同时用于多种人工覆盖")
+        claimed[bvid] = -(len(normalized_external) + index)
+        normalized_starts.append(
+            {
+                "bvid": bvid,
+                "start_time": parsed.isoformat(timespec="seconds"),
+                "reason": reason,
+            }
+        )
+    return normalized, normalized_external, normalized_starts
 
 
 def _load_danmakus(
@@ -482,7 +587,24 @@ def _load_database(path: Path) -> list[Evidence]:
                 sessions.append((current, ts))
             current = None
     if current is not None:
-        sessions.append((current, None))
+        sessions.append((current, int(datetime.now(TZ).timestamp())))
+
+    collapsed_sessions: list[tuple[int, int | None]] = []
+    for start_ts, end_ts in sessions:
+        if (
+            collapsed_sessions
+            and collapsed_sessions[-1][1] is not None
+            and start_ts - int(collapsed_sessions[-1][1])
+            <= DATABASE_RECONNECT_GAP_SECONDS
+        ):
+            previous_start, previous_end = collapsed_sessions[-1]
+            collapsed_sessions[-1] = (
+                previous_start,
+                max(int(previous_end), end_ts) if end_ts is not None else None,
+            )
+        else:
+            collapsed_sessions.append((start_ts, end_ts))
+    sessions = collapsed_sessions
 
     result: list[Evidence] = []
     for index, (start_ts, end_ts) in enumerate(sessions):
@@ -1128,6 +1250,153 @@ def _merge_session_into(anchor: Session, other: Session) -> None:
     reference = _session_reference_start(anchor)
     if reference:
         anchor.day = reference.date()
+    database_starts = [
+        item.start for item in anchor.evidence if item.source == "database"
+    ]
+    if anchor.day >= DATABASE_SESSION_COVERAGE_START and database_starts:
+        anchor.start = min(database_starts)
+        anchor.start_precision = "second"
+        anchor.day = anchor.start.date()
+
+
+def apply_merge_overrides(
+    sessions: list[Session],
+    groups: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Merge manually audited recordings using stable BVID anchors."""
+    audit: list[dict[str, Any]] = []
+    resolved_bvids: set[str] = set()
+    for group in groups:
+        anchor_bvid = str(group["anchor_bvid"])
+        requested_bvids = [anchor_bvid, *group["merge_bvids"]]
+        session_by_bvid = {
+            str(row["bvid"]): session
+            for session in sessions
+            for row in session.recordings
+            if str(row["bvid"]) in requested_bvids
+        }
+        missing = [bvid for bvid in requested_bvids if bvid not in session_by_bvid]
+        if missing:
+            raise ValueError(
+                "人工场次合并覆盖引用了目录中不存在的 BVID: "
+                + ", ".join(missing)
+            )
+
+        anchor = session_by_bvid[anchor_bvid]
+        others: list[Session] = []
+        for bvid in group["merge_bvids"]:
+            other = session_by_bvid[str(bvid)]
+            if other is anchor or other in others:
+                continue
+            others.append(other)
+
+        audit.append(
+            {
+                "method": "manual_bvid_override",
+                "anchor_bvid": anchor_bvid,
+                "merge_bvids": list(group["merge_bvids"]),
+                "reason": str(group["reason"]),
+                "kept_internal_id": anchor.internal_id,
+                "merged_internal_ids": [item.internal_id for item in others],
+                "already_merged": not others,
+            }
+        )
+        for other in others:
+            _merge_session_into(anchor, other)
+            sessions.remove(other)
+        resolved_bvids.update(requested_bvids)
+    return audit, resolved_bvids
+
+
+def apply_start_time_overrides(
+    sessions: list[Session],
+    overrides: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Apply exact own-room recording timestamps audited from video metadata."""
+
+    audit: list[dict[str, Any]] = []
+    resolved_bvids: set[str] = set()
+    for value in overrides:
+        bvid = value["bvid"]
+        matches = [
+            session
+            for session in sessions
+            if any(str(row["bvid"]) == bvid for row in session.recordings)
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"开播时间覆盖 {bvid} 应命中一个场次，实际命中 {len(matches)} 个"
+            )
+        session = matches[0]
+        start = _parse_iso(value["start_time"])
+        if start is None:
+            raise ValueError(f"开播时间覆盖 {bvid} 的时间无效")
+        if session.evidence:
+            raise ValueError(
+                f"开播时间覆盖 {bvid} 已带独立场次证据，应修正匹配而非覆盖"
+            )
+        session.start = start
+        session.start_precision = "second"
+        session.day = start.date()
+        audit.append(
+            {
+                "method": "manual_bvid_start_time",
+                "bvid": bvid,
+                "start_time": _iso(start),
+                "reason": value["reason"],
+                "internal_id": session.internal_id,
+            }
+        )
+        resolved_bvids.add(bvid)
+    return audit, resolved_bvids
+
+
+def exclude_external_recordings(
+    sessions: list[Session],
+    exclusions: list[dict[str, str]],
+) -> tuple[list[Session], list[dict[str, Any]]]:
+    """Remove recordings made in another liver's room from own-room totals."""
+
+    excluded_sessions: list[Session] = []
+    audit: list[dict[str, Any]] = []
+    for value in exclusions:
+        bvid = value["bvid"]
+        matches = [
+            session
+            for session in sessions
+            if any(str(row["bvid"]) == bvid for row in session.recordings)
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"外部直播排除 {bvid} 应命中一个场次，实际命中 {len(matches)} 个"
+            )
+        session = matches[0]
+        if session.evidence:
+            raise ValueError(
+                f"外部直播排除 {bvid} 已带三理主直播间独立证据，拒绝排除"
+            )
+        other_bvids = [
+            str(row["bvid"])
+            for row in session.recordings
+            if str(row["bvid"]) != bvid
+        ]
+        if other_bvids:
+            raise ValueError(
+                f"外部直播排除 {bvid} 与其他录播已合并: {other_bvids}"
+            )
+        sessions.remove(session)
+        excluded_sessions.append(session)
+        audit.append(
+            {
+                "method": "manual_external_room_exclusion",
+                "bvid": bvid,
+                "reason": value["reason"],
+                "internal_id": session.internal_id,
+                "date": session.day.isoformat(),
+                "title": session.title,
+            }
+        )
+    return excluded_sessions, audit
 
 
 def _independent_intervals_are_distinct(left: Session, right: Session) -> bool:
@@ -1158,6 +1427,66 @@ def consolidate_sessions(
     resolved_bvids: set[str] = set()
     while True:
         proposals: list[tuple[float, str, Session, Session]] = []
+
+        # A replay-only row may carry the title used later in the same live,
+        # while the independently timed row keeps the opening title. Permit a
+        # title-agnostic merge only for a mutual, unique same-day duration
+        # fingerprint from disjoint recording UPs. Ambiguous matches remain
+        # separate for manual review.
+        replay_only_sessions = [
+            item for item in sessions if item.recordings and not item.evidence
+        ]
+        catalog_backed_sessions = [
+            item for item in sessions if item.recordings and item.evidence
+        ]
+
+        def duration_fingerprint(left: Session, right: Session) -> bool:
+            left_duration = _session_reference_duration(left)
+            right_duration = _session_reference_duration(right)
+            if not left_duration or not right_duration:
+                return False
+            return abs(left_duration - right_duration) <= max(
+                90,
+                int(max(left_duration, right_duration) * 0.02),
+            )
+
+        replay_matches: dict[int, list[Session]] = {}
+        catalog_matches: dict[int, list[Session]] = {}
+        for replay_session in replay_only_sessions:
+            replay_mids = {
+                int(row["source_mid"]) for row in replay_session.recordings
+            }
+            matches: list[Session] = []
+            for catalog_session in catalog_backed_sessions:
+                if replay_session.day != catalog_session.day:
+                    continue
+                catalog_mids = {
+                    int(row["source_mid"]) for row in catalog_session.recordings
+                }
+                if replay_mids & catalog_mids:
+                    continue
+                if duration_fingerprint(replay_session, catalog_session):
+                    matches.append(catalog_session)
+                    catalog_matches.setdefault(catalog_session.internal_id, []).append(
+                        replay_session
+                    )
+            replay_matches[replay_session.internal_id] = matches
+
+        for replay_session in replay_only_sessions:
+            matches = replay_matches.get(replay_session.internal_id, [])
+            if len(matches) != 1:
+                continue
+            catalog_session = matches[0]
+            if len(catalog_matches.get(catalog_session.internal_id, [])) != 1:
+                continue
+            proposals.append(
+                (
+                    121,
+                    "mutual_unique_cross_up_duration_title_change",
+                    catalog_session,
+                    replay_session,
+                )
+            )
 
         # Title changes during a stream can make the catalog and replay names
         # completely different. Use duration alone only when the catalog
@@ -1420,8 +1749,18 @@ def consolidate_sessions(
                 "method": method,
                 "kept_internal_id": anchor.internal_id,
                 "merged_internal_id": other.internal_id,
+                "kept_date": anchor.day.isoformat(),
+                "merged_date": other.day.isoformat(),
                 "left_title": anchor.title,
                 "right_title": other.title,
+                "kept_duration_seconds": _session_reference_duration(anchor),
+                "merged_duration_seconds": _session_reference_duration(other),
+                "kept_bvids": [
+                    str(row["bvid"]) for row in anchor.recordings
+                ],
+                "merged_bvids": [
+                    str(row["bvid"]) for row in other.recordings
+                ],
             }
         )
         _merge_session_into(anchor, other)
@@ -1509,8 +1848,14 @@ def build_catalog(
     db_path: Path,
     danmakus_path: Path,
     vtbcat_path: Path,
+    merge_overrides_path: Path,
 ) -> dict[str, Any]:
     rows, sources = _load_raw(raw_path)
+    (
+        merge_overrides,
+        external_exclusions,
+        start_time_overrides,
+    ) = _load_merge_overrides(merge_overrides_path)
     vtbcat_evidence = _load_vtbcat(vtbcat_path)
     database_evidence = _load_database(db_path)
     danmakus_evidence = _load_danmakus(
@@ -1527,7 +1872,22 @@ def build_catalog(
     date_unresolved, _next_id = attach_date_only_recordings(
         sessions, unresolved, next_id
     )
+    start_override_audit, start_override_resolved_bvids = (
+        apply_start_time_overrides(sessions, start_time_overrides)
+    )
+    override_audit, override_resolved_bvids = apply_merge_overrides(
+        sessions,
+        merge_overrides,
+    )
     consolidation_audit, resolved_bvids = consolidate_sessions(sessions)
+    resolved_bvids.update(override_resolved_bvids)
+    resolved_bvids.update(start_override_resolved_bvids)
+    excluded_external_sessions, external_exclusion_audit = (
+        exclude_external_recordings(sessions, external_exclusions)
+    )
+    resolved_bvids.update(
+        value["bvid"] for value in external_exclusions
+    )
     date_unresolved = [
         row for row in date_unresolved if str(row["bvid"]) not in resolved_bvids
     ]
@@ -1540,6 +1900,27 @@ def build_catalog(
             item.internal_id,
         )
     )
+    dirty_monitored_sessions = [
+        item
+        for item in sessions
+        if item.day >= DATABASE_SESSION_COVERAGE_START
+        and (_session_reference_duration(item) or 0) > MIN_AUDITED_SESSION_SECONDS
+        and (
+            not any(evidence.source == "database" for evidence in item.evidence)
+            or _session_reference_start(item) is None
+            or item.start_precision != "second"
+        )
+    ]
+    if dirty_monitored_sessions:
+        details = "; ".join(
+            f"{item.day.isoformat()} {item.title} "
+            f"({','.join(str(row['bvid']) for row in item.recordings)})"
+            for item in dirty_monitored_sessions
+        )
+        raise ValueError(
+            "数据库 LIVE/PREPARING 覆盖期仍存在无秒级主直播间锚点的计数场次；"
+            "请合并同场切片、修正精度或显式排除外部直播: " + details
+        )
     audited_sessions = [
         item
         for item in sessions
@@ -1554,6 +1935,16 @@ def build_catalog(
                 if item.recordings
                 and (_session_reference_duration(item) or 0)
                 <= MIN_AUDITED_SESSION_SECONDS
+            ),
+            1,
+        )
+    ]
+    serialized_external_sessions = [
+        _serialize_session(item, f"EXCLUDED-EXTERNAL-{index:04d}")
+        for index, item in enumerate(
+            sorted(
+                excluded_external_sessions,
+                key=lambda item: (item.day, item.internal_id),
             ),
             1,
         )
@@ -1614,11 +2005,29 @@ def build_catalog(
             ),
             "same_title_alone_never_merges_sessions": True,
             "same_up_multiple_versions_are_alternatives_unless_segment_proven": True,
+            "manual_bvid_merge_overrides": str(merge_overrides_path),
+            "external_room_recordings": (
+                "retained in the database with included_in_total=0"
+            ),
+            "database_coverage_invariant": (
+                f"no included replay-only session on or after "
+                f"{DATABASE_SESSION_COVERAGE_START.isoformat()}"
+            ),
+            "database_reconnect_gap_seconds": DATABASE_RECONNECT_GAP_SECONDS,
+            "title_change_duration_fingerprint": (
+                "same day, disjoint recording UPs, one replay-only row, and a "
+                "mutual unique duration match within max(90 seconds, 2%)"
+            ),
             "minimum_audited_session_seconds": MIN_AUDITED_SESSION_SECONDS,
             "uncertain_rows_are_retained": True,
         },
         "sources": sources,
-        "consolidation_audit": consolidation_audit,
+        "consolidation_audit": [
+            *start_override_audit,
+            *override_audit,
+            *consolidation_audit,
+            *external_exclusion_audit,
+        ],
         "coverage": {
             "bilibili_source_rows": len(rows),
             "unique_bvids": len({str(row["bvid"]) for row in rows}),
@@ -1629,6 +2038,9 @@ def build_catalog(
             "excluded_source_records_at_most_0_1h": len(excluded_short_evidence),
             "excluded_recording_sessions_at_most_0_1h": len(
                 excluded_short_recording_sessions
+            ),
+            "excluded_external_room_sessions": len(
+                serialized_external_sessions
             ),
             "recorded_sessions_absent_vtbcat": len(absent_vtb),
             "recorded_sessions_absent_vtbcat_and_danmakus": len(absent_both),
@@ -1657,6 +2069,7 @@ def build_catalog(
             for item in excluded_short_evidence
         ],
         "excluded_short_recording_sessions": excluded_short_recording_sessions,
+        "excluded_external_recording_sessions": serialized_external_sessions,
         "same_title_collision_groups": same_title_collision_groups,
         "sessions_without_recording": missing,
         "recorded_sessions_absent_vtbcat": absent_vtb,
@@ -1676,6 +2089,10 @@ def build_catalog(
                 "但分别完整保留在 excluded_short_source_records 和 "
                 "excluded_short_recording_sessions。"
             ),
+            (
+                "明确来自其他主播房间的联动或活动录播保留在 "
+                "excluded_external_recording_sessions，不计入三理主直播间场次。"
+            ),
         ],
     }
 
@@ -1686,6 +2103,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--danmakus-catalog", type=Path, required=True)
     parser.add_argument("--vtbcat-catalog", type=Path, required=True)
+    parser.add_argument(
+        "--merge-overrides",
+        type=Path,
+        default=DEFAULT_MERGE_OVERRIDES,
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args()
 
@@ -1697,6 +2119,7 @@ def main() -> int:
         args.db.resolve(),
         args.danmakus_catalog.resolve(),
         args.vtbcat_catalog.resolve(),
+        args.merge_overrides.resolve(),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")

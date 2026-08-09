@@ -131,13 +131,23 @@ def _session_rows(
     payload: dict[str, Any],
 ) -> tuple[list[tuple[Any, ...]], list[dict[str, Any]]]:
     included = payload["sessions"]
-    excluded = payload["excluded_short_recording_sessions"]
-    if not isinstance(included, list) or not isinstance(excluded, list):
-        raise ValueError("sessions/excluded_short_recording_sessions 必须是列表")
+    excluded_short = payload["excluded_short_recording_sessions"]
+    excluded_external = payload.get("excluded_external_recording_sessions") or []
+    if not all(
+        isinstance(value, list)
+        for value in (included, excluded_short, excluded_external)
+    ):
+        raise ValueError(
+            "sessions/excluded_short_recording_sessions/"
+            "excluded_external_recording_sessions 必须是列表"
+        )
 
     all_sessions: list[dict[str, Any]] = []
     rows: list[tuple[Any, ...]] = []
-    for included_in_total, sessions in ((1, included), (0, excluded)):
+    for included_in_total, sessions in (
+        (1, included),
+        (0, [*excluded_short, *excluded_external]),
+    ):
         for session in sessions:
             recordings = session.get("recordings") or []
             rows.append(

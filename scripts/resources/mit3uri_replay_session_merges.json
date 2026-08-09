@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "description": "人工确认属于同一次开播的录播副本或尾部切片。使用 BVID 作为稳定锚点，不依赖重建后会变化的 MIT3URI 编号。",
+  "groups": [
+    {
+      "anchor_bvid": "BV1VdZrYfEpu",
+      "merge_bvids": ["BV1B3ZCYqEDU"],
+      "reason": "2025-03-30 同场录播；开始提示相差 17 分钟，成片时长仅差 94 秒。"
+    },
+    {
+      "anchor_bvid": "BV1XnfKYfEay",
+      "merge_bvids": ["BV1Y8ZfY6EVR"],
+      "reason": "2025-04-01 满月回同场录播；不同标题记录了同一次直播。"
+    },
+    {
+      "anchor_bvid": "BV1w1RiYnEc2",
+      "merge_bvids": ["BV1fCZDYZERG", "BV1d2ZDYdE6P"],
+      "reason": "2025-04-03 同场三份完整录播；标题随直播内容变化。"
+    },
+    {
+      "anchor_bvid": "BV1tAKozuEz5",
+      "merge_bvids": ["BV1ZHKezoEM5"],
+      "reason": "2025-06-23 同场完整录播副本；时长相差约 3 分钟。"
+    },
+    {
+      "anchor_bvid": "BV1hPg9z1E57",
+      "merge_bvids": ["BV1GJKUzxEhq"],
+      "reason": "2025-06-28 同场完整录播副本；时长仅差 13 秒。"
+    },
+    {
+      "anchor_bvid": "BV1Lj8Yz1EhJ",
+      "merge_bvids": ["BV1sWgWznE4t", "BV194gszTEZ8"],
+      "reason": "2025-07-22 同场完整录播；后两条使用了直播中途标题。"
+    },
+    {
+      "anchor_bvid": "BV11ah5z1Ev6",
+      "merge_bvids": ["BV1BMhNz3EXP"],
+      "reason": "2025-08-02 同场完整录播；标题随内容发生变化。"
+    },
+    {
+      "anchor_bvid": "BV1GpeZzpEt3",
+      "merge_bvids": ["BV1g5Y1zjE6G"],
+      "reason": "2025-08-17 同场完整录播；时长仅差 187 秒。"
+    },
+    {
+      "anchor_bvid": "BV1i1aDziEbV",
+      "merge_bvids": ["BV141a6zdE7M"],
+      "reason": "2025-09-03 跨午夜直播的尾部切片。"
+    },
+    {
+      "anchor_bvid": "BV1xSaQzXERf",
+      "merge_bvids": ["BV1G8aSzZE6W"],
+      "reason": "2025-09-04 同场完整录播；改标题后被拆成两个目录条目。"
+    },
+    {
+      "anchor_bvid": "BV1dkpVz6EVm",
+      "merge_bvids": ["BV1k7HYziEHG"],
+      "reason": "2025-09-11 同场完整录播副本。"
+    },
+    {
+      "anchor_bvid": "BV1NxxFzdEcH",
+      "merge_bvids": ["BV1qDsnzKEra"],
+      "reason": "2025-10-24 同场完整录播；开播标题为“开唱”，后改为“空即是空”。"
+    },
+    {
+      "anchor_bvid": "BV1oi1yBvEx3",
+      "merge_bvids": ["BV1v32wB2EGZ"],
+      "reason": "2025-11-06 UP 大侦探直播的部分录播副本。"
+    },
+    {
+      "anchor_bvid": "BV1eyUkBAEJy",
+      "merge_bvids": ["BV1ThUNB7Ecr"],
+      "reason": "2025-11-21 跨午夜直播的后半段录播。"
+    },
+    {
+      "anchor_bvid": "BV1jZrXBUEzf",
+      "merge_bvids": ["BV1fGrrBSEwK"],
+      "reason": "2026-01-16 同场完整录播；直播中途改为新人相关标题。"
+    },
+    {
+      "anchor_bvid": "BV1jZrXBUErP",
+      "merge_bvids": ["BV1acrSBcEeD"],
+      "reason": "2026-01-17 同场完整录播；标题由钢炼内容切换到游戏。"
+    },
+    {
+      "anchor_bvid": "BV1bPkgBUEvF",
+      "merge_bvids": ["BV1UpkuB2EBC"],
+      "reason": "2026-01-19 同场完整录播；歌台后改为 101 标题。"
+    },
+    {
+      "anchor_bvid": "BV1hXFUzGEfr",
+      "merge_bvids": ["BV1YucFzgEj5"],
+      "reason": "2026-02-08 同场完整录播；冰火观看后切换鸣潮。"
+    },
+    {
+      "anchor_bvid": "BV1zJNNzkE4Q",
+      "merge_bvids": ["BV14RPNzREvf", "BV1ycPKzDEQR"],
+      "reason": "2026-03-04 同一场鸣潮直播的完整录播与分段副本。"
+    },
+    {
+      "anchor_bvid": "BV1etNNzTEZJ",
+      "merge_bvids": ["BV13jPCzKEaT"],
+      "reason": "2026-03-05 同场完整录播；先唱歌后切换生化危机 9。"
+    },
+    {
+      "anchor_bvid": "BV1fQwZzSEgz",
+      "merge_bvids": ["BV1d9cSzpE4M"],
+      "reason": "2026-03-13 同场完整录播；标题记录了前瞻与 101 两段内容。"
+    },
+    {
+      "anchor_bvid": "BV15zAJzuEh2",
+      "merge_bvids": ["BV1N5w3z8EFq"],
+      "reason": "2026-03-15 同场完整录播；时长仅差 53 秒。"
+    },
+    {
+      "anchor_bvid": "BV1wHAJzDEjf",
+      "merge_bvids": ["BV1bzwXzWEm8"],
+      "reason": "2026-03-17 同一场鸣潮直播的短切片。"
+    },
+    {
+      "anchor_bvid": "BV1WJwizAE6m",
+      "merge_bvids": ["BV1aMwBzEEt5"],
+      "reason": "2026-03-18 同一场 101 双排直播的尾部切片。"
+    },
+    {
+      "anchor_bvid": "BV1HYQkBHEBm",
+      "merge_bvids": ["BV1YSQkB6Em4", "BV1qPQkB3EvE", "BV1keXqBuEuz"],
+      "reason": "2026-03-24 同场录播；20:52:35 的“小歌一会”是 19:59 开播场次的中段，之后切换生化危机 2。"
+    },
+    {
+      "anchor_bvid": "BV1g1XkBTEeF",
+      "merge_bvids": ["BV17hXkBmEcJ", "BV1qV9LBMEnT"],
+      "reason": "2026-03-31 同场完整录播；先唱歌后切换生化危机 2。"
+    },
+    {
+      "anchor_bvid": "BV11FDyBZE6w",
+      "merge_bvids": ["BV1wwQAB3E8Z", "BV16QQNBCEqo"],
+      "reason": "2026-04-10 同场完整录播；聊天后切换生化危机 2。"
+    },
+    {
+      "anchor_bvid": "BV1q1oaBcEyq",
+      "merge_bvids": ["BV1YidLBuEpC", "BV18CdLBeECu"],
+      "reason": "2026-04-17 同场完整录播；唱歌后观看前瞻和 3D。"
+    },
+    {
+      "anchor_bvid": "BV1exo7BmE3H",
+      "merge_bvids": ["BV1bXd6BvEJH"],
+      "reason": "2026-04-19 同场完整录播副本；时长仅差 58 秒。"
+    },
+    {
+      "anchor_bvid": "BV1M99DBoEF3",
+      "merge_bvids": ["BV1zLo7BsELK", "BV19DoEBJEbT"],
+      "reason": "2026-04-24 同场完整录播；通勤歌台后切换异环。"
+    },
+    {
+      "anchor_bvid": "BV17vRVBuErM",
+      "merge_bvids": ["BV17bodBcEzh", "BV1Qzo9ByEV5"],
+      "reason": "2026-04-25 同场完整录播；嘟嘟登场后切换异环。"
+    },
+    {
+      "anchor_bvid": "BV1L3Lm6KE2h",
+      "merge_bvids": ["BV17LR2BcEfe", "BV1xoR1BVEze", "BV17jR2B8ENv"],
+      "reason": "2026-05-08 同场完整录播；观看内容与标题在直播中变化。"
+    },
+    {
+      "anchor_bvid": "BV1PKGW66EMG",
+      "merge_bvids": ["BV16tLU6GEPV", "BV1uyLW6sEMd"],
+      "reason": "2026-05-20 同场完整录播；3D 后日谈后切换植物大战僵尸。"
+    },
+    {
+      "anchor_bvid": "BV1EGjA6SEsk",
+      "merge_bvids": ["BV1XLLo6pEqS"],
+      "reason": "2026-06-17 同场完整录播；通勤歌台后切换盛世天下。"
+    },
+    {
+      "anchor_bvid": "BV1WH7g6SESY",
+      "merge_bvids": ["BV1j67g6qEet"],
+      "reason": "2026-06-23 同一场直播的前半段录播。"
+    },
+    {
+      "anchor_bvid": "BV1aVMp63EfD",
+      "merge_bvids": ["BV1k97V6sEoX", "BV1bnMp6iE3B"],
+      "reason": "2026-06-26 跨午夜直播；试训、唱歌、前瞻及掉线尾段属于同一次开播。"
+    },
+    {
+      "anchor_bvid": "BV1k7Nt6AEfw",
+      "merge_bvids": ["BV1knT76MEgX"],
+      "reason": "2026-07-02 午场师徒杯直播的短录播副本。"
+    },
+    {
+      "anchor_bvid": "BV17VTn6BEVG",
+      "merge_bvids": ["BV17XTE6NEEk"],
+      "reason": "2026-07-02 晚场师徒杯直播的部分录播副本；午场与晚场仍保持独立。"
+    },
+    {
+      "anchor_bvid": "BV1cT3P65E25",
+      "merge_bvids": ["BV1tuNt6BE5b", "BV1ZLNh6cEkr"],
+      "reason": "2026-07-14 同场重连尾段的重复录播。"
+    },
+    {
+      "anchor_bvid": "BV12VpnzCEjD",
+      "merge_bvids": ["BV1JRpGzCE36"],
+      "reason": "录播分P名明确从 2025-09-13 00:52:31 开始，是 09-12 18:30 主题歌回跨午夜后的尾段。"
+    },
+    {
+      "anchor_bvid": "BV1YQsNzJEVB",
+      "merge_bvids": ["BV1PxWJz6EtU"],
+      "reason": "录播简介明确写“20251017 晚台”；标题标成 10-18 是跨午夜日期，实际属于 10-17 20:31 的同一场。"
+    },
+    {
+      "anchor_bvid": "BV199oaBREMq",
+      "merge_bvids": ["BV1updqBbEZd"],
+      "reason": "录播分P名明确从 2026-04-17 10:36:13 开始，是当天 09:30“困…zzZ”场次的后段纯享切片。"
+    },
+    {
+      "anchor_bvid": "BV1CkLb6cEjm",
+      "merge_bvids": ["BV1Kz536jE1Z"],
+      "reason": "简介明确录制开始于 2026-05-12 23:57:25；两个分P是同内容普通版/弹幕版，属于 05-12 主直播间场次。"
+    },
+    {
+      "anchor_bvid": "BV1oGLb6DEoU",
+      "merge_bvids": ["BV1dDLV6zEUo"],
+      "reason": "纯享分P从 2026-05-17 00:27:22 开始，属于 05-16 23:56 首次 3D LIVE 的同场切片。"
+    },
+    {
+      "anchor_bvid": "BV1AGNA68ED6",
+      "merge_bvids": ["BV1DkNN62E9R"],
+      "reason": "简介明确录制开始于 2026-07-11 23:50:46；两个分P是同内容普通版/弹幕版，属于 23:50 主直播间场次。"
+    },
+    {
+      "anchor_bvid": "BV13Bgi6JEvS",
+      "merge_bvids": ["BV197gq6QEGP"],
+      "reason": "五个纯享分P从 2026-07-25 00:07 起，全部位于 07-24 23:43“小播一会儿”场次内。"
+    }
+  ],
+  "start_time_overrides": [
+    {
+      "bvid": "BV12aBEBoEJq",
+      "start_time": "2025-12-21T22:31:57+08:00",
+      "reason": "官方分P名为“录制-1967216004-20251221-223157-420-被窝里聊下”，直接给出主直播间秒级开播时间。"
+    }
+  ],
+  "excluded_external_bvids": [
+    {
+      "bvid": "BV115BMBbEZD",
+      "reason": "分P名中的房间号为 21470454，是 VirtuaReal 冬日接力歌回官方房间，不是三理主直播间。"
+    },
+    {
+      "bvid": "BV1wXicBYESn",
+      "reason": "分P名中的房间号为 1746141359，是 NeoNova_Project 蓝白歌会活动房间；三理自己的参与场次已有主直播间记录。"
+    },
+    {
+      "bvid": "BV18xVW6SE7n",
+      "reason": "简介明确直播房间为瑞娅的 23260993；这是三理参加的外部连麦团建，不计作三理主直播间开播。"
+    }
+  ]
+}
