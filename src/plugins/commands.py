@@ -27,6 +27,7 @@ from src.render.live_sessions import render_live_sessions_image
 from src.render.live_list import render_live_list_image
 from src.render.activity import render_bilibili_card
 from src.render.activity_list import render_activity_list
+from src.render.fan_club import render_fan_club_members
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
 from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
@@ -74,6 +75,12 @@ from src.db.event import (
     list_recent_events_by_uid,
     list_recent_events_by_content,
 )
+from src.db.fan_club import (
+    complete_snapshot_for_date,
+    list_snapshot_members,
+    resolve_target,
+    snapshot_state_for_date,
+)
 from src.db.live_list import add_live_list, remove_live_list, get_live_list
 from src.capture.guesser import (
     collapse_song_timeline,
@@ -113,6 +120,9 @@ name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5,
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
+fan_club_list_cmd = on_command(
+    "粉丝团", aliases={"粉丝团列表"}, priority=5, block=True
+)
 concurrent_cmd = on_command("查同接", priority=5, block=True)
 danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
 events_cmd = on_command("查弹幕", priority=5, block=True)
@@ -514,6 +524,70 @@ async def handle_guards_trend(matcher: Matcher, event: Event, arg=CommandArg()):
 @club_trend_cmd.handle()
 async def handle_club_trend(matcher: Matcher, event: Event, arg=CommandArg()):
     await _handle_stats_query(matcher, event, arg, "club")
+
+
+@fan_club_list_cmd.handle()
+async def handle_fan_club_list(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    query = arg.extract_plain_text().strip()
+    targets = resolve_target(query or "2030198123")
+    if not targets:
+        await matcher.finish(f"没有找到粉丝团抓取对象：{query}")
+    if len(targets) > 1:
+        choices = "、".join(
+            f"{target['full_name']}（{target['uid']}）" for target in targets
+        )
+        await matcher.finish(f"名称对应多个主播，请改用UID：{choices}")
+
+    target = targets[0]
+    streamer_uid = int(target["uid"])
+    snapshot = complete_snapshot_for_date(streamer_uid)
+    if snapshot is None:
+        state = snapshot_state_for_date(streamer_uid)
+        if state is None:
+            await matcher.finish(f"{target['short_name']}今日粉丝团数据尚未开始抓取")
+        if state["status"] == "running":
+            progress = ""
+            if state["expected_pages"] is not None:
+                progress = (
+                    f"（{state['fetched_pages']}/{state['expected_pages']}页）"
+                )
+            await matcher.finish(
+                f"{target['short_name']}今日粉丝团数据正在抓取{progress}"
+            )
+        await matcher.finish(f"{target['short_name']}今日粉丝团数据抓取失败，稍后会重试")
+
+    members = list_snapshot_members(int(snapshot["id"]))
+    try:
+        images = await asyncio.to_thread(
+            render_fan_club_members,
+            snapshot,
+            members,
+        )
+    except Exception as exc:
+        logger.exception("渲染粉丝团成员失败 uid=%d", streamer_uid)
+        await matcher.finish(f"粉丝团成员渲染失败：{exc}")
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(image_path)),
+            },
+        }
+        for image_path in images
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送粉丝团成员合并转发失败: %s", exc)
+        await matcher.finish("粉丝团成员发送失败，请稍后再试")
 
 
 def _parse_concurrent_args(text: str) -> tuple[str | None, int | None]:

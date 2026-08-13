@@ -10,6 +10,7 @@ from src.spider.jobs.cookie_monitor import register_jobs as register_cookie_moni
 from src.spider.jobs.song_list import register_jobs as register_song_list_jobs
 from src.spider.jobs.song_clips import register_jobs as register_song_clip_jobs
 from src.spider.jobs.lyrics import register_jobs as register_lyrics_jobs
+from src.spider.jobs.fan_club import register_jobs as register_fan_club_jobs
 
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
@@ -21,3 +22,4 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     register_song_list_jobs(scheduler)
     register_song_clip_jobs(scheduler)
     register_lyrics_jobs(scheduler)
+    register_fan_club_jobs(scheduler)

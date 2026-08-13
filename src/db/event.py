@@ -375,6 +375,15 @@ def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
         if _table_exists(conn, "name_history"):
             cur.execute("SELECT uid, uname, first_seen FROM name_history WHERE uid = ?", (uid,))
             history_rows = cur.fetchall()
+        if _table_exists(conn, "fan_club_name_history"):
+            cur.execute(
+                """
+                SELECT member_uid, uname, first_seen
+                FROM fan_club_name_history WHERE member_uid = ?
+                """,
+                (uid,),
+            )
+            history_rows.extend(cur.fetchall())
         
         cur.execute("SELECT uid, uname, timestamp FROM event WHERE uid = ?", (uid,))
         event_rows = cur.fetchall()
@@ -393,11 +402,21 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
         if _table_exists(conn, "name_history"):
             cur.execute("SELECT uid FROM name_history WHERE uname = ? COLLATE NOCASE", (target_name,))
             uids_nh = {r[0] for r in cur.fetchall()}
+        uids_fc = set()
+        if _table_exists(conn, "fan_club_name_history"):
+            cur.execute(
+                """
+                SELECT member_uid FROM fan_club_name_history
+                WHERE uname = ? COLLATE NOCASE
+                """,
+                (target_name,),
+            )
+            uids_fc = {r[0] for r in cur.fetchall()}
         
         cur.execute("SELECT uid FROM event WHERE uname = ? COLLATE NOCASE", (target_name,))
         uids_ev = {r[0] for r in cur.fetchall()}
         
-        target_uids = list(uids_nh | uids_ev)
+        target_uids = list(uids_nh | uids_fc | uids_ev)
         
         if not target_uids:
             return []
@@ -414,6 +433,16 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
                 cur.execute(
                     f"SELECT uid, uname, first_seen FROM name_history WHERE uid IN ({placeholders})", 
                     chunk
+                )
+                history_rows.extend(cur.fetchall())
+            if _table_exists(conn, "fan_club_name_history"):
+                cur.execute(
+                    f"""
+                    SELECT member_uid, uname, first_seen
+                    FROM fan_club_name_history
+                    WHERE member_uid IN ({placeholders})
+                    """,
+                    chunk,
                 )
                 history_rows.extend(cur.fetchall())
             
