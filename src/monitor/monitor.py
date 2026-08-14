@@ -194,6 +194,31 @@ class MetricsDB:
                 WHERE cmd = 'SUPER_CHAT_MESSAGE'
                 """,
             )
+            _execute_write(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS name_history (
+                    uid INTEGER,
+                    uname TEXT,
+                    first_seen INTEGER,
+                    UNIQUE(uid, uname)
+                )
+                """,
+            )
+            _execute_write(
+                conn,
+                """
+                CREATE INDEX IF NOT EXISTS idx_nh_name_uid
+                ON name_history(uname, uid)
+                """,
+            )
+            _execute_write(
+                conn,
+                """
+                CREATE INDEX IF NOT EXISTS idx_nh_uid_time
+                ON name_history(uid, first_seen)
+                """,
+            )
 
     def insert_many(self, rows: list[tuple[Any, ...]]) -> None:
         if not rows:
@@ -210,6 +235,33 @@ class MetricsDB:
                 """,
                 rows,
             )
+            name_first_seen: dict[tuple[int, str], int] = {}
+            for row in rows:
+                if (
+                    row[2] is None
+                    or row[3] is None
+                    or not str(row[3]).strip()
+                    or row[9] is None
+                ):
+                    continue
+                key = (int(row[2]), str(row[3]))
+                timestamp = int(row[9])
+                previous = name_first_seen.get(key)
+                if previous is None or timestamp < previous:
+                    name_first_seen[key] = timestamp
+            name_rows = [
+                (uid, uname, first_seen)
+                for (uid, uname), first_seen in name_first_seen.items()
+            ]
+            if name_rows:
+                _execute_many_write(
+                    conn,
+                    """
+                    INSERT OR IGNORE INTO name_history (uid, uname, first_seen)
+                    VALUES (?, ?, ?)
+                    """,
+                    list(name_rows),
+                )
 
 
     def close(self) -> None:

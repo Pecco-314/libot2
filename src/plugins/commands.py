@@ -192,7 +192,11 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
         if query.isdigit():
             uid = int(query)
         else:
-            uid = get_latest_uid_by_uname(room_id, query)
+            uid = await asyncio.to_thread(
+                get_latest_uid_by_uname,
+                room_id,
+                query,
+            )
             if uid is None:
                 await matcher.finish(f"未找到用户：{query}")
 
@@ -445,7 +449,7 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
     query = arg.extract_plain_text().strip()
     if not query:
         await matcher.finish("用法：/曾用名 <UID/用户名>")
-    history = list_name_history_by_name_or_uid(query)
+    history = await asyncio.to_thread(list_name_history_by_name_or_uid, query)
     if not history:
         await matcher.finish(f"没有找到符合条件的用户")
     result = f"找到{len(history)}个用户：\n"
@@ -474,13 +478,17 @@ async def handle_medal_wall(
     fallback_name = query
     if query.isdigit():
         member_uid = int(query)
-        history = list_name_history_by_name_or_uid(query)
+        history = await asyncio.to_thread(list_name_history_by_name_or_uid, query)
         if history:
-            names = history[0].get("history") or []
+            names = [
+                str(name)
+                for name in history[0].get("history") or []
+                if str(name).strip()
+            ]
             if names:
                 fallback_name = str(names[-1])
     else:
-        matches = list_name_history_by_name_or_uid(query)
+        matches = await asyncio.to_thread(list_name_history_by_name_or_uid, query)
         if not matches:
             await matcher.finish(f"没有找到用户：{query}")
         if len(matches) > 1:
@@ -491,7 +499,11 @@ async def handle_medal_wall(
             suffix = "……" if len(matches) > 10 else ""
             await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
         member_uid = int(matches[0]["uid"])
-        names = matches[0].get("history") or []
+        names = [
+            str(name)
+            for name in matches[0].get("history") or []
+            if str(name).strip()
+        ]
         if names:
             fallback_name = str(names[-1])
 
@@ -924,7 +936,11 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     if query_user.isdigit():
         uid = int(query_user)
     else:
-        uid = get_latest_uid_by_uname(room_id, query_user)
+        uid = await asyncio.to_thread(
+            get_latest_uid_by_uname,
+            room_id,
+            query_user,
+        )
         if uid is None:
             await matcher.finish(f"未找到用户：{query_user}")
 

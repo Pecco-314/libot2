@@ -9,6 +9,35 @@ def _table_exists(conn, table_name: str) -> bool:
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
     return cur.fetchone() is not None
 
+
+def _find_uids_by_indexed_name(conn, target_name: str) -> set[int]:
+    uids: set[int] = set()
+    if _table_exists(conn, "name_history"):
+        rows = conn.execute(
+            "SELECT uid FROM name_history WHERE uname = ?",
+            (target_name,),
+        ).fetchall()
+        uids.update(int(row[0]) for row in rows if row[0] is not None)
+    if _table_exists(conn, "fan_club_name_history"):
+        rows = conn.execute(
+            """
+            SELECT member_uid FROM fan_club_name_history
+            WHERE uname = ? COLLATE NOCASE
+            """,
+            (target_name,),
+        ).fetchall()
+        uids.update(int(row[0]) for row in rows if row[0] is not None)
+    if _table_exists(conn, "liver"):
+        rows = conn.execute(
+            """
+            SELECT uid FROM liver
+            WHERE uid IS NOT NULL AND (uname = ? OR nickname = ?)
+            """,
+            (target_name, target_name),
+        ).fetchall()
+        uids.update(int(row[0]) for row in rows if row[0] is not None)
+    return uids
+
 def get_newest_live_event() -> dict[str, object] | None:
     live_cmds = ["LIVE", "PREPARING", "ROOM_CHANGE"]
     with connect_sqlite() as conn:
@@ -180,19 +209,35 @@ def get_latest_uid_by_uname(room_id: int, uname: str) -> int | None:
     if not uname:
         return None
     with connect_sqlite() as conn:
-        row = conn.execute(
-            """
-            SELECT uid
-            FROM event
-            WHERE room_id = ? AND uname = ? COLLATE NOCASE AND uid IS NOT NULL
-            ORDER BY timestamp DESC, id DESC
-            LIMIT 1
-            """,
-            (room_id, uname),
-        ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return int(row[0])
+        candidate_uids = sorted(_find_uids_by_indexed_name(conn, uname))
+        if not candidate_uids:
+            return None
+
+        latest_uid: int | None = None
+        latest_key: tuple[int, int] | None = None
+        chunk_size = 900
+        for index in range(0, len(candidate_uids), chunk_size):
+            chunk = candidate_uids[index : index + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            row = conn.execute(
+                f"""
+                SELECT uid, timestamp, id
+                FROM event INDEXED BY idx_uid
+                WHERE room_id = ?
+                  AND uid IN ({placeholders})
+                  AND uname = ? COLLATE NOCASE
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1
+                """,
+                (room_id, *chunk, uname),
+            ).fetchone()
+            if row is None or row[0] is None:
+                continue
+            key = (int(row[1] or 0), int(row[2] or 0))
+            if latest_key is None or key > latest_key:
+                latest_key = key
+                latest_uid = int(row[0])
+        return latest_uid
 
 
 def list_events_by_uid(room_id: int, uid: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
@@ -397,26 +442,7 @@ def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
 def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
         cur = conn.cursor()
-        
-        uids_nh = set()
-        if _table_exists(conn, "name_history"):
-            cur.execute("SELECT uid FROM name_history WHERE uname = ? COLLATE NOCASE", (target_name,))
-            uids_nh = {r[0] for r in cur.fetchall()}
-        uids_fc = set()
-        if _table_exists(conn, "fan_club_name_history"):
-            cur.execute(
-                """
-                SELECT member_uid FROM fan_club_name_history
-                WHERE uname = ? COLLATE NOCASE
-                """,
-                (target_name,),
-            )
-            uids_fc = {r[0] for r in cur.fetchall()}
-        
-        cur.execute("SELECT uid FROM event WHERE uname = ? COLLATE NOCASE", (target_name,))
-        uids_ev = {r[0] for r in cur.fetchall()}
-        
-        target_uids = list(uids_nh | uids_fc | uids_ev)
+        target_uids = sorted(_find_uids_by_indexed_name(conn, target_name))
         
         if not target_uids:
             return []
