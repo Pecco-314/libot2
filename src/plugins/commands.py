@@ -1342,7 +1342,6 @@ async def handle_song_preview(
         await matcher.finish("预览歌单发送失败，请稍后再试")
 
 @dc_cmd.handle()
-@subscription_dev_required
 async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
     args = arg.extract_plain_text().strip().split()
     

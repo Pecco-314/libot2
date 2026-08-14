@@ -1,5 +1,6 @@
+import asyncio
+import logging
 import math
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,12 +11,62 @@ from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
 
+
+DC_BASE_URLS = {
+    "vr": ("https://vr.qianqiuzy.cn",),
+    "psp": ("https://psp.qianqiuzy.cn",),
+    "all": ("https://vr.qianqiuzy.cn", "https://psp.qianqiuzy.cn"),
+}
+
+
 async def fetch_dc_data(filter_type: str, month: str) -> list[dict[str, Any]]:
-    url = f"https://dc.hihivr.top/gift/by_month?month={month}&filter={filter_type}"
+    base_urls = DC_BASE_URLS.get(filter_type)
+    if base_urls is None:
+        raise ValueError(f"不支持的斗虫社团筛选：{filter_type}")
+
     async with httpx.AsyncClient(trust_env=False) as client:
-        resp = await client.get(url, timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("anchors", [])
+        responses = await asyncio.gather(
+            *(
+                client.get(
+                    f"{base_url}/gift/by_month",
+                    params={"month": month},
+                    timeout=30,
+                )
+                for base_url in base_urls
+            )
+        )
+
+    anchors_by_room: dict[int, dict[str, Any]] = {}
+    for response in responses:
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("斗虫接口响应不是数组")
+        for raw_anchor in payload:
+            if not isinstance(raw_anchor, dict):
+                raise ValueError("斗虫接口主播数据格式错误")
+            if raw_anchor.get("month") != month:
+                raise ValueError(
+                    f"斗虫接口返回月份 {raw_anchor.get('month')}，请求月份为 {month}"
+                )
+
+            anchor = dict(raw_anchor)
+            anchor["total_revenue"] = sum(
+                float(anchor.get(field) or 0)
+                for field in ("gift", "guard", "super_chat")
+            )
+            room_id = int(anchor.get("room_id") or 0)
+            if not room_id:
+                continue
+            existing = anchors_by_room.get(room_id)
+            if (
+                existing is None
+                or anchor["total_revenue"] > existing["total_revenue"]
+            ):
+                anchors_by_room[room_id] = anchor
+
+    return list(anchors_by_room.values())
+
 
 def _parse_duration(duration_str: str) -> int:
     if not duration_str:
@@ -42,33 +93,53 @@ async def get_dc_data(filter_type: str, time_str: str) -> list[dict[str, Any]]:
     else:
         months_to_fetch.append(time_str.replace("-", ""))
 
+    semaphore = asyncio.Semaphore(3)
+
+    async def fetch_month(month: str) -> tuple[str, list[dict[str, Any]]]:
+        async with semaphore:
+            data = await fetch_dc_data(filter_type, month)
+        if not data:
+            raise RuntimeError(f"{month} 没有斗虫数据")
+        return month, data
+
+    month_results = await asyncio.gather(
+        *(fetch_month(month) for month in months_to_fetch)
+    )
+
     aggregated: dict[int, dict[str, Any]] = {}
-    for m in months_to_fetch:
-        try:
-            data = await fetch_dc_data(filter_type, m)
-            for anchor in data:
-                room_id = anchor.get("room_id")
-                if not room_id:
-                    continue
-                if room_id not in aggregated:
-                    aggregated[room_id] = {
-                        "anchor_name": anchor.get("anchor_name", "未知"),
-                        "total_revenue": 0.0,
-                        "live_duration_sec": 0,
-                        "effective_days": 0,
-                        "gift": 0.0,
-                        "guard": 0.0,
-                        "super_chat": 0.0,
-                    }
-                aggregated[room_id]["total_revenue"] += float(anchor.get("total_revenue") or 0)
-                aggregated[room_id]["gift"] += float(anchor.get("gift") or 0)
-                aggregated[room_id]["guard"] += float(anchor.get("guard") or 0)
-                aggregated[room_id]["super_chat"] += float(anchor.get("super_chat") or 0)
-                aggregated[room_id]["live_duration_sec"] += _parse_duration(anchor.get("live_duration", "00:00:00"))
-                aggregated[room_id]["effective_days"] += int(anchor.get("effective_days") or 0)
-        except Exception as e:
-            import logging
-            logging.error(f"获取 {m} 斗虫数据失败: {e}")
+    for month, data in month_results:
+        logging.info("获取 %s 斗虫数据成功，共 %d 位主播", month, len(data))
+        for anchor in data:
+            room_id = anchor.get("room_id")
+            if not room_id:
+                continue
+            if room_id not in aggregated:
+                aggregated[room_id] = {
+                    "anchor_name": anchor.get("anchor_name", "未知"),
+                    "total_revenue": 0.0,
+                    "live_duration_sec": 0,
+                    "effective_days": 0,
+                    "gift": 0.0,
+                    "guard": 0.0,
+                    "super_chat": 0.0,
+                }
+            aggregated[room_id]["anchor_name"] = anchor.get(
+                "anchor_name", aggregated[room_id]["anchor_name"]
+            )
+            aggregated[room_id]["total_revenue"] += float(
+                anchor.get("total_revenue") or 0
+            )
+            aggregated[room_id]["gift"] += float(anchor.get("gift") or 0)
+            aggregated[room_id]["guard"] += float(anchor.get("guard") or 0)
+            aggregated[room_id]["super_chat"] += float(
+                anchor.get("super_chat") or 0
+            )
+            aggregated[room_id]["live_duration_sec"] += _parse_duration(
+                anchor.get("live_duration", "00:00:00")
+            )
+            aggregated[room_id]["effective_days"] += int(
+                anchor.get("effective_days") or 0
+            )
 
     result = list(aggregated.values())
     result.sort(key=lambda x: x["total_revenue"], reverse=True)
@@ -158,7 +229,10 @@ async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25
 
         # 绘制底部灰色小字
         y += 20
-        footer_text = f"数据源dc.hihivr.top，感谢作者 | 第 {i+1}/{total_chunks} 页"
+        footer_text = (
+            f"数据来源千秋紫莹，感谢作者"
+            f" | 第 {i+1}/{total_chunks} 页"
+        )
         footer_t2i = Text2Image.from_text(footer_text, 20, fill=(180, 180, 180))
         footer_x = width - padding - footer_t2i.width
         footer_t2i.draw_on_image(canvas.image, (footer_x, y))
