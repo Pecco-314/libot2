@@ -597,6 +597,68 @@ def list_snapshot_members(
     ]
 
 
+def list_common_snapshot_members(
+    snapshot_ids: list[int],
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    ids = [int(snapshot_id) for snapshot_id in snapshot_ids]
+    if not 2 <= len(ids) <= 5 or len(ids) != len(set(ids)):
+        raise ValueError("snapshot_ids must contain 2 to 5 unique IDs")
+
+    placeholders = ",".join("?" for _ in ids)
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            WITH common AS (
+                SELECT member_uid, SUM(user_rank) AS rank_sum
+                FROM fan_club_member
+                WHERE snapshot_id IN ({placeholders})
+                GROUP BY member_uid
+                HAVING COUNT(*) = ?
+            )
+            SELECT m.snapshot_id, m.member_uid, m.uname, m.level,
+                   m.guard_level, m.user_rank, common.rank_sum
+            FROM fan_club_member AS m
+            JOIN common ON common.member_uid = m.member_uid
+            WHERE m.snapshot_id IN ({placeholders})
+            ORDER BY common.rank_sum ASC, m.member_uid ASC
+            """,
+            (*ids, len(ids), *ids),
+        ).fetchall()
+
+    by_uid: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        member_uid = int(row[1])
+        item = by_uid.setdefault(
+            member_uid,
+            {
+                "uid": member_uid,
+                "rank_sum": int(row[6]),
+                "by_snapshot": {},
+            },
+        )
+        item["by_snapshot"][int(row[0])] = {
+            "uid": member_uid,
+            "uname": str(row[2]),
+            "level": int(row[3]),
+            "guard_level": int(row[4]),
+            "user_rank": int(row[5]),
+        }
+
+    result: list[dict[str, Any]] = []
+    for item in by_uid.values():
+        memberships = [item["by_snapshot"][snapshot_id] for snapshot_id in ids]
+        result.append(
+            {
+                "uid": item["uid"],
+                "uname": memberships[0]["uname"],
+                "memberships": memberships,
+                "rank_sum": item["rank_sum"],
+            }
+        )
+    return result
+
+
 def run_status(
     snapshot_date: str | None = None,
     db_path: Path = DEFAULT_DB_PATH,

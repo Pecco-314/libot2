@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import asyncio
+import shlex
 from datetime import datetime, timedelta
 from functools import partial
 
@@ -27,7 +28,10 @@ from src.render.live_sessions import render_live_sessions_image
 from src.render.live_list import render_live_list_image
 from src.render.activity import render_bilibili_card
 from src.render.activity_list import render_activity_list
-from src.render.fan_club import render_fan_club_members
+from src.render.fan_club import (
+    render_common_fan_club_members,
+    render_fan_club_members,
+)
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
 from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
@@ -77,6 +81,7 @@ from src.db.event import (
 )
 from src.db.fan_club import (
     complete_snapshot_for_date,
+    list_common_snapshot_members,
     list_snapshot_members,
     resolve_target,
     snapshot_state_for_date,
@@ -534,45 +539,83 @@ async def handle_fan_club_list(
     arg=CommandArg(),
 ):
     query = arg.extract_plain_text().strip()
-    targets = resolve_target(query or "2030198123")
-    if not targets:
-        await matcher.finish(f"没有找到粉丝团抓取对象：{query}")
-    if len(targets) > 1:
-        choices = "、".join(
-            f"{target['full_name']}（{target['uid']}）" for target in targets
-        )
-        await matcher.finish(f"名称对应多个主播，请改用UID：{choices}")
+    try:
+        queries = shlex.split(query) if query else ["2030198123"]
+    except ValueError:
+        await matcher.finish("参数中的引号没有闭合")
+    if len(queries) > 5:
+        await matcher.finish("一次最多查询5个粉丝团的交集")
 
-    target = targets[0]
-    streamer_uid = int(target["uid"])
-    snapshot = complete_snapshot_for_date(streamer_uid)
-    if snapshot is None:
+    selected_targets: list[dict] = []
+    for target_query in queries:
+        matches = resolve_target(target_query)
+        if not matches:
+            await matcher.finish(f"没有找到粉丝团抓取对象：{target_query}")
+        if len(matches) > 1:
+            choices = "、".join(
+                f"{target['full_name']}（{target['uid']}）" for target in matches
+            )
+            await matcher.finish(f"名称对应多个主播，请改用UID：{choices}")
+        selected_targets.append(matches[0])
+
+    target_uids = [int(target["uid"]) for target in selected_targets]
+    if len(target_uids) != len(set(target_uids)):
+        await matcher.finish("同一个主播不需要重复填写")
+
+    snapshots: list[dict] = []
+    for target in selected_targets:
+        streamer_uid = int(target["uid"])
+        snapshot = complete_snapshot_for_date(streamer_uid)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+            continue
         state = snapshot_state_for_date(streamer_uid)
         if state is None:
             await matcher.finish(f"{target['short_name']}今日粉丝团数据尚未开始抓取")
         if state["status"] == "running":
             progress = ""
             if state["expected_pages"] is not None:
-                progress = (
-                    f"（{state['fetched_pages']}/{state['expected_pages']}页）"
-                )
+                progress = f"（{state['fetched_pages']}/{state['expected_pages']}页）"
             await matcher.finish(
                 f"{target['short_name']}今日粉丝团数据正在抓取{progress}"
             )
         await matcher.finish(f"{target['short_name']}今日粉丝团数据抓取失败，稍后会重试")
 
-    members = list_snapshot_members(int(snapshot["id"]))
+    is_common_query = len(snapshots) >= 2
+    if is_common_query:
+        members = list_common_snapshot_members(
+            [int(snapshot["id"]) for snapshot in snapshots]
+        )
+        render = render_common_fan_club_members
+    else:
+        members = list_snapshot_members(int(snapshots[0]["id"]))
+        render = render_fan_club_members
     try:
         images = await asyncio.to_thread(
-            render_fan_club_members,
-            snapshot,
+            render,
+            snapshots if is_common_query else snapshots[0],
             members,
         )
     except Exception as exc:
-        logger.exception("渲染粉丝团成员失败 uid=%d", streamer_uid)
+        logger.exception("渲染粉丝团成员失败 uids=%s", target_uids)
         await matcher.finish(f"粉丝团成员渲染失败：{exc}")
 
-    nodes = [
+    nodes = []
+    if is_common_query:
+        names = "、".join(str(target["short_name"]) for target in selected_targets)
+        nodes.append(
+            {
+                "type": "node",
+                "data": {
+                    "name": "Libot",
+                    "uin": bot.self_id,
+                    "content": MessageSegment.text(
+                        f"{names}的共同粉丝团有："
+                    ),
+                },
+            }
+        )
+    nodes.extend([
         {
             "type": "node",
             "data": {
@@ -582,7 +625,7 @@ async def handle_fan_club_list(
             },
         }
         for image_path in images
-    ]
+    ])
     try:
         await send_forward_message(bot, event, nodes)
     except Exception as exc:
