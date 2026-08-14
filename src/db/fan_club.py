@@ -659,6 +659,54 @@ def list_common_snapshot_members(
     return result
 
 
+def list_latest_member_medals(
+    member_uid: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """列出用户在每个抓取对象最新完整快照中的牌子。"""
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            """
+            WITH latest_snapshot AS (
+                SELECT s.id, s.streamer_uid, r.snapshot_date,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY s.streamer_uid
+                           ORDER BY r.snapshot_date DESC,
+                                    s.finished_at DESC,
+                                    s.id DESC
+                       ) AS row_num
+                FROM fan_club_snapshot AS s
+                JOIN fan_club_run AS r ON r.id = s.run_id
+                WHERE s.status = 'complete'
+            )
+            SELECT latest_snapshot.streamer_uid,
+                   target.full_name, target.short_name,
+                   member.level, member.guard_level,
+                   latest_snapshot.snapshot_date
+            FROM latest_snapshot
+            JOIN fan_club_member AS member
+              ON member.snapshot_id = latest_snapshot.id
+            JOIN fan_club_target AS target
+              ON target.uid = latest_snapshot.streamer_uid
+            WHERE latest_snapshot.row_num = 1
+              AND member.member_uid = ?
+            ORDER BY member.level DESC, latest_snapshot.streamer_uid ASC
+            """,
+            (int(member_uid),),
+        ).fetchall()
+    return [
+        {
+            "target_uid": int(row[0]),
+            "target_name": str(row[1]),
+            "full_name": str(row[1]),
+            "level": int(row[3]),
+            "guard_level": int(row[4]),
+            "snapshot_date": str(row[5]),
+        }
+        for row in rows
+    ]
+
+
 def run_status(
     snapshot_date: str | None = None,
     db_path: Path = DEFAULT_DB_PATH,

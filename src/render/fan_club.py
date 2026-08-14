@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -300,6 +302,99 @@ def render_common_fan_club_members(
                         fill=(231, 231, 235, 255),
                         width=1,
                     )
+
+        canvas.image.convert("RGB").save(out_path, format="PNG", optimize=True)
+
+    return paths
+
+
+def render_member_medals(
+    member_uid: int,
+    member_name: str,
+    medals: list[dict[str, Any]],
+) -> list[Path]:
+    page_size = 240
+    total_pages = max(1, (len(medals) + page_size - 1) // page_size)
+    cache_payload = json.dumps(
+        {
+            "render_version": 2,
+            "uid": int(member_uid),
+            "name": member_name,
+            "medals": [
+                {
+                    "target_uid": int(row["target_uid"]),
+                    "target_name": str(row["target_name"]),
+                    "level": int(row["level"]),
+                    "guard_level": int(row.get("guard_level") or 0),
+                }
+                for row in medals
+            ],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:16]
+    save_dir = ROOT / "data" / "images" / "medal_wall" / str(member_uid) / digest
+    save_dir.mkdir(parents=True, exist_ok=True)
+    paths = [save_dir / f"{page:03d}.png" for page in range(1, total_pages + 1)]
+    if all(path.exists() for path in paths):
+        return paths
+
+    padding_x = 32
+    padding_y = 30
+    header_height = 78
+    row_height = 21
+    font_size = 15
+    column_gap = 14
+
+    for page_index, out_path in enumerate(paths):
+        page_medals = medals[page_index * page_size : (page_index + 1) * page_size]
+        column_count = min(8, max(2, (len(page_medals) + 29) // 30))
+        rows_per_column = max(1, (len(page_medals) + column_count - 1) // column_count)
+        width = max(
+            720,
+            padding_x * 2 + column_count * 285 + (column_count - 1) * column_gap,
+        )
+        column_width = (
+            width - padding_x * 2 - (column_count - 1) * column_gap
+        ) // column_count
+        height = padding_y * 2 + header_height + rows_per_column * row_height
+        canvas = BuildImage.new("RGBA", (width, height), (255, 255, 255, 255))
+
+        title_value = _ellipsize(f"{member_name}的牌子", 30, width - 380)
+        title = _text(title_value, 30, weight="bold", fill=(34, 34, 34))
+        title.draw_on_image(canvas.image, (padding_x, padding_y))
+        meta = _text(
+            f"UID {member_uid} · {len(medals)} 个 · {page_index + 1}/{total_pages}",
+            17,
+            fill=(130, 130, 130),
+        )
+        meta.draw_on_image(
+            canvas.image,
+            (width - padding_x - meta.width, padding_y + 8),
+        )
+
+        for item_index, medal in enumerate(page_medals):
+            column = item_index // rows_per_column
+            row = item_index % rows_per_column
+            x = padding_x + column * (column_width + column_gap)
+            y = padding_y + header_height + row * row_height
+            level = int(medal["level"])
+            level_image = _text(
+                f"{_level_text(medal):<3} ",
+                font_size,
+                weight="bold",
+                fill=_level_color(level),
+            )
+            level_image.draw_on_image(canvas.image, (x, y))
+            name_width = column_width - level_image.width
+            target_name = _ellipsize(
+                str(medal["target_name"]), font_size, name_width
+            )
+            _text(target_name, font_size, fill=(48, 48, 48)).draw_on_image(
+                canvas.image,
+                (x + level_image.width, y),
+            )
 
         canvas.image.convert("RGB").save(out_path, format="PNG", optimize=True)
 

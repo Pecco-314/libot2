@@ -31,7 +31,9 @@ from src.render.activity_list import render_activity_list
 from src.render.fan_club import (
     render_common_fan_club_members,
     render_fan_club_members,
+    render_member_medals,
 )
+from src.spider.medal_wall import MedalWallError, get_public_medal_wall
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
 from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
@@ -82,6 +84,7 @@ from src.db.event import (
 from src.db.fan_club import (
     complete_snapshot_for_date,
     list_common_snapshot_members,
+    list_latest_member_medals,
     list_snapshot_members,
     resolve_target,
     snapshot_state_for_date,
@@ -122,6 +125,7 @@ sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, b
 sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
 nickname_set_cmd = on_command("设置昵称", priority=5, block=True)
 name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5, block=True)
+medal_wall_cmd = on_command("查牌子", priority=5, block=True)
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
@@ -454,6 +458,115 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
             current_name = names[-1]
         result += f"{i}. {current_name} ({', '.join(names)})\n"
     await matcher.finish(result)
+
+
+@medal_wall_cmd.handle()
+async def handle_medal_wall(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    query = arg.extract_plain_text().strip()
+    if not query:
+        await matcher.finish("用法：/查牌子 <UID/用户名>")
+
+    fallback_name = query
+    if query.isdigit():
+        member_uid = int(query)
+        history = list_name_history_by_name_or_uid(query)
+        if history:
+            names = history[0].get("history") or []
+            if names:
+                fallback_name = str(names[-1])
+    else:
+        matches = list_name_history_by_name_or_uid(query)
+        if not matches:
+            await matcher.finish(f"没有找到用户：{query}")
+        if len(matches) > 1:
+            choices = "、".join(
+                f"{(entry.get('history') or [query])[-1]}（{entry['uid']}）"
+                for entry in matches[:10]
+            )
+            suffix = "……" if len(matches) > 10 else ""
+            await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
+        member_uid = int(matches[0]["uid"])
+        names = matches[0].get("history") or []
+        if names:
+            fallback_name = str(names[-1])
+
+    database_medals = await asyncio.to_thread(
+        list_latest_member_medals,
+        member_uid,
+    )
+    try:
+        wall = await get_public_medal_wall(member_uid)
+    except MedalWallError as exc:
+        logger.warning("查询公开勋章墙失败 uid=%d error=%s", member_uid, exc)
+        await matcher.finish("查询公开勋章墙失败，请稍后再试")
+
+    combined = {
+        int(row["target_uid"]): {
+            "target_uid": int(row["target_uid"]),
+            "target_name": str(row["target_name"]),
+            "level": int(row["level"]),
+            "guard_level": int(row.get("guard_level") or 0),
+        }
+        for row in database_medals
+    }
+    for row in wall["medals"]:
+        target_uid = int(row["target_uid"])
+        existing = combined.get(target_uid)
+        combined[target_uid] = {
+            "target_uid": target_uid,
+            "target_name": (
+                str(existing["target_name"])
+                if existing is not None
+                else str(row["target_name"])
+            ),
+            "level": int(row["level"]),
+            "guard_level": int(row.get("guard_level") or 0),
+        }
+
+    medals = sorted(
+        combined.values(),
+        key=lambda row: (
+            -int(row["level"]),
+            str(row["target_name"]).casefold(),
+            int(row["target_uid"]),
+        ),
+    )
+    if not medals:
+        await matcher.finish(f"没有找到 {wall['uname'] or fallback_name} 的可见牌子")
+
+    member_name = str(wall["uname"] or fallback_name)
+    try:
+        images = await asyncio.to_thread(
+            render_member_medals,
+            member_uid,
+            member_name,
+            medals,
+        )
+    except Exception as exc:
+        logger.exception("渲染牌子列表失败 uid=%d", member_uid)
+        await matcher.finish(f"牌子列表渲染失败：{exc}")
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(image_path)),
+            },
+        }
+        for image_path in images
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送牌子列表合并转发失败: %s", exc)
+        await matcher.finish("牌子列表发送失败，请稍后再试")
 
 
 async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegment, stat_type: str):
@@ -1229,6 +1342,7 @@ async def handle_song_preview(
         await matcher.finish("预览歌单发送失败，请稍后再试")
 
 @dc_cmd.handle()
+@subscription_dev_required
 async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
     args = arg.extract_plain_text().strip().split()
     
