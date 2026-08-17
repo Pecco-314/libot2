@@ -83,6 +83,7 @@ from src.db.event import (
 )
 from src.db.fan_club import (
     complete_snapshot_for_date,
+    latest_complete_snapshot,
     list_common_snapshot_members,
     list_latest_member_medals,
     list_snapshot_members,
@@ -691,6 +692,8 @@ async def handle_fan_club_list(
     for target in selected_targets:
         streamer_uid = int(target["uid"])
         snapshot = complete_snapshot_for_date(streamer_uid)
+        if snapshot is None and datetime.now().hour < 7:
+            snapshot = latest_complete_snapshot(streamer_uid)
         if snapshot is not None:
             snapshots.append(snapshot)
             continue
