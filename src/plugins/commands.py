@@ -618,8 +618,7 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
     if not data:
         await matcher.finish("数据不足，生成失败")
 
-    now = data["end_value"]
-    delta = data["end_value"] - data["begin_value"]
+    recorded_value = data["end_value"]
     image_path = data["path"]
 
     stat_name = ""
@@ -629,7 +628,8 @@ async def _handle_stats_query(matcher: Matcher, event: Event, arg: MessageSegmen
         stat_name = "大航海"
     else:
         stat_name = "粉丝团"
-    display_value = current_value if current_value is not None else now
+    display_value = current_value if current_value is not None else recorded_value
+    delta = display_value - data["begin_value"]
     text = f"{uname}的{stat_name}数：{display_value} ({delta:+})"
     if days > days_since_stat_start:
         text += f"\n（数据从{stat_start_date.strftime('%Y-%m-%d')}开始）"
