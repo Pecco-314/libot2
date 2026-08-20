@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 import asyncio
 import shlex
@@ -142,6 +143,7 @@ medal_wall_cmd = on_command("查牌子", priority=5, block=True)
 abbreviation_query_cmd = on_command("查缩写", priority=5, block=True)
 abbreviation_add_cmd = on_command("新增缩写", priority=5, block=True)
 abbreviation_remove_cmd = on_command("删除缩写", priority=5, block=True)
+choose_cmd = on_command("抉择", aliases={"choose"}, priority=5, block=True)
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
@@ -178,6 +180,26 @@ cmd_add_song = on_command("新增歌曲", priority=5, block=True)
 cmd_generate_list = on_command("生成歌单", priority=5, block=True)
 cmd_update_list = on_command("提交歌单", aliases={"提交"}, priority=5, block=True)
 
+_MIT3URI_CHOOSE_OPTIONS = frozenset(
+    option.casefold()
+    for option in (
+        "三理",
+        "三理理",
+        "理理",
+        "理神",
+        "三理Mit3uri",
+        "Mit3uri",
+        "三理蜜籽粒",
+        "蜜籽粒",
+    )
+)
+
+
+def _choose_reply(options: list[str]) -> str:
+    if any(option.casefold() in _MIT3URI_CHOOSE_OPTIONS for option in options):
+        return "永远效忠三理"
+    return f"我觉得{random.choice(options)}不错"
+
 @help_cmd.handle()
 async def handle_help(matcher: Matcher):
     try:
@@ -187,6 +209,14 @@ async def handle_help(matcher: Matcher):
         await matcher.finish("图片渲染失败")
 
     await matcher.finish(MessageSegment.image(file=str(result["image_path"])))
+
+
+@choose_cmd.handle()
+async def handle_choose(matcher: Matcher, arg=CommandArg()):
+    options = arg.extract_plain_text().split()
+    if len(options) < 2:
+        await matcher.finish("用法：/抉择 <选项1> <选项2> [更多选项…]")
+    await matcher.finish(_choose_reply(options))
 
 
 @superchat_cmd.handle()
