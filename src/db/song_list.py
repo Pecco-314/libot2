@@ -906,7 +906,7 @@ def get_songs_of_date(date: datetime.date) -> list[dict[str, Any]]:
             FROM song_info i
             JOIN song_record r ON i.id = r.song_id
             WHERE r.record_date = ?
-            ORDER BY i.id ASC
+            ORDER BY r.id ASC
             """,
             (date_str,)
         ).fetchall()
