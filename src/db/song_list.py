@@ -634,6 +634,44 @@ def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
     return results
 
 
+def list_recent_song_records_by_singer(
+    singer: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    normalized = singer.strip().casefold()
+    if not normalized or limit <= 0:
+        return []
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.record_date, i.id, i.title, i.original_singer
+            FROM song_record r
+            JOIN song_info i ON i.id = r.song_id
+            WHERE i.original_singer IS NOT NULL AND i.original_singer != ''
+            ORDER BY r.record_date DESC, r.id DESC
+            """
+        ).fetchall()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        original_singer = str(row[4] or "")
+        parts = [part.strip().casefold() for part in original_singer.split("/")]
+        if normalized not in [part for part in parts if part]:
+            continue
+        results.append(
+            {
+                "record_id": int(row[0]),
+                "record_date": str(row[1]),
+                "song_id": int(row[2]),
+                "title": str(row[3]),
+                "original_singer": original_singer,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 def list_songs_without_lyrics(limit: int | None = None) -> list[dict[str, Any]]:
     sql = """
         SELECT id, title, original_singer

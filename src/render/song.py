@@ -1,210 +1,347 @@
 import uuid
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any
 
+from PIL import ImageDraw
 from nonebot_plugin_imageutils import BuildImage
+
+from src.common.utils import ROOT
+from src.db.song_list import (
+    get_songs_of_date,
+    list_recent_song_records_by_singer,
+    list_songs_by_singer,
+    random_song,
+    search_songs_by_title,
+)
 from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
-from src.db.song_list import search_songs_by_title, random_song, list_songs_by_singer, get_songs_of_date
-from src.common.utils import ROOT, truncate_name
 
-def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
-    """按英文单词、汉字和完整 Emoji 序列换行。"""
-    return (
-        Text2Image.from_text(text, font_size, weight=weight)
-        .wrap(max_width)
-        .wrapped_text
-    )
+BACKGROUND = (255, 255, 255, 255)
+TEXT = (38, 38, 42)
+MUTED = (112, 112, 122)
+FAINT = (172, 172, 180)
+ACCENT = (105, 89, 205)
+SOFT = (247, 246, 252, 255)
+SOURCE_TEXT = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
 
-def _get_relative_time(date_str: str) -> str:
-    """计算演唱时间的相对描述"""
-    now_date = datetime.now().date()
+
+def _text(
+    value: str,
+    size: int,
+    *,
+    weight: str = "normal",
+    fill: tuple[int, int, int] = TEXT,
+) -> Text2Image:
+    return Text2Image.from_text(value, size, weight=weight, fill=fill)
+
+
+def _wrapped(
+    value: str,
+    size: int,
+    max_width: int,
+    *,
+    weight: str = "normal",
+    fill: tuple[int, int, int] = TEXT,
+) -> Text2Image:
+    wrapped = _text(value, size, weight=weight).wrap(max_width).wrapped_text
+    return _text(wrapped, size, weight=weight, fill=fill)
+
+
+def _relative_time(date_str: str) -> str:
     try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+        record_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return date_str
-
-    delta = (now_date - dt).days
+    delta = (datetime.now().date() - record_date).days
     if delta == 0:
         return "今天"
-    elif delta == 1:
+    if delta == 1:
         return "昨天"
-    elif delta < 7:
+    if 1 < delta < 7:
         return f"{delta}天前"
-    elif delta < 30:
+    if delta < 30:
         return f"{delta // 7}周前"
-    elif delta < 365:
+    if delta < 365:
         return f"{delta // 30}个月前"
-    else:
-        return f"{delta // 365}年前"
+    return f"{delta // 365}年前"
 
 
-def draw_song_card(song: dict) -> BuildImage:
-    width = 600
-    padding = 40
-    max_text_width = width - padding * 2
-    bg_color = (255, 255, 255, 255)
+def _column_count(item_count: int) -> int:
+    if item_count > 48:
+        return 3
+    if item_count > 18:
+        return 2
+    return 1
 
-    # 1. 处理日期
-    raw_records = song.get("records", [])
-    parsed_dates = []
-    for r in raw_records:
+
+def _partition_by_height(
+    items: list[Text2Image],
+    columns: int,
+    gap: int,
+) -> list[list[Text2Image]]:
+    if columns <= 1 or len(items) <= 1:
+        return [items]
+    costs = [item.height + gap for item in items]
+    groups: list[list[Text2Image]] = []
+    start = 0
+    remaining_height = sum(costs)
+    for group_index in range(columns - 1):
+        remaining_groups = columns - group_index
+        target = remaining_height / remaining_groups
+        end = start
+        height = 0
+        max_end = len(items) - (remaining_groups - 1)
+        while end < max_end:
+            next_height = height + costs[end]
+            if height and abs(target - height) <= abs(target - next_height):
+                break
+            height = next_height
+            end += 1
+        if end == start:
+            end += 1
+            height = costs[start]
+        groups.append(items[start:end])
+        start = end
+        remaining_height -= height
+    groups.append(items[start:])
+    return groups
+
+
+def _draw_footer(canvas: BuildImage, width: int, padding: int, y: int) -> None:
+    footer = _text(SOURCE_TEXT, 17, fill=FAINT)
+    footer.draw_on_image(canvas.image, (width - padding - footer.width, y))
+
+
+def draw_song_card(song: dict[str, Any]) -> BuildImage:
+    width = 720
+    padding = 44
+    content_width = width - padding * 2
+
+    records: list[date] = []
+    for value in song.get("records") or []:
         try:
-            parsed_dates.append(datetime.strptime(r, "%Y-%m-%d").date())
+            records.append(datetime.strptime(str(value), "%Y-%m-%d").date())
         except ValueError:
             continue
-    parsed_dates.sort(reverse=True)
-    recent_dates = parsed_dates[:5]
+    records.sort(reverse=True)
+    recent_dates = records[:5]
 
-    # 2. 准备文本对象
-    title_text = song["title"]
-    wrapped_title = _smart_wrap(title_text, 44, max_text_width, weight="bold")
-    title_t2i = Text2Image.from_text(wrapped_title, 44, weight="bold", fill=(34, 34, 34))
-    
-    raw_singer = song.get('original_singer') or '未知'
-    safe_singer = truncate_name(raw_singer, max_len=32)
-    singer_t2i = Text2Image.from_text(f"原唱: {safe_singer}", 26, fill=(102, 102, 102))
-    
-    count_t2i = Text2Image.from_text(f"已演唱 {song.get('count', 0)} 次", 30, fill=(0, 102, 204))
-    recent_label_t2i = Text2Image.from_text("最近演唱：", 28, fill=(50, 50, 50))
-
-    date_items = []
-    for d in recent_dates:
-        d_str = d.strftime("%Y-%m-%d")
-        rel = _get_relative_time(d_str)
-        item = Text2Image.from_text(f"· {d_str} ({rel})", 26, fill=(80, 80, 80))
-        date_items.append(item)
+    label = _text("歌曲", 18, weight="bold", fill=ACCENT)
+    title = _wrapped(str(song["title"]), 42, content_width, weight="bold")
+    singer = _wrapped(
+        f"原唱  {song.get('original_singer') or '未知'}",
+        24,
+        content_width,
+        fill=MUTED,
+    )
+    count = _text(f"已演唱 {int(song.get('count') or 0)} 次", 28, weight="bold", fill=ACCENT)
+    recent_label = _text("最近演唱", 23, weight="bold")
+    date_items = [
+        _text(
+            f"{value:%Y-%m-%d}  ·  {_relative_time(value.strftime('%Y-%m-%d'))}",
+            22,
+            fill=MUTED,
+        )
+        for value in recent_dates
+    ]
     if not date_items:
-        date_items.append(Text2Image.from_text("暂无日期记录", 26, fill=(150, 150, 150)))
+        date_items = [_text("暂无日期记录", 22, fill=FAINT)]
 
-    footer_text = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
-    footer_t2i = Text2Image.from_text(footer_text, 18, fill=(180, 180, 180))
-
-    # 3. 动态计算画布高度
-    content_h = (
-        padding + 
-        title_t2i.height + 15 +
-        singer_t2i.height + 35 +
-        count_t2i.height + 40 +
-        recent_label_t2i.height + 15 +
-        (len(date_items) * 38) + 40 +
-        footer_t2i.height + 
+    height = (
         padding
+        + label.height
+        + 12
+        + title.height
+        + 12
+        + singer.height
+        + 30
+        + count.height
+        + 34
+        + recent_label.height
+        + 14
+        + sum(item.height + 11 for item in date_items)
+        + 31
+        + 20
+        + padding
+    )
+    canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
+    draw = ImageDraw.Draw(canvas.image)
+    draw.rounded_rectangle(
+        (padding - 14, padding - 12, padding - 7, padding + label.height + title.height + 28),
+        radius=4,
+        fill=ACCENT + (255,),
     )
 
-    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
-    
-    # 4. 顺序绘制
-    curr_y = padding
-    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += title_t2i.height + 15
-    singer_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += singer_t2i.height + 35
-    count_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += count_t2i.height + 40
-    recent_label_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += recent_label_t2i.height + 15
-    for d_img in date_items:
-        d_img.draw_on_image(canvas.image, (padding + 20, curr_y))
-        curr_y += 38
-    curr_y += 40
-    footer_t2i.draw_on_image(canvas.image, (width - footer_t2i.width - padding, curr_y))
-
+    y = padding
+    label.draw_on_image(canvas.image, (padding, y))
+    y += label.height + 12
+    title.draw_on_image(canvas.image, (padding, y))
+    y += title.height + 12
+    singer.draw_on_image(canvas.image, (padding, y))
+    y += singer.height + 30
+    count.draw_on_image(canvas.image, (padding, y))
+    y += count.height + 34
+    recent_label.draw_on_image(canvas.image, (padding, y))
+    y += recent_label.height + 14
+    for item in date_items:
+        item.draw_on_image(canvas.image, (padding, y))
+        y += item.height + 11
+    y += 20
+    _draw_footer(canvas, width, padding, y)
     return canvas
 
 
-def save_song_card(song: dict) -> dict[str, Any]:
-    """调用绘图函数并保存到本地，返回路径和数据"""
+def save_song_card(song: dict[str, Any]) -> dict[str, Any]:
     save_dir = ROOT / "data" / "images" / "song_list"
     save_dir.mkdir(parents=True, exist_ok=True)
-
     canvas = draw_song_card(song)
-    
-    file_name = f"song_{song['id']}_{uuid.uuid4().hex[:6]}.png"
-    save_path = save_dir / file_name
-    canvas.image.save(save_path)
-
-    return {
-        "image_path": str(save_path),
-        "data": song
-    }
+    save_path = save_dir / f"song_{song['id']}_{uuid.uuid4().hex[:6]}.png"
+    canvas.image.convert("RGB").save(save_path, format="PNG", optimize=True)
+    return {"image_path": str(save_path), "data": song}
 
 
-async def render_songs_by_keyword(keyword: str, limit: int = 5) -> list[dict[str, Any]]:
-    """搜索歌曲并渲染"""
+async def render_songs_by_keyword(
+    keyword: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
     songs = search_songs_by_title(keyword, limit)
-    await prefetch_emoji_assets([
-        keyword,
-        *(str(song.get("title") or "") for song in songs),
-        *(str(song.get("original_singer") or "") for song in songs),
-    ])
+    await prefetch_emoji_assets(
+        [
+            keyword,
+            *(str(song.get("title") or "") for song in songs),
+            *(str(song.get("original_singer") or "") for song in songs),
+        ]
+    )
     return [save_song_card(song) for song in songs]
 
 
 async def render_random_song(limit: int = 3) -> dict[str, Any] | None:
-    """随机抽取歌曲并渲染"""
-    song = random_song(limit) 
+    song = random_song(limit)
     if song is None:
         return None
-    else:
-        await prefetch_emoji_assets([
-            str(song.get("title") or ""),
-            str(song.get("original_singer") or ""),
-        ])
-        return save_song_card(song)
+    await prefetch_emoji_assets(
+        [str(song.get("title") or ""), str(song.get("original_singer") or "")]
+    )
+    return save_song_card(song)
 
 
-def _draw_singer_song_list(singer: str, songs: list[dict[str, Any]]) -> BuildImage:
-    width = 720
-    padding = 40
-    max_text_width = width - padding * 2
-    bg_color = (255, 255, 255, 255)
-
-    safe_singer = truncate_name(singer, max_len=32)
-    title_t2i = Text2Image.from_text(f"歌手：{safe_singer}", 36, weight="bold", fill=(34, 34, 34))
-    count_t2i = Text2Image.from_text(f"共 {len(songs)} 首", 24, fill=(80, 80, 80))
-
-    line_items: list[Text2Image] = []
-    for index, song in enumerate(songs, start=1):
-        line = f"{index}. {song['title']}（{song.get('count', 0)}）"
-        wrapped = _smart_wrap(line, 24, max_text_width)
-        line_items.append(Text2Image.from_text(wrapped, 24, fill=(50, 50, 50)))
-
-    footer_text = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
-    footer_t2i = Text2Image.from_text(footer_text, 18, fill=(180, 180, 180))
-
-    content_h = (
-        padding +
-        title_t2i.height + 12 +
-        count_t2i.height + 24 +
-        sum(item.height + 10 for item in line_items) +
-        20 +
-        footer_t2i.height +
-        padding
+def _draw_singer_song_list(
+    singer: str,
+    songs: list[dict[str, Any]],
+    recent_records: list[dict[str, Any]],
+) -> BuildImage:
+    columns = _column_count(len(songs))
+    padding = 44
+    sidebar_width = 310
+    column_width = 370 if columns > 1 else 480
+    section_gap = 38
+    column_gap = 30
+    width = (
+        padding * 2
+        + sidebar_width
+        + section_gap
+        + columns * column_width
+        + (columns - 1) * column_gap
     )
 
-    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
-    curr_y = padding
-    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += title_t2i.height + 12
-    count_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += count_t2i.height + 24
-    for item in line_items:
-        item.draw_on_image(canvas.image, (padding, curr_y))
-        curr_y += item.height + 10
-    curr_y += 20
-    footer_t2i.draw_on_image(canvas.image, (width - footer_t2i.width - padding, curr_y))
+    label = _text("歌手", 18, weight="bold", fill=ACCENT)
+    title = _wrapped(singer, 40, width - padding * 2, weight="bold")
+    total_performances = sum(int(song.get("count") or 0) for song in songs)
+    meta = _text(
+        f"共 {len(songs)} 首歌  ·  演唱 {total_performances} 次",
+        23,
+        fill=MUTED,
+    )
+    recent_label = _text("最近演唱", 24, weight="bold")
+    recent_items: list[tuple[Text2Image, Text2Image]] = []
+    for record in recent_records:
+        date_value = str(record["record_date"])
+        date_line = _text(
+            f"{date_value}  ·  {_relative_time(date_value)}",
+            16,
+            fill=MUTED,
+        )
+        song_line = _wrapped(
+            str(record["title"]),
+            20,
+            sidebar_width - 40,
+            weight="bold",
+        )
+        recent_items.append((date_line, song_line))
 
+    all_label = _text("全部歌曲", 24, weight="bold")
+    song_items = [
+        _wrapped(
+            f"{index:02d}  {song['title']}  ·  {int(song.get('count') or 0)}次",
+            21,
+            column_width,
+        )
+        for index, song in enumerate(songs, start=1)
+    ]
+    song_columns = _partition_by_height(song_items, columns, 13)
+    song_columns_height = max(
+        sum(item.height + 13 for item in column) for column in song_columns
+    )
+    recent_height = recent_label.height + 22
+    for date_line, song_line in recent_items:
+        recent_height += date_line.height + 5 + song_line.height + 19
+    main_height = all_label.height + 22 + song_columns_height
+
+    header_height = label.height + 10 + title.height + 11 + meta.height
+    body_height = max(recent_height + 32, main_height)
+    footer_height = 20
+    height = padding + header_height + 34 + body_height + 30 + footer_height + padding
+    canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
+    draw = ImageDraw.Draw(canvas.image)
+
+    y = padding
+    label.draw_on_image(canvas.image, (padding, y))
+    y += label.height + 10
+    title.draw_on_image(canvas.image, (padding, y))
+    y += title.height + 11
+    meta.draw_on_image(canvas.image, (padding, y))
+    body_y = y + meta.height + 34
+
+    sidebar_bottom = body_y + recent_height + 26
+    draw.rounded_rectangle(
+        (padding, body_y, padding + sidebar_width, sidebar_bottom),
+        radius=18,
+        fill=SOFT,
+    )
+    side_x = padding + 20
+    side_y = body_y + 20
+    recent_label.draw_on_image(canvas.image, (side_x, side_y))
+    side_y += recent_label.height + 22
+    for date_line, song_line in recent_items:
+        date_line.draw_on_image(canvas.image, (side_x, side_y))
+        side_y += date_line.height + 5
+        song_line.draw_on_image(canvas.image, (side_x, side_y))
+        side_y += song_line.height + 19
+
+    main_x = padding + sidebar_width + section_gap
+    all_label.draw_on_image(canvas.image, (main_x, body_y))
+    list_y = body_y + all_label.height + 22
+    for column_index, column in enumerate(song_columns):
+        x = main_x + column_index * (column_width + column_gap)
+        item_y = list_y
+        for item in column:
+            item.draw_on_image(canvas.image, (x, item_y))
+            item_y += item.height + 13
+
+    _draw_footer(canvas, width, padding, height - padding - footer_height)
     return canvas
 
 
-def _save_singer_song_list(singer: str, songs: list[dict[str, Any]]) -> str:
+def _save_singer_song_list(
+    singer: str,
+    songs: list[dict[str, Any]],
+    recent_records: list[dict[str, Any]],
+) -> str:
     save_dir = ROOT / "data" / "images" / "song_list"
     save_dir.mkdir(parents=True, exist_ok=True)
-    canvas = _draw_singer_song_list(singer, songs)
-    file_name = f"singer_{uuid.uuid4().hex[:8]}.png"
-    save_path = save_dir / file_name
-    canvas.image.save(save_path)
+    canvas = _draw_singer_song_list(singer, songs, recent_records)
+    save_path = save_dir / f"singer_{uuid.uuid4().hex[:8]}.png"
+    canvas.image.convert("RGB").save(save_path, format="PNG", optimize=True)
     return str(save_path)
 
 
@@ -212,64 +349,73 @@ async def render_songs_by_singer(singer: str) -> dict[str, Any] | None:
     songs = list_songs_by_singer(singer)
     if not songs:
         return None
-    await prefetch_emoji_assets([
-        singer,
-        *(str(song.get("title") or "") for song in songs),
-    ])
-    image_path = _save_singer_song_list(singer, songs)
+    recent_records = list_recent_song_records_by_singer(singer, limit=5)
+    await prefetch_emoji_assets(
+        [
+            singer,
+            *(str(song.get("title") or "") for song in songs),
+            *(str(record.get("title") or "") for record in recent_records),
+        ]
+    )
+    image_path = _save_singer_song_list(singer, songs, recent_records)
     return {
         "image_path": image_path,
         "data": {
             "singer": singer,
             "count": len(songs),
+            "recent_records": recent_records,
         },
     }
 
 
-def _draw_song_list_by_date(target_date: date, songs: list[dict[str, Any]]) -> BuildImage:
-    width = 760
-    padding = 40
-    max_text_width = width - padding * 2
-    bg_color = (255, 255, 255, 255)
+def _draw_song_list_by_date(
+    target_date: date,
+    songs: list[dict[str, Any]],
+) -> BuildImage:
+    columns = _column_count(len(songs))
+    padding = 44
+    column_width = 430
+    column_gap = 36
+    width = padding * 2 + columns * column_width + (columns - 1) * column_gap
 
-    date_text = target_date.strftime("%Y-%m-%d")
-    title_t2i = Text2Image.from_text(f"歌单：{date_text}", 36, weight="bold", fill=(34, 34, 34))
-    count_t2i = Text2Image.from_text(f"共 {len(songs)} 首", 24, fill=(80, 80, 80))
-
-    line_items: list[Text2Image] = []
-    for index, song in enumerate(songs, start=1):
-        singer = song.get("original_singer") or "未知"
-        line = f"{index}. {song['title']} - {truncate_name(singer, max_len=24)}（{song.get('count', 0)}）"
-        wrapped = _smart_wrap(line, 24, max_text_width)
-        line_items.append(Text2Image.from_text(wrapped, 24, fill=(50, 50, 50)))
-
-    footer_text = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
-    footer_t2i = Text2Image.from_text(footer_text, 18, fill=(180, 180, 180))
-
-    content_h = (
-        padding
-        + title_t2i.height
-        + 12
-        + count_t2i.height
-        + 24
-        + sum(item.height + 10 for item in line_items)
-        + 20
-        + footer_t2i.height
-        + padding
+    label = _text("歌单", 18, weight="bold", fill=ACCENT)
+    title = _text(target_date.strftime("%Y-%m-%d"), 40, weight="bold")
+    meta = _text(f"共 {len(songs)} 首", 23, fill=MUTED)
+    items = [
+        _wrapped(
+            (
+                f"{index:02d}  {song['title']} — "
+                f"{song.get('original_singer') or '未知'}  ·  累计{int(song.get('count') or 0)}次"
+            ),
+            21,
+            column_width,
+        )
+        for index, song in enumerate(songs, start=1)
+    ]
+    item_columns = _partition_by_height(items, columns, 14)
+    list_height = max(
+        sum(item.height + 14 for item in column) for column in item_columns
     )
+    header_height = label.height + 10 + title.height + 11 + meta.height
+    footer_height = 20
+    height = padding + header_height + 34 + list_height + 28 + footer_height + padding
+    canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
 
-    canvas = BuildImage.new("RGBA", (width, int(content_h)), bg_color)
-    curr_y = padding
-    title_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += title_t2i.height + 12
-    count_t2i.draw_on_image(canvas.image, (padding, curr_y))
-    curr_y += count_t2i.height + 24
-    for item in line_items:
-        item.draw_on_image(canvas.image, (padding, curr_y))
-        curr_y += item.height + 10
-    curr_y += 20
-    footer_t2i.draw_on_image(canvas.image, (width - footer_t2i.width - padding, curr_y))
+    y = padding
+    label.draw_on_image(canvas.image, (padding, y))
+    y += label.height + 10
+    title.draw_on_image(canvas.image, (padding, y))
+    y += title.height + 11
+    meta.draw_on_image(canvas.image, (padding, y))
+    list_y = y + meta.height + 34
+    for column_index, column in enumerate(item_columns):
+        x = padding + column_index * (column_width + column_gap)
+        item_y = list_y
+        for item in column:
+            item.draw_on_image(canvas.image, (x, item_y))
+            item_y += item.height + 14
 
+    _draw_footer(canvas, width, padding, height - padding - footer_height)
     return canvas
 
 
@@ -277,9 +423,11 @@ def _save_song_list_by_date(target_date: date, songs: list[dict[str, Any]]) -> s
     save_dir = ROOT / "data" / "images" / "song_list"
     save_dir.mkdir(parents=True, exist_ok=True)
     canvas = _draw_song_list_by_date(target_date, songs)
-    file_name = f"song_list_{target_date.strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}.png"
-    save_path = save_dir / file_name
-    canvas.image.save(save_path)
+    save_path = (
+        save_dir
+        / f"song_list_{target_date.strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}.png"
+    )
+    canvas.image.convert("RGB").save(save_path, format="PNG", optimize=True)
     return str(save_path)
 
 
@@ -287,9 +435,12 @@ async def render_songs_by_date(target_date: date) -> dict[str, Any] | None:
     songs = get_songs_of_date(target_date)
     if not songs:
         return None
-    await prefetch_emoji_assets([
-        *(str(song.get("title") or "") for song in songs),
-    ])
+    await prefetch_emoji_assets(
+        [
+            *(str(song.get("title") or "") for song in songs),
+            *(str(song.get("original_singer") or "") for song in songs),
+        ]
+    )
     image_path = _save_song_list_by_date(target_date, songs)
     return {
         "image_path": image_path,
