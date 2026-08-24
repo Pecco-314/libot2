@@ -1294,6 +1294,65 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         logger.error("发送弹幕记录失败: %s", exc)
 
 
+def _parse_content_search_args(
+    raw_arg: str,
+) -> tuple[str, str | None, int, bool]:
+    argument_text = raw_arg.strip()
+    if not argument_text:
+        raise ValueError(
+            "用法：/有谁说过 <关键词> [日期/数量] [日期/数量]"
+        )
+
+    tokens = argument_text.split()
+    reveal_hidden = (
+        len(tokens) >= 2
+        and tokens[-1].lower() == _CONTENT_SEARCH_REVEAL_WORD
+    )
+    if reveal_hidden:
+        argument_text = " ".join(tokens[:-1]).strip()
+
+    keyword = argument_text
+    date_str: str | None = None
+    limit = 100
+    limit_seen = False
+    for _ in range(2):
+        parts = keyword.rsplit(maxsplit=1)
+        if len(parts) != 2:
+            break
+        candidate = parts[1]
+        if candidate.isdigit():
+            if limit_seen:
+                raise ValueError("日期和数量各只能填写一次")
+            parsed_limit = int(candidate)
+            if parsed_limit < 1 or parsed_limit > 2000:
+                raise ValueError("数量必须在1到2000之间")
+            limit = parsed_limit
+            limit_seen = True
+            keyword = parts[0].strip()
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+            if date_str is not None:
+                raise ValueError("日期和数量各只能填写一次")
+            try:
+                datetime.strptime(candidate, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("日期格式错误，正确格式：YYYY-MM-DD") from exc
+            date_str = candidate
+            keyword = parts[0].strip()
+            continue
+        break
+
+    quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
+    if len(keyword) >= 2 and (keyword[0], keyword[-1]) in quote_pairs:
+        keyword = keyword[1:-1]
+    if not keyword:
+        raise ValueError("关键词不能为空")
+    if len(keyword) > 100:
+        raise ValueError("关键词不能超过100个字符")
+
+    return keyword, date_str, limit, reveal_hidden
+
+
 @content_search_cmd.handle()
 async def handle_content_search(
     matcher: Matcher,
@@ -1304,21 +1363,12 @@ async def handle_content_search(
     group_id = get_group_id(event)
     room_id = get_query_room_id(event)
 
-    raw_arg = arg.extract_plain_text().strip()
-    if not raw_arg:
-        await matcher.finish("用法：/有谁说过 <关键词> [数量]")
-
-    argument_text = raw_arg
-    tokens = raw_arg.split()
-    reveal_hidden = (
-        len(tokens) >= 2
-        and tokens[-1].lower() == _CONTENT_SEARCH_REVEAL_WORD
-    )
-    if reveal_hidden:
-        argument_text = " ".join(tokens[:-1]).strip()
-
-    parts = argument_text.rsplit(maxsplit=1)
-    limit = 100
+    try:
+        keyword, date_str, limit, reveal_hidden = _parse_content_search_args(
+            arg.extract_plain_text()
+        )
+    except ValueError as exc:
+        await matcher.finish(str(exc))
 
     if INITIAL_MANAGER_QQ is not None and group_id is not None:
         ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
@@ -1331,21 +1381,10 @@ async def handle_content_search(
     if reveal_hidden and not user_is_manager:
         await matcher.finish("没有这样的功能")
 
-    if len(parts) == 2 and parts[1].isdigit():
-        keyword = parts[0].strip()
-        limit = int(parts[1])
-        if limit < 1 or limit > 2000:
-            await matcher.finish("数量必须在1到2000之间")
-    else:
-        keyword = argument_text
-
-    quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}
-    if len(keyword) >= 2 and (keyword[0], keyword[-1]) in quote_pairs:
-        keyword = keyword[1:-1]
-    if not keyword:
-        await matcher.finish("关键词不能为空")
-    if len(keyword) > 100:
-        await matcher.finish("关键词不能超过100个字符")
+    end_ts: int | None = None
+    if date_str is not None:
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        end_ts = int(datetime.combine(target_date, datetime.max.time()).timestamp())
 
     events = await asyncio.to_thread(
         list_recent_events_by_content,
@@ -1353,12 +1392,14 @@ async def handle_content_search(
         keyword,
         limit,
         None if reveal_hidden else _CONTENT_SEARCH_HIDDEN_RANGE,
+        end_ts,
     )
     if not events:
         await matcher.finish(f"未找到包含“{keyword}”的记录")
 
     display_keyword = keyword if len(keyword) <= 30 else f"{keyword[:30]}…"
-    title = f"包含“{display_keyword}”的最近 {len(events)} 条发言"
+    date_prefix = f"截至 {date_str}，" if date_str is not None else ""
+    title = f"{date_prefix}包含“{display_keyword}”的最近 {len(events)} 条发言"
     pages = await render_event_pages(
         title,
         events,

@@ -532,15 +532,19 @@ def list_recent_events_by_content(
     keyword: str,
     limit: int = 100,
     excluded_range: tuple[int, int] | None = None,
+    end_ts: int | None = None,
 ) -> list[dict[str, Any]]:
     exclude_condition = (
         "AND NOT (timestamp >= ? AND timestamp < ?)"
         if excluded_range is not None
         else ""
     )
+    end_condition = "AND timestamp <= ?" if end_ts is not None else ""
     params: list[Any] = [room_id, keyword]
     if excluded_range is not None:
         params.extend(excluded_range)
+    if end_ts is not None:
+        params.append(end_ts)
     params.append(limit)
 
     with connect_sqlite() as conn:
@@ -554,6 +558,7 @@ def list_recent_events_by_content(
               AND content IS NOT NULL
               AND instr(content, ?) > 0
               {exclude_condition}
+              {end_condition}
             ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """,
