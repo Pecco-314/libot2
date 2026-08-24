@@ -19,7 +19,7 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     register_stats_jobs(scheduler)
     register_backup_jobs(scheduler)
     register_cookie_monitor_jobs(scheduler)
-    register_song_list_jobs(scheduler)
+    # register_song_list_jobs(scheduler)
     register_song_clip_jobs(scheduler)
     register_lyrics_jobs(scheduler)
     register_fan_club_jobs(scheduler)
