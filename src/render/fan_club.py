@@ -312,14 +312,16 @@ def render_member_medals(
     member_uid: int,
     member_name: str,
     medals: list[dict[str, Any]],
+    hidden: bool = False,
 ) -> list[Path]:
     page_size = 240
     total_pages = max(1, (len(medals) + page_size - 1) // page_size)
     cache_payload = json.dumps(
         {
-            "render_version": 2,
+            "render_version": 3,
             "uid": int(member_uid),
             "name": member_name,
+            "hidden": bool(hidden),
             "medals": [
                 {
                     "target_uid": int(row["target_uid"]),
@@ -373,6 +375,13 @@ def render_member_medals(
             canvas.image,
             (width - padding_x - meta.width, padding_y + 8),
         )
+        if hidden:
+            notice = _text(
+                "（用户已隐藏，牌子列表不完整）",
+                14,
+                fill=(145, 145, 145),
+            )
+            notice.draw_on_image(canvas.image, (padding_x, padding_y + 43))
 
         for item_index, medal in enumerate(page_medals):
             column = item_index // rows_per_column

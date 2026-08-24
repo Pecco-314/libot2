@@ -594,8 +594,11 @@ async def handle_medal_wall(
             int(row["target_uid"]),
         ),
     )
+    hidden_notice = "（用户已隐藏，牌子列表不完整）" if wall["hidden"] else ""
     if not medals:
-        await matcher.finish(f"没有找到 {wall['uname'] or fallback_name} 的可见牌子")
+        await matcher.finish(
+            f"没有找到 {wall['uname'] or fallback_name} 的可见牌子{hidden_notice}"
+        )
 
     member_name = str(wall["uname"] or fallback_name)
     try:
@@ -604,6 +607,7 @@ async def handle_medal_wall(
             member_uid,
             member_name,
             medals,
+            bool(wall["hidden"]),
         )
     except Exception as exc:
         logger.exception("渲染牌子列表失败 uid=%d", member_uid)
