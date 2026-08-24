@@ -21,7 +21,12 @@ from src.db.song_list import search_songs_by_title, add_new_song, add_song_recor
 from src.render.superchat import get_daily_superchat_images, get_user_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
-from src.render.song import render_songs_by_keyword, render_random_song, render_songs_by_singer, render_songs_by_date
+from src.render.song import (
+    render_random_song,
+    render_song_list,
+    render_songs_by_keyword,
+    render_songs_by_singer,
+)
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
@@ -1480,30 +1485,76 @@ async def handle_song_search(bot: Bot, event: Event, matcher: Matcher, arg=Comma
 
 
 @song_list_cmd.handle()
-async def handle_song_list(matcher: Matcher, arg=CommandArg()):
-    date_str = arg.extract_plain_text().strip()
-    if not date_str:
-        await matcher.finish("用法：/查歌单 <日期>，日期格式：YYYY-MM-DD")
+async def handle_song_list(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    raw_args = arg.extract_plain_text().strip().split()
+    target_date = None
+    mode = None
+    seen_mode = False
+    for value in raw_args:
+        if value in {"按歌手", "按语言", "按歌名", "按次数"}:
+            if seen_mode:
+                await matcher.finish("只能指定一种歌单分组或排序方式")
+            mode = value
+            seen_mode = True
+            continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            if target_date is not None:
+                await matcher.finish("只能指定一个日期")
+            try:
+                target_date = datetime.strptime(value, "%Y-%m-%d").date()
+            except ValueError:
+                await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+            continue
+        await matcher.finish(
+            "用法：/查歌单 [日期] [按歌手/按语言/按歌名/按次数]"
+        )
+
+    if mode is None:
+        mode = "按顺序" if target_date is not None else "按次数"
 
     try:
-        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
-
-    try:
-        result = await render_songs_by_date(target_date)
+        result = await render_song_list(target_date, mode)
     except Exception as exc:
-        logger.error("渲染日期歌单失败: %s", exc)
+        logger.exception("渲染歌单失败: %s", exc)
         await matcher.finish("图片渲染失败")
 
     if not result:
-        await matcher.finish(f"{date_str} 没有找到歌单记录")
+        scope = target_date.strftime("%Y-%m-%d") if target_date else "曲库中"
+        await matcher.finish(f"{scope}没有找到歌单记录")
 
-    message = Message([
-        MessageSegment.text(f"{date_str} 的歌单："),
-        MessageSegment.image(file=str(result["image_path"])),
-    ])
-    await matcher.finish(message)
+    date_prefix = f"{target_date:%Y-%m-%d}的" if target_date else ""
+    summary = f"{date_prefix}歌单（{mode}）"
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "LiBot",
+                "uin": bot.self_id,
+                "content": summary,
+            },
+        },
+        *[
+            {
+                "type": "node",
+                "data": {
+                    "name": "LiBot",
+                    "uin": bot.self_id,
+                    "content": MessageSegment.image(file=str(image_path)),
+                },
+            }
+            for image_path in result["image_paths"]
+        ],
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送歌单合并转发失败: %s", exc)
+        await matcher.finish("歌单发送失败，请稍后再试")
 
 
 @song_singer_cmd.handle()

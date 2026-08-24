@@ -876,6 +876,61 @@ def get_all_songs() -> list[dict[str, Any]]:
     ]
 
 
+def list_song_catalog(
+    target_date: datetime.date | None = None,
+) -> list[dict[str, Any]]:
+    """List songs for the compact song-list renderer.
+
+    Without ``target_date`` each performed song appears once.  A date keeps the
+    historic ``/查歌单 <日期>`` meaning and returns that day's performances,
+    including repeated performances of the same song.
+    """
+    params: tuple[Any, ...]
+    if target_date is None:
+        sql = """
+            WITH record_counts AS (
+                SELECT song_id, COUNT(*) AS count
+                FROM song_record
+                GROUP BY song_id
+            )
+            SELECT i.id, i.title, i.title_trans, i.original_singer,
+                   i.language, COALESCE(c.count, 0) AS count, NULL AS record_id
+            FROM song_info i
+            JOIN record_counts c ON c.song_id = i.id
+        """
+        params = ()
+    else:
+        sql = """
+            WITH record_counts AS (
+                SELECT song_id, COUNT(*) AS count
+                FROM song_record
+                GROUP BY song_id
+            )
+            SELECT i.id, i.title, i.title_trans, i.original_singer,
+                   i.language, COALESCE(c.count, 0) AS count, r.id AS record_id
+            FROM song_record r
+            JOIN song_info i ON i.id = r.song_id
+            LEFT JOIN record_counts c ON c.song_id = i.id
+            WHERE r.record_date = ?
+        """
+        params = (target_date.strftime("%Y-%m-%d"),)
+
+    with connect_sqlite() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "title": str(row[1]),
+            "title_trans": str(row[2] or ""),
+            "original_singer": str(row[3] or "未知"),
+            "language": str(row[4] or "未知"),
+            "count": int(row[5]),
+            "record_id": int(row[6]) if row[6] is not None else None,
+        }
+        for row in rows
+    ]
+
+
 def delete_songs_not_in(valid_ids: list[int]) -> None:
     if not valid_ids:
         return

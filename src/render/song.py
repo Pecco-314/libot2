@@ -1,4 +1,5 @@
 import uuid
+from collections import Counter
 from datetime import date, datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ from nonebot_plugin_imageutils import BuildImage
 from src.common.utils import ROOT
 from src.db.song_list import (
     get_songs_of_date,
+    list_song_catalog,
     list_recent_song_records_by_singer,
     list_songs_by_singer,
     random_song,
@@ -22,7 +24,6 @@ MUTED = (112, 112, 122)
 FAINT = (172, 172, 180)
 ACCENT = (105, 89, 205)
 SOFT = (247, 246, 252, 255)
-SOURCE_TEXT = "数据来源于三理Mit3uri的歌单（mit3uri.live），感谢作者。"
 
 
 def _text(
@@ -107,11 +108,6 @@ def _partition_by_height(
     return groups
 
 
-def _draw_footer(canvas: BuildImage, width: int, padding: int, y: int) -> None:
-    footer = _text(SOURCE_TEXT, 17, fill=FAINT)
-    footer.draw_on_image(canvas.image, (width - padding - footer.width, y))
-
-
 def draw_song_card(song: dict[str, Any]) -> BuildImage:
     width = 720
     padding = 44
@@ -161,7 +157,6 @@ def draw_song_card(song: dict[str, Any]) -> BuildImage:
         + 14
         + sum(item.height + 11 for item in date_items)
         + 31
-        + 20
         + padding
     )
     canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
@@ -186,8 +181,6 @@ def draw_song_card(song: dict[str, Any]) -> BuildImage:
     for item in date_items:
         item.draw_on_image(canvas.image, (padding, y))
         y += item.height + 11
-    y += 20
-    _draw_footer(canvas, width, padding, y)
     return canvas
 
 
@@ -289,7 +282,7 @@ def _draw_singer_song_list(
 
     header_height = label.height + 10 + title.height + 11 + meta.height
     body_height = max(recent_height + 32, main_height)
-    footer_height = 20
+    footer_height = 0
     height = padding + header_height + 34 + body_height + 30 + footer_height + padding
     canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(canvas.image)
@@ -328,7 +321,6 @@ def _draw_singer_song_list(
             item.draw_on_image(canvas.image, (x, item_y))
             item_y += item.height + 13
 
-    _draw_footer(canvas, width, padding, height - padding - footer_height)
     return canvas
 
 
@@ -397,7 +389,7 @@ def _draw_song_list_by_date(
         sum(item.height + 14 for item in column) for column in item_columns
     )
     header_height = label.height + 10 + title.height + 11 + meta.height
-    footer_height = 20
+    footer_height = 0
     height = padding + header_height + 34 + list_height + 28 + footer_height + padding
     canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
 
@@ -415,7 +407,6 @@ def _draw_song_list_by_date(
             item.draw_on_image(canvas.image, (x, item_y))
             item_y += item.height + 14
 
-    _draw_footer(canvas, width, padding, height - padding - footer_height)
     return canvas
 
 
@@ -447,5 +438,339 @@ async def render_songs_by_date(target_date: date) -> dict[str, Any] | None:
         "data": {
             "date": target_date.strftime("%Y-%m-%d"),
             "count": len(songs),
+        },
+    }
+
+
+SONG_LIST_MODES = {"按顺序", "按歌手", "按语言", "按歌名", "按次数"}
+SLASHED_SINGER_NAMES = ("K/DA", "HUNTR/X")
+
+
+def _song_sort_text(value: Any) -> tuple[str, str]:
+    text = str(value or "")
+    return (text.casefold(), text)
+
+
+def _split_singers(value: Any) -> list[str]:
+    text = str(value or "未知")
+    protected: dict[str, str] = {}
+    for index, singer in enumerate(SLASHED_SINGER_NAMES):
+        token = f"\x00{index}\x00"
+        if singer in text:
+            text = text.replace(singer, token)
+            protected[token] = singer
+    return list(
+        dict.fromkeys(
+            protected.get(part.strip(), part.strip())
+            for part in text.split("/")
+            if part.strip()
+        )
+    ) or ["未知"]
+
+
+def _count_singer_appearances(songs: list[dict[str, Any]]) -> Counter[str]:
+    unique_songs = {int(song["id"]): song for song in songs}
+    return Counter(
+        singer
+        for song in unique_songs.values()
+        for singer in _split_singers(song.get("original_singer"))
+    )
+
+
+def _prepare_song_list_groups(
+    songs: list[dict[str, Any]],
+    mode: str,
+    singer_appearances: Counter[str] | None = None,
+) -> list[tuple[str | None, list[dict[str, Any]]]]:
+    if mode == "按顺序":
+        ordered = sorted(
+            songs,
+            key=lambda song: int(song.get("record_id") or 0),
+        )
+        return [(None, ordered)]
+    if mode == "按次数":
+        ordered = sorted(
+            songs,
+            key=lambda song: (
+                -int(song.get("count") or 0),
+                _song_sort_text(song.get("title")),
+                int(song.get("record_id") or 0),
+            ),
+        )
+        return [(None, ordered)]
+    if mode == "按歌名":
+        ordered = sorted(
+            songs,
+            key=lambda song: (
+                _song_sort_text(song.get("title")),
+                -int(song.get("count") or 0),
+                int(song.get("record_id") or 0),
+            ),
+        )
+        return [(None, ordered)]
+
+    if mode == "按歌手" and singer_appearances is None:
+        singer_appearances = _count_singer_appearances(songs)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for song in songs:
+        if mode == "按歌手":
+            singers = _split_singers(song.get("original_singer"))
+            appearances = singer_appearances or Counter()
+            group_name = max(singers, key=lambda singer: appearances[singer])
+        else:
+            group_name = str(song.get("language") or "未知").strip() or "未知"
+        grouped.setdefault(group_name, []).append(song)
+
+    language_order = {
+        "华语": 0,
+        "粤语": 1,
+        "英语": 2,
+        "日语": 3,
+        "韩语": 4,
+        "多语种": 5,
+        "未知": 99,
+    }
+
+    def group_key(item: tuple[str, list[dict[str, Any]]]) -> tuple[Any, ...]:
+        name, _ = item
+        if mode == "按语言":
+            return (language_order.get(name, 20), _song_sort_text(name))
+        return _song_sort_text(name)
+
+    result: list[tuple[str | None, list[dict[str, Any]]]] = []
+    for name, group_songs in sorted(grouped.items(), key=group_key):
+        group_songs.sort(
+            key=lambda song: (
+                -int(song.get("count") or 0),
+                _song_sort_text(song.get("title")),
+                int(song.get("record_id") or 0),
+            )
+        )
+        result.append((name, group_songs))
+    return result
+
+
+def _compact_song_line(song: dict[str, Any], mode: str) -> str:
+    title = str(song.get("title") or "未知歌曲")
+    count = int(song.get("count") or 0)
+    if mode == "按歌手":
+        return f"{title} ({count})"
+    singer = str(song.get("original_singer") or "未知")
+    return f"{title} · {singer} ({count})"
+
+
+def _build_compact_song_pages(
+    songs: list[dict[str, Any]],
+    mode: str,
+    singer_appearances: Counter[str] | None = None,
+) -> list[list[list[tuple[str, Text2Image]]]]:
+    columns_per_page = 4
+    column_width = 360
+    column_height = 1160
+    item_gap = 8
+    heading_gap = 10
+    pages: list[list[list[tuple[str, Text2Image]]]] = [[[]]]
+    heights = [[0]]
+
+    def current_column() -> list[tuple[str, Text2Image]]:
+        return pages[-1][-1]
+
+    def current_height() -> int:
+        return heights[-1][-1]
+
+    def next_column() -> None:
+        if len(pages[-1]) >= columns_per_page:
+            pages.append([[]])
+            heights.append([0])
+        else:
+            pages[-1].append([])
+            heights[-1].append(0)
+
+    def append(kind: str, image: Text2Image, gap: int) -> None:
+        current_column().append((kind, image))
+        heights[-1][-1] += image.height + gap
+
+    for group_name, group_songs in _prepare_song_list_groups(
+        songs,
+        mode,
+        singer_appearances,
+    ):
+        heading_text = (
+            _wrapped(group_name, 19, column_width, weight="bold", fill=ACCENT)
+            if group_name is not None
+            else None
+        )
+        item_images = [
+            _wrapped(_compact_song_line(song, mode), 17, column_width)
+            for song in group_songs
+        ]
+        if not item_images:
+            continue
+
+        for index, item_image in enumerate(item_images):
+            needs_heading = heading_text is not None and (
+                index == 0 or not current_column()
+            )
+            required = item_image.height + item_gap
+            if needs_heading:
+                required += heading_text.height + heading_gap
+            if current_column() and current_height() + required > column_height:
+                next_column()
+                needs_heading = heading_text is not None
+                required = item_image.height + item_gap
+                if needs_heading:
+                    required += heading_text.height + heading_gap
+            if needs_heading and heading_text is not None:
+                append(
+                    "heading",
+                    _wrapped(
+                        group_name,
+                        19,
+                        column_width,
+                        weight="bold",
+                        fill=ACCENT,
+                    ),
+                    heading_gap,
+                )
+            append("item", item_image, item_gap)
+
+    result = [page for page in pages if any(page)]
+    if mode in {"按顺序", "按次数", "按歌名"}:
+        for page in result:
+            if len(page) != 1 or len(page[0]) < 12:
+                continue
+            entries = page[0]
+            total_height = sum(
+                item.height + (10 if kind == "heading" else 8)
+                for kind, item in entries
+            )
+            if total_height < 520:
+                continue
+            split_at = 1
+            consumed = 0
+            for index, (kind, item) in enumerate(entries[:-1], start=1):
+                consumed += item.height + (10 if kind == "heading" else 8)
+                split_at = index
+                if consumed >= total_height / 2:
+                    break
+            page[:] = [entries[:split_at], entries[split_at:]]
+    return result
+
+
+def _draw_compact_song_list_page(
+    target_date: date | None,
+    mode: str,
+    song_count: int,
+    page_columns: list[list[tuple[str, Text2Image]]],
+    page_number: int,
+    page_count: int,
+) -> BuildImage:
+    padding = 46
+    column_width = 360
+    column_gap = 30
+    columns_per_page = len(page_columns)
+    width = max(
+        720,
+        padding * 2
+        + columns_per_page * column_width
+        + (columns_per_page - 1) * column_gap,
+    )
+
+    label = _text("歌单", 18, weight="bold", fill=ACCENT)
+    title_value = target_date.strftime("%Y-%m-%d") if target_date else "全部歌曲"
+    title = _text(title_value, 36, weight="bold")
+    meta = _text(
+        f"共 {song_count} 首 · {mode} · {page_number}/{page_count}",
+        20,
+        fill=MUTED,
+    )
+    y = padding
+    list_y = (
+        y
+        + label.height
+        + 8
+        + title.height
+        + 9
+        + meta.height
+        + 28
+    )
+    content_height = max(
+        (
+            sum(item.height + (10 if kind == "heading" else 8) for kind, item in column)
+            for column in page_columns
+        ),
+        default=0,
+    )
+    footer_height = 0
+    height = max(
+        420,
+        list_y + content_height + 28 + footer_height + padding,
+    )
+    canvas = BuildImage.new("RGBA", (width, height), BACKGROUND)
+
+    label.draw_on_image(canvas.image, (padding, y))
+    y += label.height + 8
+    title.draw_on_image(canvas.image, (padding, y))
+    y += title.height + 9
+    meta.draw_on_image(canvas.image, (padding, y))
+
+    for column_index, column in enumerate(page_columns):
+        x = padding + column_index * (column_width + column_gap)
+        item_y = list_y
+        for kind, item in column:
+            item.draw_on_image(canvas.image, (x, item_y))
+            item_y += item.height + (10 if kind == "heading" else 8)
+
+    return canvas
+
+
+async def render_song_list(
+    target_date: date | None = None,
+    mode: str | None = None,
+) -> dict[str, Any] | None:
+    if mode is None:
+        mode = "按顺序" if target_date is not None else "按次数"
+    if mode not in SONG_LIST_MODES:
+        raise ValueError(f"unknown song list mode: {mode}")
+    songs = list_song_catalog(target_date)
+    if not songs:
+        return None
+    await prefetch_emoji_assets(
+        [
+            *(str(song.get("title") or "") for song in songs),
+            *(str(song.get("original_singer") or "") for song in songs),
+        ]
+    )
+    singer_appearances = None
+    if mode == "按歌手":
+        reference_songs = songs if target_date is None else list_song_catalog()
+        singer_appearances = _count_singer_appearances(reference_songs)
+    page_columns = _build_compact_song_pages(songs, mode, singer_appearances)
+    save_dir = ROOT / "data" / "images" / "song_list"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    image_paths: list[str] = []
+    page_count = len(page_columns)
+    for page_number, columns in enumerate(page_columns, start=1):
+        canvas = _draw_compact_song_list_page(
+            target_date,
+            mode,
+            len(songs),
+            columns,
+            page_number,
+            page_count,
+        )
+        date_label = target_date.strftime("%Y%m%d") if target_date else "all"
+        save_path = save_dir / (
+            f"song_list_{date_label}_{mode}_{page_number}_{uuid.uuid4().hex[:6]}.png"
+        )
+        canvas.image.convert("RGB").save(save_path, format="PNG", optimize=True)
+        image_paths.append(str(save_path))
+    return {
+        "image_paths": image_paths,
+        "data": {
+            "date": target_date.strftime("%Y-%m-%d") if target_date else None,
+            "count": len(songs),
+            "mode": mode,
         },
     }
