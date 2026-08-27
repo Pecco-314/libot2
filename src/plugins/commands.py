@@ -95,13 +95,11 @@ from src.db.event import (
     list_recent_events_by_content,
 )
 from src.db.fan_club import (
-    complete_snapshot_for_date,
     latest_complete_snapshot,
     list_common_snapshot_members,
     list_latest_member_medals,
     list_snapshot_members,
     resolve_target,
-    snapshot_state_for_date,
 )
 from src.db.live_list import add_live_list, remove_live_list, get_live_list
 from src.capture.guesser import (
@@ -983,23 +981,10 @@ async def handle_fan_club_list(
     snapshots: list[dict] = []
     for target in selected_targets:
         streamer_uid = int(target["uid"])
-        snapshot = complete_snapshot_for_date(streamer_uid)
-        if snapshot is None and datetime.now().hour < 7:
-            snapshot = latest_complete_snapshot(streamer_uid)
-        if snapshot is not None:
-            snapshots.append(snapshot)
-            continue
-        state = snapshot_state_for_date(streamer_uid)
-        if state is None:
-            await matcher.finish(f"{target['short_name']}今日粉丝团数据尚未开始抓取")
-        if state["status"] == "running":
-            progress = ""
-            if state["expected_pages"] is not None:
-                progress = f"（{state['fetched_pages']}/{state['expected_pages']}页）"
-            await matcher.finish(
-                f"{target['short_name']}今日粉丝团数据正在抓取{progress}"
-            )
-        await matcher.finish(f"{target['short_name']}今日粉丝团数据抓取失败，稍后会重试")
+        snapshot = latest_complete_snapshot(streamer_uid)
+        if snapshot is None:
+            await matcher.finish(f"{target['short_name']}暂无可用的粉丝团数据")
+        snapshots.append(snapshot)
 
     is_common_query = len(snapshots) >= 2
     if is_common_query:
