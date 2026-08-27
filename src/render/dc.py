@@ -82,16 +82,12 @@ def _format_duration(seconds: int) -> str:
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-async def get_dc_data(filter_type: str, time_str: str) -> list[dict[str, Any]]:
-    months_to_fetch = []
-    if len(time_str) == 4:
-        now = datetime.now()
-        year = int(time_str)
-        end_month = 12 if year < now.year else now.month
-        for m in range(1, end_month + 1):
-            months_to_fetch.append(f"{year}{m:02d}")
-    else:
-        months_to_fetch.append(time_str.replace("-", ""))
+async def get_dc_data(
+    filter_type: str,
+    time_str: str,
+    end_time_str: str | None = None,
+) -> list[dict[str, Any]]:
+    months_to_fetch = _months_for_period(time_str, end_time_str)
 
     semaphore = asyncio.Semaphore(3)
 
@@ -150,10 +146,38 @@ async def get_dc_data(filter_type: str, time_str: str) -> list[dict[str, Any]]:
         
     return result
 
-async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25) -> list[Path]:
-    data_list = await get_dc_data(filter_type, time_str)
+
+def _months_for_period(time_str: str, end_time_str: str | None = None) -> list[str]:
+    if end_time_str is not None:
+        start_year, start_month = map(int, time_str.split("-"))
+        end_year, end_month = map(int, end_time_str.split("-"))
+        start_index = start_year * 12 + start_month - 1
+        end_index = end_year * 12 + end_month - 1
+        if start_index > end_index:
+            raise ValueError("斗虫统计的起始月份不能晚于结束月份")
+        return [
+            f"{index // 12:04d}{index % 12 + 1:02d}"
+            for index in range(start_index, end_index + 1)
+        ]
+
+    if len(time_str) == 4:
+        now = datetime.now()
+        year = int(time_str)
+        end_month = 12 if year < now.year else now.month
+        return [f"{year}{month:02d}" for month in range(1, end_month + 1)]
+    return [time_str.replace("-", "")]
+
+
+async def render_dc_images(
+    filter_type: str,
+    time_str: str,
+    end_time_str: str | None = None,
+    chunk_size: int = 25,
+) -> list[Path]:
+    data_list = await get_dc_data(filter_type, time_str, end_time_str)
     if not data_list:
         return []
+    period_key = time_str if end_time_str is None else f"{time_str}_{end_time_str}"
 
     await prefetch_emoji_assets([
         *(str(item.get("anchor_name") or "") for item in data_list),
@@ -239,7 +263,7 @@ async def render_dc_images(filter_type: str, time_str: str, chunk_size: int = 25
         
         # 保存图片
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        filename = f"dc_{filter_type}_{time_str}_{timestamp}_part{i+1}.png"
+        filename = f"dc_{filter_type}_{period_key}_{timestamp}_part{i+1}.png"
         out_path = save_dir / filename
         canvas.image.save(out_path)
         generated_paths.append(out_path)

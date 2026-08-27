@@ -1727,12 +1727,10 @@ async def handle_song_preview(
 @dc_cmd.handle()
 async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
     args = arg.extract_plain_text().strip().split()
-    
-    # 默认选项设置
+
     filter_type = "vr"
-    time_str = datetime.now().strftime("%Y-%m")
-    
-    # 解析参数选项
+    time_args: list[str] = []
+
     for a in args:
         a_upper = a.upper()
         if a_upper in ["VR", "PSP", "VRPSP", "ALL"]:
@@ -1740,24 +1738,47 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
             if filter_type == "vrpsp":
                 filter_type = "all"
         elif re.match(r"^20\d{2}$", a):  # 例如 2026
-            time_str = a
+            time_args.append(a)
         elif re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", a):  # 例如 2026-06
-            time_str = a
+            time_args.append(a)
         elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", a):  # 兼容 202606 这种连续格式
-            time_str = f"{a[:4]}-{a[4:]}"
-            
+            time_args.append(f"{a[:4]}-{a[4:]}")
+        else:
+            await matcher.finish(
+                "用法：/斗虫 [VR/PSP/ALL] [月份/年份] [结束月份]"
+            )
+
+    if len(time_args) > 2:
+        await matcher.finish("斗虫最多填写起始、结束两个月份")
+    if len(time_args) == 2 and any(len(value) != 7 for value in time_args):
+        await matcher.finish("范围查询需要填写两个完整月份，例如：/斗虫 2026-06 2026-08")
+
+    time_str = time_args[0] if time_args else datetime.now().strftime("%Y-%m")
+    end_time_str = time_args[1] if len(time_args) == 2 else None
+    if end_time_str is not None and time_str > end_time_str:
+        await matcher.finish("斗虫统计的起始月份不能晚于结束月份")
+    period_label = (
+        f"{time_str}～{end_time_str}" if end_time_str is not None else time_str
+    )
+
     try:
-        images = await render_dc_images(filter_type, time_str)
+        images = await render_dc_images(
+            filter_type,
+            time_str,
+            end_time_str=end_time_str,
+        )
     except Exception as e:
         logger.error(f"渲染斗虫图片失败: {e}")
         await matcher.finish("数据获取或图片渲染失败，请稍后再试。")
-        
+
     if not images:
-        await matcher.finish(f"未找到 {filter_type.upper()} 在 {time_str} 的相关营收数据")
-        
+        await matcher.finish(
+            f"未找到 {filter_type.upper()} 在 {period_label} 的相关营收数据"
+        )
+
     # 构造合并转发节点
     nodes = []
-    info = f"统计区间：{time_str} 社团：{filter_type.upper()}"
+    info = f"统计区间：{period_label} 社团：{filter_type.upper()}"
     nodes.append({
         "type": "node",
         "data": {
