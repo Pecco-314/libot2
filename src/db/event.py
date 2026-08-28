@@ -384,6 +384,48 @@ def get_latest_live_session(room_id: int) -> dict[str, Any] | None:
     return sessions[-1]
 
 
+def get_live_end_near_start(
+    room_id: int,
+    start_ts: int,
+    *,
+    tolerance_seconds: int = 10,
+    max_duration_seconds: int = 48 * 60 * 60,
+) -> int | None:
+    """Return the matching PREPARING timestamp without scanning all room events."""
+    with connect_sqlite() as conn:
+        live_row = conn.execute(
+            """
+            SELECT timestamp FROM event INDEXED BY idx_event_cmd_time
+            WHERE cmd = 'LIVE' AND room_id = ? AND timestamp BETWEEN ? AND ?
+            ORDER BY ABS(timestamp - ?), id
+            LIMIT 1
+            """,
+            (
+                room_id,
+                start_ts - tolerance_seconds,
+                start_ts + tolerance_seconds,
+                start_ts,
+            ),
+        ).fetchone()
+        if live_row is None:
+            return None
+
+        local_start = int(live_row[0])
+        preparing_row = conn.execute(
+            """
+            SELECT timestamp FROM event INDEXED BY idx_event_cmd_time
+            WHERE cmd = 'PREPARING' AND room_id = ?
+              AND timestamp > ? AND timestamp <= ?
+            ORDER BY timestamp, id
+            LIMIT 1
+            """,
+            (room_id, local_start, local_start + max_duration_seconds),
+        ).fetchone()
+    if preparing_row is None:
+        return None
+    return int(preparing_row[0])
+
+
 def _merge_and_sort_histories(history_rows: list, event_rows: list) -> list[dict[str, object]]:
     user_data = {}  # 结构: {uid: {uname: min_timestamp}}
     

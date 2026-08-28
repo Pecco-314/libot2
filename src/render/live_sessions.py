@@ -9,6 +9,35 @@ from nonebot_plugin_imageutils import BuildImage
 from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
+from src.db.event import get_live_end_near_start
+
+
+def _backfill_latest_duration(room_id: int, sessions: list[dict[str, Any]]) -> None:
+    """Use the local PREPARING event when the upstream latest session is unfinished."""
+    if not sessions:
+        return
+
+    def parse_start(item: dict[str, Any]) -> datetime:
+        try:
+            return datetime.strptime(str(item.get("start_time") or ""), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return datetime.min
+
+    latest = max(sessions, key=parse_start)
+    if latest.get("duration_minutes") or latest.get("end_time"):
+        return
+
+    upstream_start = parse_start(latest)
+    if upstream_start == datetime.min:
+        return
+
+    local_start = int(upstream_start.timestamp())
+    local_end = get_live_end_near_start(room_id, local_start)
+    if local_end is None or local_end <= local_start:
+        return
+
+    latest["duration_minutes"] = max(1, (local_end - local_start) // 60)
+
 
 async def fetch_live_sessions_data(room_id: int, month: str) -> dict[str, Any]:
     url = f"https://dc.hihivr.top/gift/live_sessions?room_id={room_id}&union=VirtuaReal&month={month}"
@@ -29,6 +58,7 @@ async def render_live_sessions_image(room_id: int, month: str) -> Path | None:
     sessions = data.get("sessions", [])
     if not sessions:
         return None
+    _backfill_latest_duration(room_id, sessions)
 
     await prefetch_emoji_assets([
         *(str(item.get("title") or "") for item in sessions),
