@@ -289,6 +289,41 @@ def list_session_events(room_id: int, start_ts: int, end_ts: int) -> list[dict[s
     ]
 
 
+def list_heart_blind_box_events(
+    room_id: int,
+    start_ts: int,
+    end_ts: int,
+) -> list[dict[str, Any]]:
+    """List 心动盲盒 results, excluding directly sent gifts with the same names."""
+    result_names = ("电影票", "棉花糖", "爱心抱枕", "浪漫城堡")
+    placeholders = ",".join("?" for _ in result_names)
+    with connect_sqlite() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT uid, uname, gift_name, gift_num, timestamp
+            FROM event INDEXED BY idx_event_room_time
+            WHERE room_id = ?
+              AND timestamp BETWEEN ? AND ?
+              AND cmd = 'SEND_GIFT'
+              AND gift_name IN ({placeholders})
+              AND gift_num > 0
+              AND total_coin = 15000 * gift_num
+            ORDER BY timestamp, id
+            """,
+            (room_id, start_ts, end_ts, *result_names),
+        ).fetchall()
+    return [
+        {
+            "uid": int(row[0]) if row[0] is not None else 0,
+            "uname": str(row[1] or ""),
+            "gift_name": str(row[2]),
+            "gift_num": int(row[3]),
+            "timestamp": int(row[4]),
+        }
+        for row in rows
+    ]
+
+
 def list_online_counts(room_id: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
     with connect_sqlite() as conn:
         rows = conn.execute(
@@ -329,7 +364,7 @@ def list_live_sessions(room_id: int) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT cmd, timestamp, id
-            FROM event
+            FROM event INDEXED BY idx_event_cmd_time
             WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING')
             ORDER BY timestamp ASC, id ASC
             """,

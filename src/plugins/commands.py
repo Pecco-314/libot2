@@ -28,6 +28,7 @@ from src.render.song import (
     render_songs_by_singer,
 )
 from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
+from src.render.blind_box import render_blind_box_rank, build_blind_box_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
 from src.render.live_sessions import render_live_sessions_image
@@ -93,6 +94,7 @@ from src.db.event import (
     list_events_by_uid,
     list_recent_events_by_uid,
     list_recent_events_by_content,
+    list_heart_blind_box_events,
 )
 from src.db.fan_club import (
     latest_complete_snapshot,
@@ -154,6 +156,7 @@ fan_club_list_cmd = on_command(
     "粉丝团", aliases={"粉丝团列表"}, priority=5, block=True
 )
 concurrent_cmd = on_command("查同接", priority=5, block=True)
+blind_box_cmd = on_command("查盲盒", priority=5, block=True)
 danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
 events_cmd = on_command("查弹幕", priority=5, block=True)
 content_search_cmd = on_command(
@@ -1124,6 +1127,32 @@ async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
         MessageSegment.image(file=str(chart["path"])),
     ])
     await matcher.finish(message)
+
+
+@blind_box_cmd.handle()
+async def handle_blind_box(matcher: Matcher, event: Event, arg=CommandArg()):
+    room_id = get_query_room_id(event)
+    date_str, session_index = _parse_concurrent_args(arg.extract_plain_text())
+    try:
+        target_session, session_label, _ongoing = _resolve_live_session(
+            room_id, date_str, session_index
+        )
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+
+    start_ts = int(target_session["start_ts"])
+    end_ts = int(target_session.get("end_ts") or datetime.now().timestamp())
+    rows = list_heart_blind_box_events(room_id, start_ts, end_ts)
+    items = build_blind_box_rank_items(rows)
+    if not items:
+        await matcher.finish(f"{session_label}没有找到心动盲盒记录")
+
+    try:
+        result = await render_blind_box_rank(f"{session_label} · 心动盲盒榜", items)
+    except Exception as exc:
+        logger.error("渲染心动盲盒榜失败: %s", exc)
+        await matcher.finish("心动盲盒榜渲染失败，请稍后再试")
+    await matcher.finish(MessageSegment.image(file=str(result["image_path"])))
 
 
 @danmaku_rank_cmd.handle()
