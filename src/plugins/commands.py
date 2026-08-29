@@ -164,6 +164,7 @@ content_search_cmd = on_command(
     "有谁说过", aliases={"谁说过"}, priority=5, block=True
 )
 _CONTENT_SEARCH_REVEAL_WORD = "reveal"
+_CONTENT_SEARCH_MAX_KEYWORD_LENGTH = 50
 _CONTENT_SEARCH_HIDDEN_RANGE = (
     int(datetime(2026, 3, 18).timestamp()),
     int(datetime(2026, 3, 22).timestamp()),
@@ -1450,8 +1451,10 @@ def _parse_content_search_args(
         keyword = keyword[1:-1]
     if not keyword:
         raise ValueError("关键词不能为空")
-    if len(keyword) > 100:
-        raise ValueError("关键词不能超过100个字符")
+    if len(keyword) > _CONTENT_SEARCH_MAX_KEYWORD_LENGTH:
+        raise ValueError(
+            f"关键词不能超过{_CONTENT_SEARCH_MAX_KEYWORD_LENGTH}个字符"
+        )
 
     return keyword, date_str, limit, reveal_hidden
 
