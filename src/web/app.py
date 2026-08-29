@@ -2,6 +2,8 @@ from gevent import monkey
 monkey.patch_all()
 
 import os
+import hmac
+import secrets
 import subprocess
 from pathlib import Path
 from functools import wraps
@@ -10,7 +12,15 @@ from flask_socketio import SocketIO
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from src.common.utils import ROOT, load_env_file, init_logger
+from src.common.meme_image import resolve_meme_image_path
 from src.db.state import init_state_db, get_state, set_state
+from src.db.meme import (
+    count_pending_memes,
+    get_meme_by_id,
+    list_memes,
+    remove_meme,
+    review_meme,
+)
 from src.common.log_parser import LogStreamParser, parse_log_iterable
 
 load_env_file()
@@ -70,7 +80,79 @@ def login_page():
 @login_required
 def index():
     log_files = sorted([f.name for f in LOGS_DIR.glob("*.log") if f.is_file()])
-    return render_template('index.html', log_files=log_files)
+    return render_template(
+        'index.html',
+        log_files=log_files,
+        pending_meme_count=count_pending_memes(),
+    )
+
+
+def _get_csrf_token() -> str:
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session['csrf_token'] = token
+    return str(token)
+
+
+@app.route('/meme-review')
+@login_required
+def meme_review_page():
+    memes = list_memes()
+    return render_template(
+        'meme_review.html',
+        memes=memes,
+        csrf_token=_get_csrf_token(),
+    )
+
+
+@app.route('/meme-images/<int:record_id>')
+@login_required
+def meme_image(record_id: int):
+    record = get_meme_by_id(record_id)
+    if record is None or record["entry_type"] != "image":
+        return "图片不存在", 404
+    image_path = resolve_meme_image_path(record["content"])
+    if image_path is None:
+        return "图片文件不存在", 404
+    return send_file(image_path, mimetype="image/png", max_age=3600)
+
+
+@app.route('/api/meme-review/<int:record_id>', methods=['POST'])
+@login_required
+def api_review_meme(record_id: int):
+    expected_token = str(session.get('csrf_token') or '')
+    supplied_token = request.headers.get('X-CSRF-Token', '')
+    if not expected_token or not hmac.compare_digest(expected_token, supplied_token):
+        return jsonify({"success": False, "msg": "无效的请求令牌"}), 403
+
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action') or '')
+    if action not in {'pending', 'approved', 'rejected', 'deleted'}:
+        return jsonify({"success": False, "msg": "无效的审核操作"}), 400
+
+    changed = (
+        remove_meme(record_id)
+        if action == 'deleted'
+        else review_meme(record_id, action, reviewer='web')
+    )
+    if not changed:
+        return jsonify({"success": False, "msg": "记录不存在或状态未变化"}), 409
+
+    action_labels = {
+        'pending': '撤回待审',
+        'approved': '通过',
+        'rejected': '拒绝',
+        'deleted': '删除',
+    }
+    action_label = action_labels[action]
+    logger.info("Web 审核语录: id=%s action=%s", record_id, action)
+    return jsonify({
+        "success": True,
+        "msg": f"已{action_label}",
+        "status": action,
+        "pending_count": count_pending_memes(),
+    })
 
 @app.route('/qrcode')
 def qrcode_page():

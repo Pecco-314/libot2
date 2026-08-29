@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import time
 from functools import wraps
 
+from nonebot import get_bot
 from nonebot.adapters.onebot.v11 import (
     Bot,
     Event,
@@ -13,7 +15,6 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.matcher import Matcher
 
-from src.db.manager import ensure_initial_manager, is_manager
 from src.db.subscription import (
     get_subscription,
     get_subscription_feature,
@@ -21,9 +22,8 @@ from src.db.subscription import (
 )
 from src.spider.wrapper import get_name_by_roomid
 
-from .config import INITIAL_MANAGER_QQ
-
 DEFAULT_QUERY_ROOM_ID = 1967216004
+logger = logging.getLogger("libot.plugins.utils")
 
 
 def get_group_id(event: Event) -> int | None:
@@ -65,10 +65,6 @@ async def send_forward_message(
     )
 
 
-def parse_user_id(arg: Message) -> int | None:
-    text = arg.extract_plain_text().strip()
-    return int(text) if text.isdigit() else None
-
 def _parse_room_id(arg: Message) -> int | None:
     text = arg.extract_plain_text().strip()
     return int(text) if text.isdigit() else None
@@ -82,6 +78,36 @@ async def _format_name(room_id: int | None) -> str:
         return f"房间{room_id}"
 
     return uname if uname else f"房间{room_id}"
+
+
+async def is_group_manager(event: Event, bot: Bot | None = None) -> bool:
+    """Return whether the sender is an owner/admin of the current QQ group."""
+    group_id = get_group_id(event)
+    if group_id is None:
+        return False
+
+    try:
+        current_bot = bot or get_bot(str(event.self_id))
+        member = await current_bot.call_api(
+            "get_group_member_info",
+            group_id=group_id,
+            user_id=int(event.get_user_id()),
+            no_cache=True,
+        )
+        return member.get("role") in {"owner", "admin"}
+    except Exception as exc:
+        # GroupMessageEvent normally contains the same OneBot role. Keep commands
+        # usable during a transient API failure without falling back to local ACLs.
+        sender_role = getattr(getattr(event, "sender", None), "role", None)
+        logger.warning(
+            "查询群成员权限失败，使用事件中的身份: group_id=%s user_id=%s role=%s error=%s",
+            group_id,
+            event.get_user_id(),
+            sender_role,
+            exc,
+        )
+    return sender_role in {"owner", "admin"}
+
 
 def group_manager_required(func):
     @wraps(func)
@@ -100,14 +126,10 @@ def group_manager_required(func):
                 await matcher.finish("请在群聊中使用该命令")
                 return
 
-            if INITIAL_MANAGER_QQ is None:
-                await matcher.finish("未配置 MANAGER_QQ，无法初始化管理员")
-                return
-
-            ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
-
-            user_id = int(event.get_user_id())
-            if not is_manager(group_id, user_id):
+            bot = next((arg for arg in args if isinstance(arg, Bot)), None)
+            if bot is None:
+                bot = kwargs.get("bot")
+            if not await is_group_manager(event, bot):
                 await matcher.finish("权限不足：该命令仅管理员可用")
                 return
 
@@ -131,14 +153,12 @@ def user_cooldown(seconds: float = 180, *, manager_exempt: bool = True):
             )
 
             if isinstance(matcher, Matcher) and isinstance(event, Event):
-                user_id = int(event.get_user_id())
-                group_id = get_group_id(event)
                 is_exempt = (
                     manager_exempt
-                    and group_id is not None
-                    and is_manager(group_id, user_id)
+                    and await is_group_manager(event)
                 )
                 if not is_exempt:
+                    user_id = int(event.get_user_id())
                     now = time.monotonic()
                     previous = last_used.get(user_id)
                     if previous is not None and now - previous < seconds:

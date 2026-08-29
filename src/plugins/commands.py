@@ -44,8 +44,6 @@ from src.spider.medal_wall import MedalWallError, get_public_medal_wall
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
 from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
-from src.db.manager import ensure_initial_manager, is_manager
-from src.plugins.utils import INITIAL_MANAGER_QQ
 from src.spider.wrapper import (
     get_name_by_roomid,
     get_name_by_uid,
@@ -55,14 +53,13 @@ from src.spider.wrapper import (
     get_fan_club_num,
 )
 from src.common.utils import ROOT
-from src.db.manager import (
-    add_manager,
-    count_managers,
-    list_managers,
-    remove_manager,
-    is_manager,
-)
 from src.common.blind_box import BLIND_BOX_DATA_START
+from src.common.meme_image import (
+    MemeImageError,
+    download_meme_image,
+    extract_reply_image_url,
+    resolve_meme_image_path,
+)
 from src.db.subscription import (
     get_subscription,
     remove_subscription,
@@ -83,6 +80,15 @@ from src.db.abbreviation import (
     list_abbreviations,
     remove_abbreviation,
     remove_abbreviations,
+)
+from src.db.meme import (
+    add_meme,
+    add_meme_alias,
+    add_meme_image,
+    find_meme,
+    get_random_meme,
+    is_valid_meme_name,
+    remove_meme,
 )
 from src.db.liver import upsert_liver
 from src.db.event import (
@@ -119,11 +125,11 @@ from src.spider.nbnhhsh import (
 
 from .utils import (
     get_group_id,
-    parse_user_id,
     _parse_room_id,
     _format_name,
     get_query_room_id,
     group_manager_required,
+    is_group_manager,
     send_forward_message,
     subscription_dev_required,
 )
@@ -137,9 +143,6 @@ manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
 feature_enable_cmd = on_command("打开功能", priority=5, block=True)
 feature_disable_cmd = on_command("关闭功能", priority=5, block=True)
 feature_status_cmd = on_command("功能状态", priority=5, block=True)
-manager_list_cmd = on_command("查看管理员", aliases={"管理员列表"}, priority=5, block=True)
-manager_add_cmd = on_command("添加管理员", priority=5, block=True)
-manager_remove_cmd = on_command("删除管理员", priority=5, block=True)
 sub_show_cmd = on_command("查看订阅", priority=5, block=True)
 sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, block=True)
 sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
@@ -150,6 +153,11 @@ abbreviation_query_cmd = on_command("查缩写", priority=5, block=True)
 abbreviation_add_cmd = on_command("新增缩写", priority=5, block=True)
 abbreviation_remove_cmd = on_command("删除缩写", priority=5, block=True)
 choose_cmd = on_command("抉择", aliases={"choose"}, priority=5, block=True)
+meme_add_cmd = on_command("新增梗", aliases={"addmeme"}, priority=5, block=True)
+meme_image_add_cmd = on_command("新增图片", aliases={"addimage"}, priority=5, block=True)
+meme_alias_cmd = on_command("新增别名", aliases={"addalias"}, priority=5, block=True)
+meme_remove_cmd = on_command("删除梗", aliases={"delmeme"}, priority=5, block=True)
+meme_query_cmd = _on_command("来点", force_whitespace=False, priority=5, block=True)
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
@@ -225,6 +233,139 @@ async def handle_choose(matcher: Matcher, arg=CommandArg()):
     if len(options) < 2:
         await matcher.finish("用法：/抉择 <选项1> <选项2> [更多选项…]")
     await matcher.finish(_choose_reply(options))
+
+
+@meme_add_cmd.handle()
+async def handle_meme_add(matcher: Matcher, event: Event, arg=CommandArg()):
+    parts = arg.extract_plain_text().strip().split(maxsplit=1)
+    if len(parts) < 2:
+        await matcher.finish("用法：新增梗 <名字> <内容>")
+
+    name, content = parts
+    if not is_valid_meme_name(name):
+        await matcher.finish("名字需为1至32个不含空格的字符")
+    if len(content) > 1000:
+        await matcher.finish("内容过长，最多1000个字符")
+
+    added = await asyncio.to_thread(
+        add_meme,
+        name,
+        content,
+        int(event.get_user_id()),
+    )
+    if not added:
+        await matcher.finish("这条内容已经存在或已在审核中")
+    await matcher.finish("已提交至管理员审核")
+
+
+@meme_image_add_cmd.handle()
+async def handle_meme_image_add(matcher: Matcher, event: Event, arg=CommandArg()):
+    name = arg.extract_plain_text().strip()
+    if not is_valid_meme_name(name):
+        await matcher.finish("用法：回复一张图片后发送 新增图片 <名字>")
+
+    image_url = extract_reply_image_url(event)
+    if image_url is None:
+        await matcher.finish("请回复一张图片后再使用该命令")
+
+    try:
+        image_path = await download_meme_image(image_url)
+    except MemeImageError as exc:
+        await matcher.finish(str(exc))
+
+    added = await asyncio.to_thread(
+        add_meme_image,
+        name,
+        image_path,
+        int(event.get_user_id()),
+    )
+    if not added:
+        await matcher.finish("这张图片已经存在或已在审核中")
+    await matcher.finish("已提交至管理员审核")
+
+
+@meme_alias_cmd.handle()
+@group_manager_required
+async def handle_meme_alias(matcher: Matcher, event: Event, arg=CommandArg()):
+    names = arg.extract_plain_text().strip().split()
+    if len(names) != 2:
+        await matcher.finish("用法：新增别名 <名字1> <名字2>")
+    if not all(is_valid_meme_name(name) for name in names):
+        await matcher.finish("名字需为1至32个不含空格的字符")
+
+    result = await asyncio.to_thread(add_meme_alias, names[0], names[1])
+    if not result["changed"]:
+        await matcher.finish(f"{names[0]}和{names[1]}已经属于同一组")
+    if result["merged"]:
+        await matcher.finish(f"已合并{names[0]}和{names[1]}的内容与别名")
+    await matcher.finish(f"已将{names[0]}和{names[1]}设为同一组名字")
+
+
+@meme_query_cmd.handle()
+async def handle_meme_query(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    name = arg.extract_plain_text().strip()
+    if not name:
+        await matcher.finish("用法：来点<名字>")
+    if not is_valid_meme_name(name):
+        await matcher.finish("名字需为1至32个不含空格的字符")
+
+    record = await asyncio.to_thread(get_random_meme, name)
+    if record is None:
+        await matcher.finish(f"还没有{name}的内容")
+
+    if record.get("entry_type") == "image":
+        image_path = resolve_meme_image_path(str(record["content"]))
+        if image_path is None:
+            logger.error("梗图片文件不存在: %s", record["content"])
+            await matcher.finish("图片文件不存在，请联系管理员")
+        await matcher.finish(MessageSegment.image(file=str(image_path)))
+
+    content = str(record["content"])
+    if len(content) <= 30:
+        await matcher.finish(content)
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.text(content),
+            },
+        }
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送梗内容合并转发失败: %s", exc)
+        await matcher.finish("内容发送失败，请稍后再试")
+
+
+@meme_remove_cmd.handle()
+async def handle_meme_remove(matcher: Matcher, event: Event, arg=CommandArg()):
+    parts = arg.extract_plain_text().strip().split(maxsplit=1)
+    if len(parts) < 2:
+        await matcher.finish("用法：删除梗 <名字> <具体内容>")
+
+    name, content = parts
+    if not is_valid_meme_name(name):
+        await matcher.finish("名字需为1至32个不含空格的字符")
+
+    record = await asyncio.to_thread(find_meme, name, content)
+    if record is None:
+        await matcher.finish("没有找到这条内容，请填写完整内容")
+    if not await _check_modify_permission(record, event):
+        await matcher.finish("权限不足：仅群管理员或该内容的添加者可删除")
+
+    removed = await asyncio.to_thread(remove_meme, int(record["id"]))
+    if not removed:
+        await matcher.finish("系统错误，未能删除")
+    await matcher.finish(f"已删除一条{name}内容")
 
 
 @superchat_cmd.handle()
@@ -384,57 +525,6 @@ async def handle_feature_status(matcher: Matcher, event: Event, arg=CommandArg()
     if not feature:
         await matcher.finish("用法：/功能状态 <功能>")
     await _handle_feature_status(matcher, event, feature)
-
-
-@manager_list_cmd.handle()
-@group_manager_required
-async def handle_manager_list(matcher: Matcher, event: Event):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    managers = list_managers(group_id)
-    msg = "当前群管理员：\n" + "\n".join(str(user_id) for user_id in managers)
-    await matcher.finish(msg)
-
-
-@manager_add_cmd.handle()
-@group_manager_required
-async def handle_manager_add(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    user_id = parse_user_id(arg)
-    if user_id is None:
-        await matcher.finish("用法：/添加管理员 <QQ号>")
-
-    added = add_manager(group_id, user_id)
-    if added:
-        await matcher.finish(f"已添加群管理员：{user_id}")
-    else:
-        await matcher.finish(f"群管理员已存在：{user_id}")
-
-
-@manager_remove_cmd.handle()
-@group_manager_required
-async def handle_manager_remove(matcher: Matcher, event: Event, arg=CommandArg()):
-    group_id = get_group_id(event)
-    if group_id is None:
-        await matcher.finish("请在群聊中使用该命令")
-
-    user_id = parse_user_id(arg)
-    if user_id is None:
-        await matcher.finish("用法：/删除管理员 <QQ号>")
-
-    if is_manager(group_id, user_id) and count_managers(group_id) <= 1:
-        await matcher.finish("至少需要保留一位管理员，无法删除最后一个管理员")
-
-    removed = remove_manager(group_id, user_id)
-    if removed:
-        await matcher.finish(f"已删除群管理员：{user_id}")
-    else:
-        await matcher.finish(f"群管理员不存在：{user_id}")
 
 
 @sub_show_cmd.handle()
@@ -866,7 +956,7 @@ async def handle_abbreviation_remove(
         )
 
     record = records[0]
-    if not _check_modify_permission(record, event):
+    if not await _check_modify_permission(record, event):
         await matcher.finish("权限不足：仅群管理员或该缩写的添加者可删除")
 
     removed = await asyncio.to_thread(remove_abbreviation, int(record["id"]))
@@ -1476,13 +1566,7 @@ async def handle_content_search(
     except ValueError as exc:
         await matcher.finish(str(exc))
 
-    if INITIAL_MANAGER_QQ is not None and group_id is not None:
-        ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
-    user_id = int(event.get_user_id())
-    user_is_manager = (
-        (group_id is not None and is_manager(group_id, user_id))
-        or (INITIAL_MANAGER_QQ is not None and user_id == INITIAL_MANAGER_QQ)
-    )
+    user_is_manager = await is_group_manager(event, bot)
 
     if reveal_hidden and not user_is_manager:
         await matcher.finish("没有这样的功能")
@@ -1985,15 +2069,9 @@ async def _resolve_info_from_args(args: list[str]) -> dict | None:
     return info
 
 
-def _check_modify_permission(info: dict, event: Event) -> bool:
+async def _check_modify_permission(info: dict, event: Event) -> bool:
     user_id = int(event.get_user_id())
-    group_id = get_group_id(event)
-    is_mgr = False
-    if group_id is not None:
-        if INITIAL_MANAGER_QQ is not None:
-            ensure_initial_manager(group_id, INITIAL_MANAGER_QQ)
-        is_mgr = is_manager(group_id, user_id)
-    return is_mgr or user_id == info["adder_uid"]
+    return user_id == info["adder_uid"] or await is_group_manager(event)
 
 
 @live_list_add_tag_cmd.handle()
@@ -2006,7 +2084,7 @@ async def handle_live_list_add_tag(matcher: Matcher, event: Event, arg=CommandAr
     if not info:
         await matcher.finish("该直播间不在列表中")
         
-    if not _check_modify_permission(info, event):
+    if not await _check_modify_permission(info, event):
         await matcher.finish("权限不足：仅群管理员或该直播间的添加者可修改")
         
     new_tags = list(set(t.lower() for t in args[1:]))
@@ -2025,7 +2103,7 @@ async def handle_live_list_set_tag(matcher: Matcher, event: Event, arg=CommandAr
     if not info:
         await matcher.finish("该直播间不在列表中")
         
-    if not _check_modify_permission(info, event):
+    if not await _check_modify_permission(info, event):
         await matcher.finish("权限不足：仅群管理员或该直播间的添加者可修改")
         
     new_tags = list(set(t.lower() for t in args[1:]))
@@ -2043,7 +2121,7 @@ async def handle_live_list_remove(matcher: Matcher, event: Event, arg=CommandArg
     if not info:
         await matcher.finish("该直播间不在列表中")
         
-    if not _check_modify_permission(info, event):
+    if not await _check_modify_permission(info, event):
         await matcher.finish("权限不足：仅群管理员或该直播间的添加者可删除")
 
     removed = remove_live_list(info["room_id"])

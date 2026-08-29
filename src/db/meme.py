@@ -1,0 +1,467 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
+
+
+def _normalize_name(value: str) -> str:
+    return value.strip().casefold()
+
+
+def _clean_content(value: str) -> str:
+    return value.strip()
+
+
+def is_valid_meme_name(value: str) -> bool:
+    return re.fullmatch(r"\S{1,32}", value.strip()) is not None
+
+
+def init_meme_db(db_path: Path = DEFAULT_DB_PATH) -> None:
+    with write_transaction(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS meme_group (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS meme_alias (
+                alias_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                meme_group_id INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (meme_group_id) REFERENCES meme_group(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_meme_alias_group
+                ON meme_alias(meme_group_id);
+
+            CREATE TABLE IF NOT EXISTS meme_entry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meme_group_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                adder_uid INTEGER NOT NULL,
+                entry_type TEXT NOT NULL DEFAULT 'text'
+                    CHECK (entry_type IN ('text', 'image')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+                reviewed_at TIMESTAMP,
+                reviewed_by TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (meme_group_id) REFERENCES meme_group(id) ON DELETE CASCADE,
+                UNIQUE (meme_group_id, content)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_meme_entry_group
+                ON meme_entry(meme_group_id, id);
+            """
+        )
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(meme_entry)")
+        }
+        if "status" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE meme_entry
+                ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected'))
+                """
+            )
+        if "reviewed_at" not in columns:
+            conn.execute("ALTER TABLE meme_entry ADD COLUMN reviewed_at TIMESTAMP")
+        if "reviewed_by" not in columns:
+            conn.execute("ALTER TABLE meme_entry ADD COLUMN reviewed_by TEXT")
+        if "entry_type" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE meme_entry
+                ADD COLUMN entry_type TEXT NOT NULL DEFAULT 'text'
+                    CHECK (entry_type IN ('text', 'image'))
+                """
+            )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_meme_entry_status
+            ON meme_entry(status, created_at, id)
+            """
+        )
+
+
+def _find_group_id(conn, name: str) -> int | None:
+    row = conn.execute(
+        "SELECT meme_group_id FROM meme_alias WHERE alias_key = ?",
+        (_normalize_name(name),),
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _create_group(conn, name: str) -> int:
+    display_name = name.strip()
+    cursor = conn.execute(
+        "INSERT INTO meme_group (display_name) VALUES (?)",
+        (display_name,),
+    )
+    group_id = int(cursor.lastrowid)
+    conn.execute(
+        """
+        INSERT INTO meme_alias (alias_key, display_name, meme_group_id)
+        VALUES (?, ?, ?)
+        """,
+        (_normalize_name(display_name), display_name, group_id),
+    )
+    return group_id
+
+
+def add_meme(
+    name: str,
+    content: str,
+    adder_uid: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    if not is_valid_meme_name(name):
+        raise ValueError("meme name must contain 1-32 non-whitespace characters")
+    cleaned_content = _clean_content(content)
+    if not cleaned_content:
+        raise ValueError("meme content must not be empty")
+
+    with write_transaction(db_path) as conn:
+        group_id = _find_group_id(conn, name)
+        if group_id is None:
+            group_id = _create_group(conn, name)
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO meme_entry
+                (meme_group_id, content, adder_uid, entry_type, status)
+            VALUES (?, ?, ?, 'text', 'pending')
+            """,
+            (group_id, cleaned_content, int(adder_uid)),
+        )
+    return cursor.rowcount > 0
+
+
+def add_meme_image(
+    name: str,
+    image_path: str,
+    adder_uid: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    if not is_valid_meme_name(name):
+        raise ValueError("meme name must contain 1-32 non-whitespace characters")
+    cleaned_path = image_path.strip()
+    if not cleaned_path:
+        raise ValueError("meme image path must not be empty")
+
+    with write_transaction(db_path) as conn:
+        group_id = _find_group_id(conn, name)
+        if group_id is None:
+            group_id = _create_group(conn, name)
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO meme_entry
+                (meme_group_id, content, adder_uid, entry_type, status)
+            VALUES (?, ?, ?, 'image', 'pending')
+            """,
+            (group_id, cleaned_path, int(adder_uid)),
+        )
+    return cursor.rowcount > 0
+
+
+def add_meme_alias(
+    first_name: str,
+    second_name: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    if not is_valid_meme_name(first_name) or not is_valid_meme_name(second_name):
+        raise ValueError("meme names must contain 1-32 non-whitespace characters")
+
+    first_key = _normalize_name(first_name)
+    second_key = _normalize_name(second_name)
+    if first_key == second_key:
+        return {"changed": False, "merged": False, "display_name": first_name.strip()}
+
+    with write_transaction(db_path) as conn:
+        first_group_id = _find_group_id(conn, first_name)
+        second_group_id = _find_group_id(conn, second_name)
+
+        if first_group_id is None and second_group_id is None:
+            target_group_id = _create_group(conn, first_name)
+            conn.execute(
+                """
+                INSERT INTO meme_alias (alias_key, display_name, meme_group_id)
+                VALUES (?, ?, ?)
+                """,
+                (second_key, second_name.strip(), target_group_id),
+            )
+            merged = False
+        elif first_group_id is None:
+            target_group_id = second_group_id
+            conn.execute(
+                """
+                INSERT INTO meme_alias (alias_key, display_name, meme_group_id)
+                VALUES (?, ?, ?)
+                """,
+                (first_key, first_name.strip(), target_group_id),
+            )
+            merged = False
+        elif second_group_id is None:
+            target_group_id = first_group_id
+            conn.execute(
+                """
+                INSERT INTO meme_alias (alias_key, display_name, meme_group_id)
+                VALUES (?, ?, ?)
+                """,
+                (second_key, second_name.strip(), target_group_id),
+            )
+            merged = False
+        elif first_group_id == second_group_id:
+            target_group_id = first_group_id
+            merged = False
+            changed = False
+            row = conn.execute(
+                "SELECT display_name FROM meme_group WHERE id = ?",
+                (target_group_id,),
+            ).fetchone()
+            return {
+                "changed": changed,
+                "merged": merged,
+                "display_name": str(row[0]) if row else first_name.strip(),
+            }
+        else:
+            target_group_id = first_group_id
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO meme_entry
+                    (meme_group_id, content, adder_uid, entry_type, status,
+                     reviewed_at, reviewed_by, created_at)
+                SELECT ?, content, adder_uid, entry_type, status,
+                       reviewed_at, reviewed_by, created_at
+                FROM meme_entry
+                WHERE meme_group_id = ?
+                """,
+                (target_group_id, second_group_id),
+            )
+            conn.execute(
+                "UPDATE meme_alias SET meme_group_id = ? WHERE meme_group_id = ?",
+                (target_group_id, second_group_id),
+            )
+            conn.execute("DELETE FROM meme_group WHERE id = ?", (second_group_id,))
+            merged = True
+
+        row = conn.execute(
+            "SELECT display_name FROM meme_group WHERE id = ?",
+            (target_group_id,),
+        ).fetchone()
+        return {
+            "changed": True,
+            "merged": merged,
+            "display_name": str(row[0]) if row else first_name.strip(),
+        }
+
+
+def get_random_meme(
+    name: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    key = _normalize_name(name)
+    if not key:
+        return None
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, e.content, g.display_name, e.entry_type
+            FROM meme_alias AS a
+            JOIN meme_group AS g ON g.id = a.meme_group_id
+            JOIN meme_entry AS e ON e.meme_group_id = a.meme_group_id
+            WHERE a.alias_key = ? AND e.status = 'approved'
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (key,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "content": str(row[1]),
+        "display_name": str(row[2]),
+        "entry_type": str(row[3]),
+    }
+
+
+def list_pending_memes(
+    limit: int = 500,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 2000))
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT e.id, g.display_name, e.content, e.adder_uid,
+                   e.created_at, e.entry_type
+            FROM meme_entry AS e
+            JOIN meme_group AS g ON g.id = e.meme_group_id
+            WHERE e.status = 'pending'
+            ORDER BY e.created_at ASC, e.id ASC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "name": str(row[1]),
+            "content": str(row[2]),
+            "adder_uid": int(row[3]),
+            "created_at": str(row[4]),
+            "entry_type": str(row[5]),
+        }
+        for row in rows
+    ]
+
+
+def list_memes(
+    limit: int = 2000,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 5000))
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT e.id, g.display_name, e.content, e.adder_uid,
+                   e.status, e.created_at, e.reviewed_at, e.reviewed_by,
+                   e.entry_type
+            FROM meme_entry AS e
+            JOIN meme_group AS g ON g.id = e.meme_group_id
+            ORDER BY
+                CASE e.status
+                    WHEN 'pending' THEN 0
+                    WHEN 'approved' THEN 1
+                    ELSE 2
+                END,
+                e.created_at DESC,
+                e.id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "name": str(row[1]),
+            "content": str(row[2]),
+            "adder_uid": int(row[3]),
+            "status": str(row[4]),
+            "created_at": str(row[5]),
+            "reviewed_at": str(row[6]) if row[6] is not None else None,
+            "reviewed_by": str(row[7]) if row[7] is not None else None,
+            "entry_type": str(row[8]),
+        }
+        for row in rows
+    ]
+
+
+def count_pending_memes(db_path: Path = DEFAULT_DB_PATH) -> int:
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM meme_entry WHERE status = 'pending'"
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_meme_by_id(
+    record_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, g.display_name, e.content, e.adder_uid,
+                   e.status, e.entry_type, e.created_at
+            FROM meme_entry AS e
+            JOIN meme_group AS g ON g.id = e.meme_group_id
+            WHERE e.id = ?
+            """,
+            (int(record_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "name": str(row[1]),
+        "content": str(row[2]),
+        "adder_uid": int(row[3]),
+        "status": str(row[4]),
+        "entry_type": str(row[5]),
+        "created_at": str(row[6]),
+    }
+
+
+def review_meme(
+    record_id: int,
+    action: str,
+    reviewer: str = "web",
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    if action not in {"pending", "approved", "rejected"}:
+        raise ValueError("invalid meme review action")
+    with write_transaction(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE meme_entry
+            SET status = ?, reviewed_at = CURRENT_TIMESTAMP, reviewed_by = ?
+            WHERE id = ?
+            """,
+            (action, reviewer, int(record_id)),
+        )
+    return cursor.rowcount > 0
+
+
+def find_meme(
+    name: str,
+    content: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    key = _normalize_name(name)
+    cleaned_content = _clean_content(content)
+    if not key or not cleaned_content:
+        return None
+
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, e.content, e.adder_uid, g.display_name
+            FROM meme_alias AS a
+            JOIN meme_group AS g ON g.id = a.meme_group_id
+            JOIN meme_entry AS e ON e.meme_group_id = a.meme_group_id
+            WHERE a.alias_key = ? AND e.content = ? AND e.entry_type = 'text'
+            LIMIT 1
+            """,
+            (key, cleaned_content),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "content": str(row[1]),
+        "adder_uid": int(row[2]),
+        "display_name": str(row[3]),
+    }
+
+
+def remove_meme(
+    record_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> bool:
+    with write_transaction(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM meme_entry WHERE id = ?",
+            (int(record_id),),
+        )
+    return cursor.rowcount > 0
+
+
+init_meme_db()
