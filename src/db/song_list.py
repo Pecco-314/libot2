@@ -15,6 +15,9 @@ from src.db.sqlite import (
     connect_sqlite,
 )
 
+
+BEDTIME_SONG_START_DATE = "2026-07-07"
+
 def init_song_list_db(db_path: Path = DEFAULT_DB_PATH) -> None:
     with write_transaction(db_path) as conn:
         execute_write(
@@ -600,6 +603,57 @@ def random_song(lowest_count: int = 3) -> dict[str, Any] | None:
         "original_singer": row[3],
         "records": records_list,
         "count": row[5]
+    }
+
+
+def random_daily_last_song(
+    start_date: str = BEDTIME_SONG_START_DATE,
+    *,
+    end_date: str | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    """Randomly select one day's final recorded song from the trusted period."""
+    if end_date is None:
+        beijing_timezone = datetime.timezone(datetime.timedelta(hours=8))
+        end_date = datetime.datetime.now(beijing_timezone).date().isoformat()
+
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute(
+            """
+            WITH daily_last AS (
+                SELECT record_date, MAX(id) AS record_id
+                FROM song_record
+                WHERE record_date BETWEEN ? AND ?
+                GROUP BY record_date
+            )
+            SELECT i.id, i.title, i.title_trans, i.original_singer,
+                   (SELECT json_group_array(record_date)
+                    FROM song_record WHERE song_id = i.id) AS records,
+                   (SELECT COUNT(1)
+                    FROM song_record WHERE song_id = i.id) AS count,
+                   d.record_date
+            FROM daily_last AS d
+            JOIN song_record AS r ON r.id = d.record_id
+            JOIN song_info AS i ON i.id = r.song_id
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (start_date, end_date),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        records_list = json.loads(row[4]) if row[4] and row[4] != "[]" else []
+    except (json.JSONDecodeError, TypeError):
+        records_list = []
+    return {
+        "id": int(row[0]),
+        "title": str(row[1]),
+        "title_trans": row[2],
+        "original_singer": row[3],
+        "records": records_list,
+        "count": int(row[5]),
+        "closing_date": str(row[6]),
     }
 
 

@@ -22,6 +22,7 @@ from src.render.superchat import get_daily_superchat_images, get_user_superchat_
 from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
 from src.render.song import (
+    render_random_bedtime_song,
     render_random_song,
     render_song_list,
     render_songs_by_keyword,
@@ -86,6 +87,7 @@ from src.db.meme import (
     add_meme_alias,
     add_meme_image,
     find_meme,
+    get_daily_meme,
     get_random_meme,
     is_valid_meme_name,
     remove_meme,
@@ -158,6 +160,9 @@ meme_image_add_cmd = on_command("新增图片", aliases={"addimage"}, priority=5
 meme_alias_cmd = on_command("新增别名", aliases={"addalias"}, priority=5, block=True)
 meme_remove_cmd = on_command("删除梗", aliases={"delmeme"}, priority=5, block=True)
 meme_query_cmd = _on_command("来点", force_whitespace=False, priority=5, block=True)
+meme_wife_cmd = on_command("抽老婆", priority=5, block=True)
+meme_husband_cmd = on_command("抽老公", priority=5, block=True)
+_RANDOM_SONG_MEME_NAMES = {"歌曲", "三理歌曲", "随机歌曲"}
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
 club_trend_cmd = on_command("查粉丝团", priority=5, block=True)
@@ -301,33 +306,56 @@ async def handle_meme_alias(matcher: Matcher, event: Event, arg=CommandArg()):
     await matcher.finish(f"已将{names[0]}和{names[1]}设为同一组名字")
 
 
-@meme_query_cmd.handle()
-async def handle_meme_query(
+async def _handle_meme_query(
     matcher: Matcher,
     bot: Bot,
     event: Event,
-    arg=CommandArg(),
+    name: str,
 ):
-    name = arg.extract_plain_text().strip()
     if not name:
         await matcher.finish("用法：来点<名字>")
+    if name == "晚安曲":
+        await _handle_bedtime_song(matcher)
+        return
+    if name in _RANDOM_SONG_MEME_NAMES:
+        await _handle_random_song(matcher, "")
+        return
     if not is_valid_meme_name(name):
         await matcher.finish("名字需为1至32个不含空格的字符")
 
-    record = await asyncio.to_thread(get_random_meme, name)
+    is_daily_partner = name in {"老婆", "老公"}
+    if is_daily_partner:
+        record = await asyncio.to_thread(
+            get_daily_meme,
+            name,
+            int(event.get_user_id()),
+        )
+    else:
+        record = await asyncio.to_thread(get_random_meme, name)
     if record is None:
         await matcher.finish(f"还没有{name}的内容")
+
+    prefix = Message()
+    if is_daily_partner:
+        prefix = Message(
+            [
+                MessageSegment.at(int(event.get_user_id())),
+                MessageSegment.text(f" 你今天的{name}是：\n"),
+            ]
+        )
 
     if record.get("entry_type") == "image":
         image_path = resolve_meme_image_path(str(record["content"]))
         if image_path is None:
             logger.error("梗图片文件不存在: %s", record["content"])
             await matcher.finish("图片文件不存在，请联系管理员")
-        await matcher.finish(MessageSegment.image(file=str(image_path)))
+        await matcher.finish(
+            prefix + MessageSegment.image(file=str(image_path))
+        )
 
     content = str(record["content"])
     if len(content) <= 30:
-        await matcher.finish(content)
+        await matcher.finish(prefix + MessageSegment.text(content))
 
     nodes = [
         {
@@ -335,7 +363,7 @@ async def handle_meme_query(
             "data": {
                 "name": "Libot",
                 "uin": bot.self_id,
-                "content": MessageSegment.text(content),
+                "content": prefix + MessageSegment.text(content),
             },
         }
     ]
@@ -344,6 +372,31 @@ async def handle_meme_query(
     except Exception as exc:
         logger.error("发送梗内容合并转发失败: %s", exc)
         await matcher.finish("内容发送失败，请稍后再试")
+
+
+@meme_query_cmd.handle()
+async def handle_meme_query(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    await _handle_meme_query(
+        matcher,
+        bot,
+        event,
+        arg.extract_plain_text().strip(),
+    )
+
+
+@meme_wife_cmd.handle()
+async def handle_meme_wife(matcher: Matcher, bot: Bot, event: Event):
+    await _handle_meme_query(matcher, bot, event, "老婆")
+
+
+@meme_husband_cmd.handle()
+async def handle_meme_husband(matcher: Matcher, bot: Bot, event: Event):
+    await _handle_meme_query(matcher, bot, event, "老公")
 
 
 @meme_remove_cmd.handle()
@@ -1764,9 +1817,7 @@ async def handle_song_singer(matcher: Matcher, arg=CommandArg()):
     await matcher.finish(message)
 
 
-@random_search_cmd.handle()
-async def handle_random_song(matcher: Matcher, arg=CommandArg()):
-    count = arg.extract_plain_text().strip()
+async def _handle_random_song(matcher: Matcher, count: str):
     lowest_count = 3
     if count.isdigit():
         lowest_count = int(count)
@@ -1784,8 +1835,35 @@ async def handle_random_song(matcher: Matcher, arg=CommandArg()):
         MessageSegment.text(f"随机抽取到歌曲：{result['data']['title']}"),
         MessageSegment.image(file=str(result["image_path"])),
     ])
-    
+
     await matcher.finish(message)
+
+
+async def _handle_bedtime_song(matcher: Matcher):
+    try:
+        result = await render_random_bedtime_song()
+    except Exception as exc:
+        logger.error("渲染晚安曲卡片失败: %s", exc)
+        await matcher.finish("图片渲染失败")
+
+    if not result:
+        await matcher.finish("暂时没有可抽取的晚安曲")
+
+    closing_date = result["data"].get("closing_date")
+    message = Message(
+        [
+            MessageSegment.text(
+                f"随机抽取到晚安曲：{result['data']['title']}"
+            ),
+            MessageSegment.image(file=str(result["image_path"])),
+        ]
+    )
+    await matcher.finish(message)
+
+
+@random_search_cmd.handle()
+async def handle_random_song(matcher: Matcher, arg=CommandArg()):
+    await _handle_random_song(matcher, arg.extract_plain_text().strip())
 
 
 @now_playing_cmd.handle()

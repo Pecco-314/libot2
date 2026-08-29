@@ -12,6 +12,7 @@ from src.db.song_list import (
     list_song_catalog,
     list_recent_song_records_by_singer,
     list_songs_by_singer,
+    random_daily_last_song,
     random_song,
     search_songs_by_title,
 )
@@ -210,6 +211,16 @@ async def render_songs_by_keyword(
 
 async def render_random_song(limit: int = 3) -> dict[str, Any] | None:
     song = random_song(limit)
+    if song is None:
+        return None
+    await prefetch_emoji_assets(
+        [str(song.get("title") or ""), str(song.get("original_singer") or "")]
+    )
+    return save_song_card(song)
+
+
+async def render_random_bedtime_song() -> dict[str, Any] | None:
+    song = random_daily_last_song()
     if song is None:
         return None
     await prefetch_emoji_assets(

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
+
+
+BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _normalize_name(value: str) -> str:
@@ -58,6 +63,23 @@ def init_meme_db(db_path: Path = DEFAULT_DB_PATH) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_meme_entry_group
                 ON meme_entry(meme_group_id, id);
+
+            CREATE TABLE IF NOT EXISTS meme_daily_draw (
+                user_uid INTEGER NOT NULL,
+                draw_date TEXT NOT NULL,
+                draw_key TEXT NOT NULL,
+                meme_entry_id INTEGER,
+                content TEXT NOT NULL,
+                entry_type TEXT NOT NULL
+                    CHECK (entry_type IN ('text', 'image')),
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_uid, draw_date, draw_key),
+                FOREIGN KEY (meme_entry_id) REFERENCES meme_entry(id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_meme_daily_draw_date
+                ON meme_daily_draw(draw_date, draw_key);
             """
         )
         columns = {
@@ -290,6 +312,87 @@ def get_random_meme(
         "display_name": str(row[2]),
         "entry_type": str(row[3]),
     }
+
+
+def get_daily_meme(
+    name: str,
+    user_uid: int,
+    *,
+    now: datetime | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    """Draw once per Beijing calendar day and return the same approved entry."""
+    draw_key = _normalize_name(name)
+    if not draw_key:
+        return None
+    current = now or datetime.now(BEIJING_TIMEZONE)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=BEIJING_TIMEZONE)
+    draw_date = current.astimezone(BEIJING_TIMEZONE).date().isoformat()
+
+    with write_transaction(db_path) as conn:
+        existing = conn.execute(
+            """
+            SELECT d.meme_entry_id, d.content, d.entry_type, g.display_name
+            FROM meme_daily_draw AS d
+            LEFT JOIN meme_entry AS e ON e.id = d.meme_entry_id
+            LEFT JOIN meme_group AS g ON g.id = e.meme_group_id
+            WHERE d.user_uid = ? AND d.draw_date = ? AND d.draw_key = ?
+              AND e.status = 'approved'
+            """,
+            (int(user_uid), draw_date, draw_key),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "id": int(existing[0]),
+                "content": str(existing[1]),
+                "entry_type": str(existing[2]),
+                "display_name": str(existing[3] or name),
+                "draw_date": draw_date,
+            }
+
+        row = conn.execute(
+            """
+            SELECT e.id, e.content, e.entry_type, g.display_name
+            FROM meme_alias AS a
+            JOIN meme_group AS g ON g.id = a.meme_group_id
+            JOIN meme_entry AS e ON e.meme_group_id = a.meme_group_id
+            WHERE a.alias_key = ? AND e.status = 'approved'
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (draw_key,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        conn.execute(
+            """
+            INSERT INTO meme_daily_draw
+                (user_uid, draw_date, draw_key, meme_entry_id, content, entry_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_uid, draw_date, draw_key) DO UPDATE SET
+                meme_entry_id = excluded.meme_entry_id,
+                content = excluded.content,
+                entry_type = excluded.entry_type,
+                created_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(user_uid),
+                draw_date,
+                draw_key,
+                int(row[0]),
+                str(row[1]),
+                str(row[2]),
+            ),
+        )
+        return {
+            "id": int(row[0]),
+            "content": str(row[1]),
+            "entry_type": str(row[2]),
+            "display_name": str(row[3]),
+            "draw_date": draw_date,
+        }
 
 
 def list_pending_memes(
