@@ -4,6 +4,9 @@ from src.db.sqlite import connect_sqlite
 from datetime import datetime
 from typing import Any
 
+from src.common.blind_box import BLIND_BOX_COST_COIN, BLIND_BOX_RESULT_ORDER
+
+
 def _table_exists(conn, table_name: str) -> bool:
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
@@ -295,7 +298,7 @@ def list_heart_blind_box_events(
     end_ts: int,
 ) -> list[dict[str, Any]]:
     """List 心动盲盒 results, excluding directly sent gifts with the same names."""
-    result_names = ("电影票", "棉花糖", "爱心抱枕", "浪漫城堡")
+    result_names = BLIND_BOX_RESULT_ORDER
     placeholders = ",".join("?" for _ in result_names)
     with connect_sqlite() as conn:
         rows = conn.execute(
@@ -307,10 +310,10 @@ def list_heart_blind_box_events(
               AND cmd = 'SEND_GIFT'
               AND gift_name IN ({placeholders})
               AND gift_num > 0
-              AND total_coin = 15000 * gift_num
+              AND total_coin = ? * gift_num
             ORDER BY timestamp, id
             """,
-            (room_id, start_ts, end_ts, *result_names),
+            (room_id, start_ts, end_ts, *result_names, BLIND_BOX_COST_COIN),
         ).fetchall()
     return [
         {

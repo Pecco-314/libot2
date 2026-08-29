@@ -62,6 +62,7 @@ from src.db.manager import (
     remove_manager,
     is_manager,
 )
+from src.common.blind_box import BLIND_BOX_DATA_START
 from src.db.subscription import (
     get_subscription,
     remove_subscription,
@@ -1129,30 +1130,113 @@ async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
     await matcher.finish(message)
 
 
+def _resolve_blind_box_range(
+    room_id: int,
+    raw_arg: str,
+) -> tuple[int, int, str]:
+    raw_arg = raw_arg.strip()
+    now = datetime.now()
+    data_start = datetime.strptime(BLIND_BOX_DATA_START, "%Y-%m-%d")
+
+    if re.fullmatch(r"\d{4}", raw_arg):
+        year = int(raw_arg)
+        period_start = datetime(year, 1, 1)
+        period_end = datetime(year + 1, 1, 1)
+        query_start = max(period_start, data_start)
+        query_end = min(period_end, now)
+        if query_start >= query_end:
+            raise ValueError(f"没有可查询的数据，心动盲盒数据始于 {BLIND_BOX_DATA_START}")
+        label = f"{year}年"
+        if query_start > period_start:
+            label += f"（统计始于{query_start:%m-%d}）"
+        end_ts = int(query_end.timestamp())
+        if query_end == period_end:
+            end_ts -= 1
+        return int(query_start.timestamp()), end_ts, label
+
+    month_match = re.fullmatch(r"(\d{4})-?(\d{2})", raw_arg)
+    if month_match:
+        year, month = map(int, month_match.groups())
+        if not 1 <= month <= 12:
+            raise ValueError("月份格式错误，正确格式：YYYY-MM")
+        period_start = datetime(year, month, 1)
+        period_end = (
+            datetime(year + 1, 1, 1)
+            if month == 12
+            else datetime(year, month + 1, 1)
+        )
+        query_start = max(period_start, data_start)
+        query_end = min(period_end, now)
+        if query_start >= query_end:
+            raise ValueError(f"没有可查询的数据，心动盲盒数据始于 {BLIND_BOX_DATA_START}")
+        label = f"{year}年{month:02d}月"
+        if query_start > period_start:
+            label += f"（统计始于{query_start:%m-%d}）"
+        end_ts = int(query_end.timestamp())
+        if query_end == period_end:
+            end_ts -= 1
+        return int(query_start.timestamp()), end_ts, label
+
+    date_str, session_index = _parse_concurrent_args(raw_arg)
+    target_session, session_label, _ongoing = _resolve_live_session(
+        room_id, date_str, session_index
+    )
+    return (
+        int(target_session["start_ts"]),
+        int(target_session.get("end_ts") or now.timestamp()),
+        session_label,
+    )
+
+
 @blind_box_cmd.handle()
-async def handle_blind_box(matcher: Matcher, event: Event, arg=CommandArg()):
+async def handle_blind_box(
+    bot: Bot,
+    matcher: Matcher,
+    event: Event,
+    arg=CommandArg(),
+):
     room_id = get_query_room_id(event)
-    date_str, session_index = _parse_concurrent_args(arg.extract_plain_text())
     try:
-        target_session, session_label, _ongoing = _resolve_live_session(
-            room_id, date_str, session_index
+        start_ts, end_ts, session_label = _resolve_blind_box_range(
+            room_id, arg.extract_plain_text()
         )
     except ValueError as exc:
         await matcher.finish(str(exc))
 
-    start_ts = int(target_session["start_ts"])
-    end_ts = int(target_session.get("end_ts") or datetime.now().timestamp())
     rows = list_heart_blind_box_events(room_id, start_ts, end_ts)
     items = build_blind_box_rank_items(rows)
     if not items:
         await matcher.finish(f"{session_label}没有找到心动盲盒记录")
 
     try:
-        result = await render_blind_box_rank(f"{session_label} · 心动盲盒榜", items)
+        results = await render_blind_box_rank(
+            f"{session_label} · 心动盲盒榜",
+            items,
+            page_size=15,
+        )
     except Exception as exc:
         logger.error("渲染心动盲盒榜失败: %s", exc)
         await matcher.finish("心动盲盒榜渲染失败，请稍后再试")
-    await matcher.finish(MessageSegment.image(file=str(result["image_path"])))
+
+    if len(results) == 1:
+        await matcher.finish(MessageSegment.image(file=str(results[0]["image_path"])))
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.image(file=str(result["image_path"])),
+            },
+        }
+        for result in results
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送心动盲盒榜合并转发失败: %s", exc)
+        await matcher.finish("心动盲盒榜发送失败，请稍后再试")
 
 
 @danmaku_rank_cmd.handle()
