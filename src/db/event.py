@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from src.db.sqlite import connect_sqlite
+import logging
 from datetime import datetime
 from typing import Any
 
 from src.common.blind_box import BLIND_BOX_COST_COIN, BLIND_BOX_RESULT_ORDER
+from src.db.event_search import (
+    EventSearchUnavailable,
+    list_recent_events_by_content_indexed,
+)
+from src.db.sqlite import connect_sqlite
+
+
+logger = logging.getLogger("libot.db.event")
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -607,7 +615,7 @@ def list_recent_events_by_uid(
     ]
 
 
-def list_recent_events_by_content(
+def _list_recent_events_by_content_legacy(
     room_id: int,
     keyword: str,
     limit: int = 100,
@@ -659,3 +667,29 @@ def list_recent_events_by_content(
         }
         for row in reversed(rows)
     ]
+
+
+def list_recent_events_by_content(
+    room_id: int,
+    keyword: str,
+    limit: int = 100,
+    excluded_range: tuple[int, int] | None = None,
+    end_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        return list_recent_events_by_content_indexed(
+            room_id,
+            keyword,
+            limit,
+            excluded_range,
+            end_ts,
+        )
+    except EventSearchUnavailable as exc:
+        logger.warning("event FTS unavailable, using legacy scan: %s", exc)
+        return _list_recent_events_by_content_legacy(
+            room_id,
+            keyword,
+            limit,
+            excluded_range,
+            end_ts,
+        )
