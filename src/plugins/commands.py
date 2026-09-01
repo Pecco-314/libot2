@@ -83,6 +83,7 @@ from src.db.abbreviation import (
     remove_abbreviations,
 )
 from src.db.meme import (
+    MemePoolExhausted,
     add_meme,
     add_meme_alias,
     add_meme_image,
@@ -90,6 +91,7 @@ from src.db.meme import (
     get_daily_meme,
     get_random_meme,
     is_valid_meme_name,
+    resolve_daily_meme_name,
     remove_meme,
 )
 from src.db.liver import upsert_liver
@@ -159,9 +161,7 @@ meme_add_cmd = on_command("新增梗", aliases={"addmeme"}, priority=5, block=Tr
 meme_image_add_cmd = on_command("新增图片", aliases={"addimage"}, priority=5, block=True)
 meme_alias_cmd = on_command("新增别名", aliases={"addalias"}, priority=5, block=True)
 meme_remove_cmd = on_command("删除梗", aliases={"delmeme"}, priority=5, block=True)
-meme_query_cmd = _on_command("来点", force_whitespace=False, priority=5, block=True)
-meme_wife_cmd = on_command("抽老婆", priority=5, block=True)
-meme_husband_cmd = on_command("抽老公", priority=5, block=True)
+meme_query_cmd = on_command("来点", priority=5, block=True)
 _RANDOM_SONG_MEME_NAMES = {"歌曲", "三理歌曲", "随机歌曲"}
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
@@ -313,7 +313,7 @@ async def _handle_meme_query(
     name: str,
 ):
     if not name:
-        await matcher.finish("用法：来点<名字>")
+        await matcher.finish("用法：来点 <名字>")
     if name == "晚安曲":
         await _handle_bedtime_song(matcher)
         return
@@ -323,24 +323,29 @@ async def _handle_meme_query(
     if not is_valid_meme_name(name):
         await matcher.finish("名字需为1至32个不含空格的字符")
 
-    is_daily_partner = name in {"老婆", "老公"}
-    if is_daily_partner:
-        record = await asyncio.to_thread(
-            get_daily_meme,
-            name,
-            int(event.get_user_id()),
-        )
+    daily_partner_name = await asyncio.to_thread(resolve_daily_meme_name, name)
+    if daily_partner_name is not None:
+        try:
+            record = await asyncio.to_thread(
+                get_daily_meme,
+                daily_partner_name,
+                int(event.get_user_id()),
+            )
+        except MemePoolExhausted:
+            await matcher.finish("抽完了")
     else:
         record = await asyncio.to_thread(get_random_meme, name)
     if record is None:
         await matcher.finish(f"还没有{name}的内容")
 
     prefix = Message()
-    if is_daily_partner:
+    if daily_partner_name is not None:
         prefix = Message(
             [
                 MessageSegment.at(int(event.get_user_id())),
-                MessageSegment.text(f" 你今天的{name}是：\n"),
+                MessageSegment.text(
+                    f" 你今天的{daily_partner_name}是：\n"
+                ),
             ]
         )
 
@@ -387,17 +392,6 @@ async def handle_meme_query(
         event,
         arg.extract_plain_text().strip(),
     )
-
-
-@meme_wife_cmd.handle()
-async def handle_meme_wife(matcher: Matcher, bot: Bot, event: Event):
-    await _handle_meme_query(matcher, bot, event, "老婆")
-
-
-@meme_husband_cmd.handle()
-async def handle_meme_husband(matcher: Matcher, bot: Bot, event: Event):
-    await _handle_meme_query(matcher, bot, event, "老公")
-
 
 @meme_remove_cmd.handle()
 async def handle_meme_remove(matcher: Matcher, event: Event, arg=CommandArg()):

@@ -10,6 +10,11 @@ from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
 
 
 BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+DAILY_MEME_NAMES = ("老婆", "老公")
+
+
+class MemePoolExhausted(LookupError):
+    """Raised when every approved item has been assigned for the date."""
 
 
 def _normalize_name(value: str) -> str:
@@ -80,6 +85,7 @@ def init_meme_db(db_path: Path = DEFAULT_DB_PATH) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_meme_daily_draw_date
                 ON meme_daily_draw(draw_date, draw_key);
+
             """
         )
         columns = {
@@ -314,6 +320,37 @@ def get_random_meme(
     }
 
 
+def resolve_daily_meme_name(
+    name: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> str | None:
+    """Resolve any alias in a daily-draw group to its canonical draw name."""
+    key = _normalize_name(name)
+    if not key:
+        return None
+    candidate_by_key = {
+        _normalize_name(candidate): candidate for candidate in DAILY_MEME_NAMES
+    }
+    placeholders = ",".join("?" for _ in candidate_by_key)
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT canonical.alias_key
+            FROM meme_alias AS requested
+            JOIN meme_alias AS canonical
+              ON canonical.meme_group_id = requested.meme_group_id
+            WHERE requested.alias_key = ?
+              AND canonical.alias_key IN ({placeholders})
+            """,
+            (key, *candidate_by_key),
+        ).fetchall()
+    matched_keys = {str(row[0]) for row in rows}
+    for candidate_key, candidate_name in candidate_by_key.items():
+        if candidate_key in matched_keys:
+            return candidate_name
+    return None
+
+
 def get_daily_meme(
     name: str,
     user_uid: int,
@@ -358,13 +395,23 @@ def get_daily_meme(
             JOIN meme_group AS g ON g.id = a.meme_group_id
             JOIN meme_entry AS e ON e.meme_group_id = a.meme_group_id
             WHERE a.alias_key = ? AND e.status = 'approved'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM meme_daily_draw AS previous
+                  WHERE previous.draw_date = ?
+                    AND previous.draw_key = ?
+                    AND (
+                        previous.meme_entry_id = e.id
+                        OR previous.content = e.content
+                    )
+              )
             ORDER BY RANDOM()
             LIMIT 1
             """,
-            (draw_key,),
+            (draw_key, draw_date, draw_key),
         ).fetchone()
         if row is None:
-            return None
+            raise MemePoolExhausted(draw_key)
 
         conn.execute(
             """
