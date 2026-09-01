@@ -232,13 +232,12 @@ async def handle_help(matcher: Matcher):
     await matcher.finish(MessageSegment.image(file=str(result["image_path"])))
 
 
-# 暂时关闭
-# @choose_cmd.handle()
-# async def handle_choose(matcher: Matcher, arg=CommandArg()):
-#     options = arg.extract_plain_text().split()
-#     if len(options) < 2:
-#         await matcher.finish("用法：/抉择 <选项1> <选项2> [更多选项…]")
-#     await matcher.finish(_choose_reply(options))
+@choose_cmd.handle()
+async def handle_choose(matcher: Matcher, arg=CommandArg()):
+    options = arg.extract_plain_text().split()
+    if len(options) < 2:
+        await matcher.finish("用法：/抉择 <选项1> <选项2> [更多选项…]")
+    await matcher.finish(_choose_reply(options))
 
 
 @meme_add_cmd.handle()
