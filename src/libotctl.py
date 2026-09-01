@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Sequence
 from src.common.utils import load_env_file
@@ -38,6 +39,7 @@ class ModuleSpec:
     log_file: Path
     pid_file: Path
     command: Sequence[str]
+    identity_markers: Sequence[str]
     redirect_output: bool
     cwd: Path | None = None
 
@@ -48,6 +50,7 @@ MODULES = {
         log_file=LOG_DIR / "libot.log",
         pid_file=PID_DIR / "libot.pid",
         command=("nb", "run"),
+        identity_markers=("/libot2/.venv/bin/nb", "run"),
         redirect_output=True,
     ),
     "spider": ModuleSpec(
@@ -55,6 +58,7 @@ MODULES = {
         log_file=LOG_DIR / "spider.log",
         pid_file=PID_DIR / "spider.pid",
         command=("python", "-m", "src.spider.cron"),
+        identity_markers=("-m", "src.spider.cron"),
         redirect_output=False,
     ),
     "monitor": ModuleSpec(
@@ -62,6 +66,7 @@ MODULES = {
         log_file=LOG_DIR / "monitor.log",
         pid_file=PID_DIR / "monitor.pid",
         command=("python", "-m", "src.monitor.monitor"),
+        identity_markers=("-m", "src.monitor.monitor"),
         redirect_output=True,
     ),
     "web": ModuleSpec(
@@ -69,6 +74,7 @@ MODULES = {
         log_file=LOG_DIR / "web.log",
         pid_file=PID_DIR / "web.pid",
         command=("python", "-m", "src.web.app"),
+        identity_markers=("-m", "src.web.app"),
         redirect_output=True,
     ),
     "napcat": ModuleSpec(
@@ -76,6 +82,7 @@ MODULES = {
         log_file=LOG_DIR / "napcat.log",
         pid_file=PID_DIR / "napcat.pid",
         command=("bash", "-c", NAPCAT_CMD),
+        identity_markers=("xvfb-run", "opt/QQ/qq", str(BOT_QQ)),
         redirect_output=True,
         cwd=NAPCAT_PATH,
     ),
@@ -84,6 +91,7 @@ MODULES = {
         log_file=LOG_DIR / "lyrics.log",
         pid_file=PID_DIR / "lyrics.pid",
         command=("python", "app.py"),
+        identity_markers=("python", "app.py"),
         redirect_output=True,
         cwd=ROOT / "third_party" / "LrcApi",
     ),
@@ -92,9 +100,16 @@ MODULES = {
         log_file=LOG_DIR / "capture.log",
         pid_file=PID_DIR / "capture.pid",
         command=("python", "-m", "src.capture.capture"),
+        identity_markers=("-m", "src.capture.capture"),
         redirect_output=False,
     ),
 }
+
+
+class ProcessState(Enum):
+    ALIVE = "alive"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
 
 
 def _ensure_parent(path: Path) -> None:
@@ -166,36 +181,120 @@ def _read_pid(pid_file: Path) -> int | None:
     return int(pid_text)
 
 
-def _process_alive(pid: int) -> bool:
+def _pid_visibility_limited() -> bool:
+    try:
+        init_name = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return init_name in {"bwrap", "unshare"}
+
+
+def _process_state(pid: int) -> ProcessState:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        if _pid_visibility_limited():
+            return ProcessState.UNKNOWN
+        return ProcessState.DEAD
     except PermissionError:
-        return True
-    return True
+        return ProcessState.ALIVE
+    return ProcessState.ALIVE
 
 
-def _cleanup_stale_pidfile(spec: ModuleSpec) -> None:
+def _read_process_cmdline(pid: int) -> tuple[str, ...] | None:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError:
+        return ()
+    return tuple(
+        part.decode("utf-8", errors="replace")
+        for part in raw.split(b"\0")
+        if part
+    )
+
+
+def _read_process_cwd(pid: int) -> Path | None:
+    try:
+        return Path(os.readlink(f"/proc/{pid}/cwd")).resolve()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except OSError:
+        return Path()
+
+
+def _managed_process_problem(spec: ModuleSpec, pid: int) -> str | None:
+    cmdline = _read_process_cmdline(pid)
+    if cmdline is None:
+        return "process disappeared"
+    if not cmdline:
+        return "cannot read process command line"
+    command_text = "\0".join(cmdline)
+    missing_markers = [
+        marker for marker in spec.identity_markers if marker not in command_text
+    ]
+    if missing_markers:
+        return f"command line does not match ({', '.join(missing_markers)})"
+
+    expected_cwd = (spec.cwd or ROOT).resolve()
+    actual_cwd = _read_process_cwd(pid)
+    if actual_cwd is None:
+        return "process disappeared"
+    if actual_cwd == Path():
+        return "cannot read process working directory"
+    if actual_cwd != expected_cwd:
+        return f"working directory is {actual_cwd}, expected {expected_cwd}"
+
+    try:
+        process_group = os.getpgid(pid)
+    except ProcessLookupError:
+        return "process disappeared"
+    except PermissionError:
+        return "cannot read process group"
+    if process_group != pid:
+        return f"process group {process_group} is not led by pid {pid}"
+    return None
+
+
+def _cleanup_stale_pidfile(spec: ModuleSpec) -> ProcessState:
     pid = _read_pid(spec.pid_file)
-    if pid is not None and not _process_alive(pid):
+    if pid is None:
+        return ProcessState.DEAD
+    state = _process_state(pid)
+    if state is ProcessState.DEAD:
         try:
             spec.pid_file.unlink()
         except FileNotFoundError:
             pass
+    return state
 
 
-def _status(spec: ModuleSpec) -> tuple[bool, int | None]:
-    _cleanup_stale_pidfile(spec)
+def _status(spec: ModuleSpec) -> tuple[ProcessState, int | None]:
+    state = _cleanup_stale_pidfile(spec)
     pid = _read_pid(spec.pid_file)
     if pid is None:
-        return False, None
-    return _process_alive(pid), pid
+        return ProcessState.DEAD, None
+    return state, pid
 
 
 def _start(spec: ModuleSpec) -> int:
-    running, pid = _status(spec)
-    if running and pid is not None:
+    state, pid = _status(spec)
+    if state is ProcessState.UNKNOWN and pid is not None:
+        print(
+            f"refusing to start {spec.name}: pid={pid} is outside the visible "
+            "PID namespace; run libotctl on the host",
+            file=sys.stderr,
+        )
+        return 1
+    if state is ProcessState.ALIVE and pid is not None:
+        problem = _managed_process_problem(spec, pid)
+        if problem is not None:
+            print(
+                f"refusing to start {spec.name}: pid file is unsafe: {problem}",
+                file=sys.stderr,
+            )
+            return 1
         print(f"{spec.name} is already running (pid={pid})")
         return 1
 
@@ -244,32 +343,59 @@ def _stop(spec: ModuleSpec) -> int:
         print(f"{spec.name} is not running")
         return 0
 
-    if not _process_alive(pid):
+    state = _process_state(pid)
+    if state is ProcessState.UNKNOWN:
+        print(
+            f"refusing to stop {spec.name}: pid={pid} is outside the visible "
+            "PID namespace; PID file preserved",
+            file=sys.stderr,
+        )
+        return 1
+    if state is ProcessState.DEAD:
         _cleanup_stale_pidfile(spec)
         print(f"{spec.name} is not running")
         return 0
 
+    problem = _managed_process_problem(spec, pid)
+    if problem is not None:
+        print(
+            f"refusing to stop {spec.name}: pid file is unsafe: {problem}; "
+            "PID file preserved",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         _cleanup_stale_pidfile(spec)
         print(f"{spec.name} is not running")
         return 0
 
     for _ in range(30):
-        if not _process_alive(pid):
-            break
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except ProcessLookupError:
+        state = _process_state(pid)
+        if state is not ProcessState.ALIVE:
             break
         time.sleep(1)
 
-    if _process_alive(pid):
+    if state is ProcessState.ALIVE:
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        for _ in range(5):
+            state = _process_state(pid)
+            if state is not ProcessState.ALIVE:
+                break
+            time.sleep(0.2)
+
+    if state is not ProcessState.DEAD:
+        print(
+            f"failed to confirm that {spec.name} pid={pid} stopped; "
+            "PID file preserved",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         spec.pid_file.unlink()
@@ -282,15 +408,22 @@ def _stop(spec: ModuleSpec) -> int:
 
 def _restart(spec: ModuleSpec) -> int:
     stop_code = _stop(spec)
-    start_code = _start(spec)
-    return stop_code or start_code
+    if stop_code != 0:
+        return stop_code
+    return _start(spec)
 
 
 def _print_status(spec: ModuleSpec) -> int:
-    running, pid = _status(spec)
-    if running and pid is not None:
+    state, pid = _status(spec)
+    if state is ProcessState.ALIVE and pid is not None:
         print(f"{_ok('🟢')} {spec.name}: running (pid={pid})")
         return 0
+    if state is ProcessState.UNKNOWN and pid is not None:
+        print(
+            f"{_warn('🟡')} {spec.name}: unknown "
+            f"(pid={pid} is outside the visible PID namespace)"
+        )
+        return 4
     print(f"{_bad('🔴')} {spec.name}: stopped")
     return 3
 
@@ -299,12 +432,16 @@ def _print_overview() -> int:
     print(_banner("📋 libotctl status overview"))
     exit_code = 0
     for spec in MODULES.values():
-        running, pid = _status(spec)
-        if running and pid is not None:
+        state, pid = _status(spec)
+        if state is ProcessState.ALIVE and pid is not None:
             print(f"{_ok('🟢')} {spec.name:<6} pid={pid}")
             continue
+        if state is ProcessState.UNKNOWN and pid is not None:
+            print(f"{_warn('🟡')} {spec.name:<6} pid={pid} visibility unknown")
+            exit_code = max(exit_code, 4)
+            continue
         print(f"{_bad('🔴')} {spec.name:<6} stopped")
-        exit_code = 3
+        exit_code = max(exit_code, 3)
     return exit_code
 
 
