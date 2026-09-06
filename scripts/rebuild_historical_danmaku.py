@@ -440,6 +440,68 @@ def _decode_danmakus_legacy_page(
     }
 
 
+def _legacy_emoji_names(
+    payload: Any,
+    resources: set[str],
+) -> dict[str, str]:
+    """Read the URL-to-name dictionary retained by the legacy JSON header."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    frame = data.get("frame") if isinstance(data, dict) else None
+    room_emojis = frame.get("roomEmojis") if isinstance(frame, dict) else None
+    if not isinstance(room_emojis, list):
+        return {}
+
+    result: dict[str, str] = {}
+    for emoji in room_emojis:
+        if not isinstance(emoji, dict):
+            continue
+        resource = _clean_text(emoji.get("resource"))
+        name = _clean_text(emoji.get("name"))
+        if resource in resources and name:
+            result[resource] = f"[{name}]"
+    return result
+
+
+def _fetch_danmakus_emoji_names(
+    client: RateLimitedClient,
+    *,
+    live_id: str,
+    resources: Iterable[str],
+) -> tuple[dict[str, str], int]:
+    """Resolve compact MsgPack emoji URLs from legacy JSON page headers."""
+    unresolved = {
+        cleaned
+        for resource in resources
+        if (cleaned := _clean_text(resource))
+    }
+    resolved: dict[str, str] = {}
+    offset = 0
+    pages = 0
+    while unresolved:
+        payload = client.get(
+            DANMAKUS_PAGED_URL.format(live_id=live_id),
+            params={"offset": offset, "limit": DANMAKUS_PAGE_LIMIT},
+            headers={
+                "Accept": "application/json",
+                "Origin": "https://danmakus.com",
+                "Referer": "https://danmakus.com/",
+            },
+        ).json()
+        pages += 1
+        learned = _legacy_emoji_names(payload, unresolved)
+        resolved.update(learned)
+        unresolved.difference_update(learned)
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        frame = data.get("frame") if isinstance(data, dict) else None
+        records = frame.get("records") if isinstance(frame, dict) else None
+        has_more = bool(data.get("hasMore")) if isinstance(data, dict) else False
+        if not isinstance(records, list) or not records or not has_more:
+            break
+        offset += DANMAKUS_PAGE_LIMIT
+    return resolved, pages
+
+
 def _fetch_danmakus_legacy(
     client: RateLimitedClient,
     *,
@@ -510,6 +572,8 @@ def _fetch_danmakus_live(
     catalog_danmakus = _safe_int(live.get("danmakusCount")) or 0
     rows: list[dict[str, Any]] = []
     details: dict[str, Any] = {}
+    resolved_emojis: dict[str, str] = {}
+    emoji_metadata_pages = 0
     for semantic_attempt in range(1, 4):
         response = client.get(
             DANMAKUS_FULL_URL.format(live_id=live_id),
@@ -526,6 +590,23 @@ def _fetch_danmakus_live(
             cutoff_ms=cutoff_ms,
             emoji_map=emoji_map,
         )
+        unknown_emojis = set(details.get("unknown_emojis") or [])
+        if details["raw_records"] and unknown_emojis:
+            learned, pages = _fetch_danmakus_emoji_names(
+                client,
+                live_id=live_id,
+                resources=unknown_emojis,
+            )
+            emoji_metadata_pages += pages
+            if learned:
+                emoji_map.update(learned)
+                resolved_emojis.update(learned)
+                rows, details = _decode_danmakus_rows(
+                    response.content,
+                    live_id=live_id,
+                    cutoff_ms=cutoff_ms,
+                    emoji_map=emoji_map,
+                )
         if details["raw_records"] or not catalog_danmakus:
             break
         _log(f"  {live_id} 新版 full 为空，回退旧 JSON 分页接口")
@@ -545,6 +626,8 @@ def _fetch_danmakus_live(
             f"Danmakus {live_id} 目录声称有 {catalog_danmakus} 条，"
             "但新旧接口都返回空数据"
         )
+    details["resolved_emojis"] = len(resolved_emojis)
+    details["emoji_metadata_pages"] = emoji_metadata_pages
     count, sha256 = _write_rows_atomic(output_path, rows)
     result = {
         "live_id": live_id,
