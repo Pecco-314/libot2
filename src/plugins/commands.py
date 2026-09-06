@@ -5,13 +5,14 @@ import random
 import re
 import asyncio
 import shlex
+import time
 from datetime import datetime, timedelta
-from functools import partial
 
 from nonebot import on_command as _on_command
+from nonebot.message import run_preprocessor
 from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment, Message
 from nonebot.matcher import Matcher
-from nonebot.params import CommandArg
+from nonebot.params import Command, CommandArg
 from datetime import datetime
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
@@ -70,6 +71,12 @@ from src.db.subscription import (
 )
 from src.db.stats import get_stat_start_date
 from src.db.state import get_state, set_state
+from src.db.command_config import (
+    CommandConfig,
+    get_command_config,
+    set_command_cooldown,
+    set_command_enabled,
+)
 from src.db.activity import (
     get_activity_by_date_index,
     list_activities_by_date,
@@ -139,7 +146,22 @@ from .utils import (
 )
 
 logger = logging.getLogger("libot.commands")
-on_command = partial(_on_command, force_whitespace=True)
+
+_COMMAND_CANONICAL_NAMES: dict[str, str] = {}
+
+
+def on_command(command: str, *args, aliases=None, **kwargs):
+    alias_set = set(aliases or ())
+    canonical_name = command.strip()
+    for name in {canonical_name, *alias_set}:
+        _COMMAND_CANONICAL_NAMES[name.casefold()] = canonical_name
+    return _on_command(
+        command,
+        *args,
+        aliases=alias_set,
+        force_whitespace=True,
+        **kwargs,
+    )
 
 help_cmd = on_command("帮助", priority=5)
 superchat_cmd = on_command("查SC", aliases={"查sc", "查Sc"}, priority=5, block=True)
@@ -147,6 +169,7 @@ manager_help_cmd = on_command("管理员帮助", priority=5, block=True)
 feature_enable_cmd = on_command("打开功能", priority=5, block=True)
 feature_disable_cmd = on_command("关闭功能", priority=5, block=True)
 feature_status_cmd = on_command("功能状态", priority=5, block=True)
+cooldown_set_cmd = on_command("设置CD", aliases={"设置cd"}, priority=5, block=True)
 sub_show_cmd = on_command("查看订阅", priority=5, block=True)
 sub_set_cmd = on_command("设置订阅", aliases={"订阅直播"}, priority=5, block=True)
 sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5, block=True)
@@ -200,6 +223,101 @@ activity_generate_cmd = on_command("生成动态", priority=5, block=True)
 cmd_add_song = on_command("新增歌曲", priority=5, block=True)
 cmd_generate_list = on_command("生成歌单", priority=5, block=True)
 cmd_update_list = on_command("提交歌单", aliases={"提交"}, priority=5, block=True)
+
+_COMMAND_CONFIG_CACHE: dict[tuple[int, str], CommandConfig] = {}
+_COMMAND_LAST_USED: dict[tuple[int, str, int], float] = {}
+
+
+def _canonical_command_name(name: str) -> str | None:
+    return _COMMAND_CANONICAL_NAMES.get(name.strip().lstrip("/").casefold())
+
+
+def _parse_duration(text: str) -> float | None:
+    normalized = re.sub(r"\s+", "", text).casefold()
+    if normalized in {"无限制", "不限", "关闭", "取消", "0", "0秒"}:
+        return 0.0
+    if not re.fullmatch(r"(?:\d+(?:\.\d+)?(?:秒|分钟|分|小时|时|天))+", normalized):
+        return None
+
+    unit_seconds = {
+        "秒": 1,
+        "分钟": 60,
+        "分": 60,
+        "小时": 3600,
+        "时": 3600,
+        "天": 86400,
+    }
+    seconds = sum(
+        float(value) * unit_seconds[unit]
+        for value, unit in re.findall(
+            r"(\d+(?:\.\d+)?)(分钟|小时|秒|分|时|天)", normalized
+        )
+    )
+    return seconds if seconds > 0 else None
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:g}秒"
+    if seconds < 3600 and seconds % 60 == 0:
+        return f"{seconds / 60:g}分钟"
+    if seconds < 86400 and seconds % 3600 == 0:
+        return f"{seconds / 3600:g}小时"
+    if seconds % 86400 == 0:
+        return f"{seconds / 86400:g}天"
+    return f"{seconds:g}秒"
+
+
+@run_preprocessor
+async def apply_configured_command_cooldown(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    command: tuple[str, ...] = Command(),
+) -> None:
+    # 命令事件还会被 sharekeeper 等通用 matcher 处理；只在本模块真正执行
+    # 对应命令时计入一次，避免同一条消息提前消耗或重复触发 CD。
+    if matcher.module != __name__:
+        return
+    group_id = get_group_id(event)
+    if group_id is None or not command:
+        return
+    canonical_name = _canonical_command_name(command[0])
+    if canonical_name is None:
+        return
+
+    setting_key = (group_id, canonical_name)
+    if setting_key not in _COMMAND_CONFIG_CACHE:
+        _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
+            get_command_config,
+            group_id,
+            canonical_name,
+        )
+    config = _COMMAND_CONFIG_CACHE[setting_key]
+    if config.enabled and config.cooldown_seconds is None:
+        return
+    if await SUPERUSER(bot, event):
+        return
+    if not config.enabled:
+        await matcher.finish("本群未开启此功能")
+
+    seconds = config.cooldown_seconds
+    if seconds is None:
+        return
+    user_id = int(event.get_user_id())
+    usage_key = (group_id, canonical_name, user_id)
+    now = time.monotonic()
+    previous = _COMMAND_LAST_USED.get(usage_key)
+    if previous is not None and now - previous < seconds:
+        await matcher.finish(
+            Message(
+                [
+                    MessageSegment.at(user_id),
+                    MessageSegment.text(" CD中"),
+                ]
+            )
+        )
+    _COMMAND_LAST_USED[usage_key] = now
 
 _MIT3URI_CHOOSE_OPTIONS = frozenset(
     option.casefold()
@@ -489,6 +607,8 @@ async def handle_manager_help(matcher: Matcher, event: Event):
 
 def _parse_feature_name(text: str) -> str | None:
     normalized = text.strip()
+    if not normalized:
+        return None
     if normalized in {"测试", "功能测试"}:
         return "测试"
     if normalized in {"艾特全体", "@全体"}:
@@ -497,10 +617,12 @@ def _parse_feature_name(text: str) -> str | None:
         return "退群通知"
     if normalized in {"进群欢迎", "进群通知", "欢迎"}:
         return "进群欢迎"
-    return normalized
+    if normalized in RESERVED_FEATURE_REGISTRY:
+        return normalized
+    return _canonical_command_name(normalized)
 
 
-FEATURE_REGISTRY = {
+RESERVED_FEATURE_REGISTRY = {
     "测试": {"col": "dev", "name": "测试功能"},
     "艾特全体": {"col": "mention_all", "name": "开播通知艾特全体"},
     "退群通知": {"col": "leave_notice", "name": "退群通知"},
@@ -513,20 +635,26 @@ async def _handle_feature_toggle(matcher: Matcher, event: Event, feature: str, e
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
 
-    if feature not in FEATURE_REGISTRY:
-        features_str = "、".join(FEATURE_REGISTRY.keys())
-        await matcher.finish(f"用法：/打开功能 <功能>\n支持的功能有：{features_str}")
+    if feature in RESERVED_FEATURE_REGISTRY:
+        config = RESERVED_FEATURE_REGISTRY[feature]
+        feature_name = config["name"]
+        ok = set_subscription_feature(group_id, config["col"], enabled)
+        if not ok:
+            await matcher.finish(
+                f"请先设置订阅，再{'开启' if enabled else '关闭'}{feature_name}"
+            )
+        await matcher.finish(f"已{'开启' if enabled else '关闭'}{feature_name}")
 
-    config = FEATURE_REGISTRY[feature]
-    col_name = config["col"]
-    feature_name = config["name"]
-
-    # 操作数据库
-    ok = set_subscription_feature(group_id, col_name, enabled)
-    if not ok:
-        await matcher.finish(f"请先设置订阅，再{'开启' if enabled else '关闭'}{feature_name}")
-
-    await matcher.finish(f"已{'开启' if enabled else '关闭'}{feature_name}")
+    await asyncio.to_thread(
+        set_command_enabled,
+        group_id,
+        feature,
+        enabled,
+        int(event.get_user_id()),
+    )
+    config = await asyncio.to_thread(get_command_config, group_id, feature)
+    _COMMAND_CONFIG_CACHE[(group_id, feature)] = config
+    await matcher.finish(f"已{'开启' if enabled else '关闭'}本群「{feature}」功能")
 
 
 async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
@@ -534,24 +662,31 @@ async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
     if group_id is None:
         await matcher.finish("请在群聊中使用该命令")
 
-    if feature not in FEATURE_REGISTRY:
-        features_str = "、".join(FEATURE_REGISTRY.keys())
-        await matcher.finish(f"用法：/功能状态 <功能>\n支持的功能有：{features_str}")
+    if feature in RESERVED_FEATURE_REGISTRY:
+        config = RESERVED_FEATURE_REGISTRY[feature]
+        is_enabled = get_subscription_feature(group_id, config["col"])
+        status = "已开启" if is_enabled else "已关闭"
+        await matcher.finish(f"{config['name']}：{status}")
 
-    config = FEATURE_REGISTRY[feature]
-    
-    # 从数据库获取状态
-    is_enabled = get_subscription_feature(group_id, config["col"])
-    
-    status = "已开启" if is_enabled else "已关闭"
-    await matcher.finish(f"{config['name']}：{status}")
+    config = await asyncio.to_thread(get_command_config, group_id, feature)
+    _COMMAND_CONFIG_CACHE[(group_id, feature)] = config
+    status = "已开启" if config.enabled else "已关闭"
+    cooldown = (
+        _format_duration(config.cooldown_seconds)
+        if config.cooldown_seconds is not None
+        else "无限制"
+    )
+    await matcher.finish(f"{feature}：{status}，CD {cooldown}")
 
 
 @feature_enable_cmd.handle()
 @group_manager_required
 async def handle_feature_enable(matcher: Matcher, event: Event, arg=CommandArg()):
-    feature = _parse_feature_name(arg.extract_plain_text())
+    requested = arg.extract_plain_text().strip()
+    feature = _parse_feature_name(requested)
     if not feature:
+        if requested:
+            await matcher.finish(f"没有找到功能：{requested}")
         await matcher.finish("用法：/打开功能 <功能>")
     await _handle_feature_toggle(matcher, event, feature, True)
 
@@ -559,8 +694,11 @@ async def handle_feature_enable(matcher: Matcher, event: Event, arg=CommandArg()
 @feature_disable_cmd.handle()
 @group_manager_required
 async def handle_feature_disable(matcher: Matcher, event: Event, arg=CommandArg()):
-    feature = _parse_feature_name(arg.extract_plain_text())
+    requested = arg.extract_plain_text().strip()
+    feature = _parse_feature_name(requested)
     if not feature:
+        if requested:
+            await matcher.finish(f"没有找到功能：{requested}")
         await matcher.finish("用法：/关闭功能 <功能>")
     await _handle_feature_toggle(matcher, event, feature, False)
 
@@ -568,10 +706,58 @@ async def handle_feature_disable(matcher: Matcher, event: Event, arg=CommandArg(
 @feature_status_cmd.handle()
 @group_manager_required
 async def handle_feature_status(matcher: Matcher, event: Event, arg=CommandArg()):
-    feature = _parse_feature_name(arg.extract_plain_text())
+    requested = arg.extract_plain_text().strip()
+    feature = _parse_feature_name(requested)
     if not feature:
+        if requested:
+            await matcher.finish(f"没有找到功能：{requested}")
         await matcher.finish("用法：/功能状态 <功能>")
     await _handle_feature_status(matcher, event, feature)
+
+
+@cooldown_set_cmd.handle()
+@group_manager_required
+async def handle_set_cooldown(matcher: Matcher, event: Event, arg=CommandArg()):
+    parts = arg.extract_plain_text().strip().split(maxsplit=1)
+    if len(parts) != 2:
+        await matcher.finish("用法：/设置CD <功能名> <时间>")
+
+    requested_name, duration_text = parts
+    command_name = _canonical_command_name(requested_name)
+    if command_name is None:
+        await matcher.finish(f"没有找到功能：{requested_name}")
+
+    seconds = _parse_duration(duration_text)
+    if seconds is None:
+        await matcher.finish("时间格式错误，例如：5秒、1分钟、1小时30分钟、无限制")
+
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在群聊中使用该命令")
+
+    stored_seconds = seconds if seconds > 0 else None
+    await asyncio.to_thread(
+        set_command_cooldown,
+        group_id,
+        command_name,
+        stored_seconds,
+        int(event.get_user_id()),
+    )
+    setting_key = (group_id, command_name)
+    _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
+        get_command_config,
+        group_id,
+        command_name,
+    )
+    for usage_key in list(_COMMAND_LAST_USED):
+        if usage_key[:2] == setting_key:
+            del _COMMAND_LAST_USED[usage_key]
+
+    if stored_seconds is None:
+        await matcher.finish(f"已取消本群「{command_name}」的CD限制")
+    await matcher.finish(
+        f"已将本群「{command_name}」的CD设为{_format_duration(stored_seconds)}"
+    )
 
 
 @sub_show_cmd.handle()
