@@ -4,6 +4,7 @@ import argparse
 import os
 import signal
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
 DATA_DIR = ROOT / "data"
 PID_DIR = DATA_DIR / ".pids"
+DATABASE_PATH = DATA_DIR / "libot.db"
 IS_TTY = sys.stdout.isatty()
 VENV_BIN = ROOT / ".venv" / "bin"
 NAPCAT_PATH = Path(os.environ.get("NAPCAT_PATH"))
@@ -104,6 +106,8 @@ MODULES = {
         redirect_output=False,
     ),
 }
+
+LIVE_GUARDED_MODULES = {"monitor", "capture"}
 
 
 class ProcessState(Enum):
@@ -278,6 +282,65 @@ def _status(spec: ModuleSpec) -> tuple[ProcessState, int | None]:
     return state, pid
 
 
+def _live_room_ids(
+    spec: ModuleSpec,
+    db_path: Path = DATABASE_PATH,
+) -> tuple[int, ...]:
+    if spec.name not in LIVE_GUARDED_MODULES:
+        return ()
+    if not db_path.exists():
+        raise RuntimeError(f"database does not exist: {db_path}")
+
+    subscription_filter = "WHERE enable_asr = 1" if spec.name == "capture" else ""
+    try:
+        with sqlite3.connect(
+            f"file:{db_path.resolve()}?mode=ro",
+            uri=True,
+            timeout=5,
+        ) as conn:
+            room_rows = conn.execute(
+                f"""
+                SELECT DISTINCT room_id
+                FROM subscription
+                {subscription_filter}
+                ORDER BY room_id
+                """
+            ).fetchall()
+            live_rooms: list[int] = []
+            for (room_id,) in room_rows:
+                row = conn.execute(
+                    """
+                    SELECT cmd
+                    FROM event INDEXED BY idx_event_room_time
+                    WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING')
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (int(room_id),),
+                ).fetchone()
+                if row is not None and row[0] == "LIVE":
+                    live_rooms.append(int(room_id))
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"cannot query live status: {exc}") from exc
+    return tuple(live_rooms)
+
+
+def _live_guard_problem(
+    spec: ModuleSpec,
+    db_path: Path = DATABASE_PATH,
+) -> str | None:
+    if spec.name not in LIVE_GUARDED_MODULES:
+        return None
+    try:
+        live_rooms = _live_room_ids(spec, db_path)
+    except RuntimeError as exc:
+        return f"live status could not be verified ({exc})"
+    if not live_rooms:
+        return None
+    room_text = ", ".join(str(room_id) for room_id in live_rooms)
+    return f"room(s) currently live: {room_text}"
+
+
 def _start(spec: ModuleSpec) -> int:
     state, pid = _status(spec)
     if state is ProcessState.UNKNOWN and pid is not None:
@@ -361,6 +424,14 @@ def _stop(spec: ModuleSpec) -> int:
         print(
             f"refusing to stop {spec.name}: pid file is unsafe: {problem}; "
             "PID file preserved",
+            file=sys.stderr,
+        )
+        return 1
+
+    live_problem = _live_guard_problem(spec)
+    if live_problem is not None:
+        print(
+            f"refusing to stop {spec.name}: {live_problem}",
             file=sys.stderr,
         )
         return 1

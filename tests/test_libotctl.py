@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,6 +91,70 @@ class LibotctlPidSafetyTest(unittest.TestCase):
                 "command line does not match",
                 libotctl._managed_process_problem(self.spec, 12345) or "",
             )
+
+
+class LibotctlLiveGuardTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.db_path = root / "libot.db"
+        self.monitor = libotctl.MODULES["monitor"]
+        self.capture = libotctl.MODULES["capture"]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE subscription (
+                    group_id INTEGER PRIMARY KEY,
+                    room_id INTEGER NOT NULL,
+                    enable_asr INTEGER NOT NULL DEFAULT 1
+                );
+                CREATE TABLE event (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id INTEGER NOT NULL,
+                    cmd TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL
+                );
+                CREATE INDEX idx_event_room_time ON event(room_id, timestamp);
+                INSERT INTO subscription(group_id, room_id, enable_asr)
+                VALUES (1, 100, 1), (2, 200, 0);
+                """
+            )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _event(self, room_id: int, cmd: str, timestamp: int) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO event(room_id, cmd, timestamp) VALUES (?, ?, ?)",
+                (room_id, cmd, timestamp),
+            )
+
+    def test_latest_live_state_blocks_monitor(self) -> None:
+        self._event(100, "PREPARING", 10)
+        self.assertEqual(libotctl._live_room_ids(self.monitor, self.db_path), ())
+        self._event(100, "LIVE", 20)
+        self.assertEqual(
+            libotctl._live_room_ids(self.monitor, self.db_path),
+            (100,),
+        )
+        self._event(100, "PREPARING", 30)
+        self.assertEqual(libotctl._live_room_ids(self.monitor, self.db_path), ())
+
+    def test_capture_only_checks_asr_enabled_rooms(self) -> None:
+        self._event(100, "PREPARING", 10)
+        self._event(200, "LIVE", 20)
+        self.assertEqual(libotctl._live_room_ids(self.capture, self.db_path), ())
+        self.assertEqual(
+            libotctl._live_room_ids(self.monitor, self.db_path),
+            (200,),
+        )
+
+    def test_unknown_status_fails_closed(self) -> None:
+        missing = Path(self.temp_dir.name) / "missing.db"
+        problem = libotctl._live_guard_problem(self.monitor, missing)
+        self.assertIsNotNone(problem)
+        self.assertIn("could not be verified", problem or "")
 
 
 if __name__ == "__main__":
