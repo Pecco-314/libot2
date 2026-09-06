@@ -320,6 +320,31 @@ def get_random_meme(
     }
 
 
+def list_meme_title_rank(
+    limit: int = 10,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """Rank canonical meme titles by their number of approved entries."""
+    safe_limit = max(1, min(int(limit), 100))
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT g.display_name, COUNT(e.id) AS entry_count
+            FROM meme_group AS g
+            JOIN meme_entry AS e ON e.meme_group_id = g.id
+            WHERE e.status = 'approved'
+            GROUP BY g.id, g.display_name
+            ORDER BY entry_count DESC, g.display_name COLLATE NOCASE, g.id
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [
+        {"name": str(row[0]), "count": int(row[1])}
+        for row in rows
+    ]
+
+
 def resolve_daily_meme_name(
     name: str,
     db_path: Path = DEFAULT_DB_PATH,

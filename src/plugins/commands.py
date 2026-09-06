@@ -60,6 +60,7 @@ from src.common.meme_image import (
     MemeImageError,
     download_meme_image,
     extract_reply_image_url,
+    extract_reply_text,
     resolve_meme_image_path,
 )
 from src.db.subscription import (
@@ -98,6 +99,7 @@ from src.db.meme import (
     get_daily_meme,
     get_random_meme,
     is_valid_meme_name,
+    list_meme_title_rank,
     resolve_daily_meme_name,
     remove_meme,
 )
@@ -185,6 +187,7 @@ meme_image_add_cmd = on_command("新增图片", aliases={"addimage"}, priority=5
 meme_alias_cmd = on_command("新增别名", aliases={"addalias"}, priority=5, block=True)
 meme_remove_cmd = on_command("删除梗", aliases={"delmeme"}, priority=5, block=True)
 meme_query_cmd = on_command("来点", priority=5, block=True)
+meme_rank_cmd = on_command("memerank", priority=5, block=True)
 _RANDOM_SONG_MEME_NAMES = {"歌曲", "三理歌曲", "随机歌曲"}
 fans_trend_cmd = on_command("查粉丝", priority=5, block=True)
 guards_trend_cmd = on_command("查舰长", aliases={"查大航海"}, priority=5, block=True)
@@ -361,10 +364,13 @@ async def handle_choose(matcher: Matcher, arg=CommandArg()):
 @meme_add_cmd.handle()
 async def handle_meme_add(matcher: Matcher, event: Event, arg=CommandArg()):
     parts = arg.extract_plain_text().strip().split(maxsplit=1)
-    if len(parts) < 2:
-        await matcher.finish("用法：新增梗 <名字> <内容>")
+    if not parts:
+        await matcher.finish("用法：新增梗 <名字> <内容>，或回复文本后新增梗 <名字>")
 
-    name, content = parts
+    name = parts[0]
+    content = parts[1] if len(parts) == 2 else extract_reply_text(event)
+    if content is None:
+        await matcher.finish("请提供内容，或回复一条文本消息")
     if not is_valid_meme_name(name):
         await matcher.finish("名字需为1至32个不含空格的字符")
     if len(content) > 1000:
@@ -510,6 +516,48 @@ async def handle_meme_query(
         event,
         arg.extract_plain_text().strip(),
     )
+
+
+@meme_rank_cmd.handle()
+async def handle_meme_rank(
+    matcher: Matcher,
+    bot: Bot,
+    event: Event,
+    arg=CommandArg(),
+):
+    raw_limit = arg.extract_plain_text().strip()
+    if raw_limit and not raw_limit.isdigit():
+        await matcher.finish("用法：memerank [数量]")
+    limit = int(raw_limit) if raw_limit else 10
+    if not 1 <= limit <= 100:
+        await matcher.finish("数量需为1至100")
+
+    items = await asyncio.to_thread(list_meme_title_rank, limit)
+    if not items:
+        await matcher.finish("目前还没有已审核的meme")
+    content = "meme title排行：\n" + "\n".join(
+        f"{index}. {item['name']}（{item['count']}条）"
+        for index, item in enumerate(items, 1)
+    )
+    if len(content) <= 30:
+        await matcher.finish(content)
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.text(content),
+            },
+        }
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送meme排行合并转发失败: %s", exc)
+        await matcher.finish("排行发送失败，请稍后再试")
+
 
 @meme_remove_cmd.handle()
 async def handle_meme_remove(matcher: Matcher, event: Event, arg=CommandArg()):

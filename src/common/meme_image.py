@@ -22,6 +22,15 @@ class MemeImageError(RuntimeError):
     pass
 
 
+def extract_reply_text(event) -> str | None:
+    reply = getattr(event, "reply", None)
+    message = getattr(reply, "message", None)
+    if message is None:
+        return None
+    content = message.extract_plain_text().strip()
+    return content or None
+
+
 def extract_reply_image_url(event) -> str | None:
     reply = getattr(event, "reply", None)
     message = getattr(reply, "message", None)

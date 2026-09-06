@@ -13,6 +13,7 @@ from src.db.meme import (
     add_meme_alias,
     get_daily_meme,
     init_meme_db,
+    list_meme_title_rank,
     resolve_daily_meme_name,
 )
 
@@ -81,6 +82,23 @@ class MemeDailyDrawTest(unittest.TestCase):
                 now=datetime(2026, 8, 31, 0, tzinfo=timezone),
                 db_path=self.db_path,
             )
+        )
+
+    def test_title_rank_counts_only_approved_entries(self) -> None:
+        add_meme("其他", "审核通过", 1, self.db_path)
+        add_meme("其他", "仍在审核", 1, self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE meme_entry SET status = 'approved' WHERE content = ?",
+                ("审核通过",),
+            )
+
+        self.assertEqual(
+            list_meme_title_rank(10, self.db_path),
+            [
+                {"name": "老婆", "count": 2},
+                {"name": "其他", "count": 1},
+            ],
         )
 
 
