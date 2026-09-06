@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from src.common.blind_box import BLIND_BOX_COST_COIN, BLIND_BOX_RESULT_ORDER
@@ -9,7 +10,8 @@ from src.db.event_search import (
     EventSearchUnavailable,
     list_recent_events_by_content_indexed,
 )
-from src.db.sqlite import connect_sqlite
+from src.db.name_history import is_name_history_index_complete
+from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite
 
 
 logger = logging.getLogger("libot.db.event")
@@ -216,39 +218,61 @@ def list_superchat_event_by_day(room_id: int, day: datetime) -> list[dict[str, o
     return list_superchat_events(room_id, start_of_day, end_of_day)
 
 
-def get_latest_uid_by_uname(room_id: int, uname: str) -> int | None:
+def get_latest_uid_by_uname(
+    room_id: int,
+    uname: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> int | None:
     if not uname:
         return None
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
         candidate_uids = sorted(_find_uids_by_indexed_name(conn, uname))
-        if not candidate_uids:
+        if candidate_uids:
+            latest_uid: int | None = None
+            latest_key: tuple[int, int] | None = None
+            chunk_size = 900
+            for index in range(0, len(candidate_uids), chunk_size):
+                chunk = candidate_uids[index : index + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                row = conn.execute(
+                    f"""
+                    SELECT uid, timestamp, id
+                    FROM event INDEXED BY idx_uid
+                    WHERE room_id = ?
+                      AND uid IN ({placeholders})
+                      AND uname = ? COLLATE NOCASE
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (room_id, *chunk, uname),
+                ).fetchone()
+                if row is None or row[0] is None:
+                    continue
+                key = (int(row[1] or 0), int(row[2] or 0))
+                if latest_key is None or key > latest_key:
+                    latest_key = key
+                    latest_uid = int(row[0])
+            if latest_uid is not None:
+                return latest_uid
+
+        if is_name_history_index_complete(conn):
             return None
 
-        latest_uid: int | None = None
-        latest_key: tuple[int, int] | None = None
-        chunk_size = 900
-        for index in range(0, len(candidate_uids), chunk_size):
-            chunk = candidate_uids[index : index + chunk_size]
-            placeholders = ",".join("?" for _ in chunk)
-            row = conn.execute(
-                f"""
-                SELECT uid, timestamp, id
-                FROM event INDEXED BY idx_uid
-                WHERE room_id = ?
-                  AND uid IN ({placeholders})
-                  AND uname = ? COLLATE NOCASE
-                ORDER BY timestamp DESC, id DESC
-                LIMIT 1
-                """,
-                (room_id, *chunk, uname),
-            ).fetchone()
-            if row is None or row[0] is None:
-                continue
-            key = (int(row[1] or 0), int(row[2] or 0))
-            if latest_key is None or key > latest_key:
-                latest_key = key
-                latest_uid = int(row[0])
-        return latest_uid
+        # An incomplete name_history is not the source of truth yet.
+        # Old rows and data imported while a writer was running may be absent
+        # from it, so an index miss must fall back to the event table.
+        row = conn.execute(
+            """
+            SELECT uid
+            FROM event INDEXED BY idx_event_room_time
+            WHERE room_id = ? AND uname = ? COLLATE NOCASE
+              AND uid IS NOT NULL
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (room_id, uname),
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
 
 
 def list_events_by_uid(room_id: int, uid: int, start_ts: int, end_ts: int) -> list[dict[str, Any]]:

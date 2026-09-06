@@ -20,6 +20,7 @@ from src.common.bilibili_auth import get_bilibili_auth
 from src.common.utils import load_env_file, init_logger
 from src.db.sqlite import connect_sqlite, write_transaction
 from src.db.subscription import list_subscribed_room_ids
+from src.db.name_history import init_name_history_index
 
 import blivedm.models.web as web_models
 
@@ -219,6 +220,7 @@ class MetricsDB:
                 ON name_history(uid, first_seen)
                 """,
             )
+        init_name_history_index(self.db_path)
 
     def insert_many(self, rows: list[tuple[Any, ...]]) -> None:
         if not rows:

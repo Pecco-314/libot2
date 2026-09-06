@@ -9,6 +9,7 @@ from src.db.subscription import init_subscription_db
 from src.db.liver import init_liver_db
 from src.db.fan_club import init_fan_club_db
 from src.db.command_config import init_command_config_db
+from src.db.name_history import init_name_history_index
 
 load_env_file()
 init_logger("libot")
@@ -23,6 +24,7 @@ def init_all_db() -> None:
         init_liver_db()
         init_activity_db()
         init_fan_club_db()
+        init_name_history_index()
     except Exception:
         pass
 
