@@ -25,7 +25,7 @@ IS_TTY = sys.stdout.isatty()
 VENV_BIN = ROOT / ".venv" / "bin"
 NAPCAT_PATH = Path(os.environ.get("NAPCAT_PATH"))
 BOT_QQ = os.environ.get("BOT_QQ")
-NAPCAT_CMD = f"stdbuf -oL -eL xvfb-run -a opt/QQ/qq --no-sandbox -q {BOT_QQ}"
+NAPCAT_CMD = f"stdbuf -oL -eL xvfb-run -a opt/QQ/qq --no-sandbox --disable-gpu -q {BOT_QQ}"
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -186,11 +186,18 @@ def _read_pid(pid_file: Path) -> int | None:
 
 
 def _pid_visibility_limited() -> bool:
+    """Whether this process cannot reliably see host-managed PIDs.
+
+    Codex's execution sandbox uses ``codex`` as PID 1.  Host processes may
+    therefore legitimately look absent to ``os.kill(pid, 0)``.  Treating that
+    as a confirmed exit would make a read-only ``status`` invocation erase the
+    host's PID files, so this must fail closed.
+    """
     try:
-        init_name = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
+        init_name = Path("/proc/1/comm").read_text(encoding="utf-8").strip().casefold()
     except OSError:
         return False
-    return init_name in {"bwrap", "unshare"}
+    return init_name in {"bwrap", "unshare", "codex"}
 
 
 def _process_state(pid: int) -> ProcessState:

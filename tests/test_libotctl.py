@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,17 @@ class LibotctlPidSafetyTest(unittest.TestCase):
             state = libotctl._cleanup_stale_pidfile(self.spec)
         self.assertIs(state, libotctl.ProcessState.UNKNOWN)
         self.assertTrue(self.spec.pid_file.exists())
+
+    def test_codex_pid_namespace_marks_invisible_pid_as_unknown(self) -> None:
+        with patch.object(libotctl.Path, "read_text", return_value="codex\n"), patch.object(
+            libotctl.os,
+            "kill",
+            side_effect=ProcessLookupError,
+        ):
+            self.assertIs(
+                libotctl._process_state(12345),
+                libotctl.ProcessState.UNKNOWN,
+            )
 
     def test_confirmed_dead_pid_is_cleaned(self) -> None:
         self._write_pid()
@@ -91,6 +103,15 @@ class LibotctlPidSafetyTest(unittest.TestCase):
                 "command line does not match",
                 libotctl._managed_process_problem(self.spec, 12345) or "",
             )
+
+
+class LibotctlNapcatTest(unittest.TestCase):
+    def test_headless_napcat_disables_gpu(self) -> None:
+        spec = libotctl.MODULES["napcat"]
+        command = shlex.split(spec.command[-1])
+        self.assertIn("--disable-gpu", command)
+        self.assertIn("--no-sandbox", command)
+        self.assertEqual(command[-2:], ["-q", str(libotctl.BOT_QQ)])
 
 
 class LibotctlLiveGuardTest(unittest.TestCase):
