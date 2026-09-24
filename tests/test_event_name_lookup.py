@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.db.event import get_latest_uid_by_uname
+from src.db.event import get_latest_uid_by_uname, list_recent_events_by_uid
 
 
 class EventNameLookupTest(unittest.TestCase):
@@ -31,6 +31,7 @@ class EventNameLookupTest(unittest.TestCase):
                 );
                 CREATE INDEX idx_uid ON event(uid);
                 CREATE INDEX idx_event_room_time ON event(room_id, timestamp);
+                CREATE INDEX idx_event_room_uid_time ON event(room_id, uid, timestamp, id);
                 CREATE TABLE name_history (
                     uid INTEGER,
                     uname TEXT,
@@ -61,6 +62,20 @@ class EventNameLookupTest(unittest.TestCase):
     def test_uses_name_history_fast_path(self) -> None:
         self.assertEqual(get_latest_uid_by_uname(1, "已索引", self.db_path), 11)
 
+    def test_indexed_old_name_resolves_after_user_renames(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO event(id, room_id, cmd, uid, uname, content, timestamp)
+                VALUES (5, 1, 'DANMU_MSG', 11, '新名字', 'renamed', 500)
+                """
+            )
+        self.assertEqual(get_latest_uid_by_uname(1, "已索引", self.db_path), 11)
+
+    def test_recent_events_include_latest_local_name(self) -> None:
+        rows = list_recent_events_by_uid(1, 22, 1, db_path=self.db_path)
+        self.assertEqual(rows[0]["uname"], "遗漏名字")
+
     def test_falls_back_to_latest_matching_event_in_room(self) -> None:
         self.assertEqual(get_latest_uid_by_uname(1, "遗漏名字", self.db_path), 22)
 
@@ -80,6 +95,8 @@ class EventNameLookupTest(unittest.TestCase):
     def test_complete_index_miss_does_not_scan_event(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DROP INDEX idx_event_room_time")
+            conn.execute("CREATE TABLE name_history_index_meta(key TEXT PRIMARY KEY,value INTEGER)")
+            conn.execute("INSERT INTO name_history_index_meta VALUES ('cursor_event_id',4)")
         with patch(
             "src.db.event.is_name_history_index_complete",
             return_value=True,

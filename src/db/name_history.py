@@ -7,7 +7,7 @@ from src.db.sqlite import DEFAULT_DB_PATH, write_transaction
 
 
 def init_name_history_index(db_path: Path = DEFAULT_DB_PATH) -> None:
-    """Install the transactional event-to-name index and its readiness metadata."""
+    """Initialize the daily name index and remove per-event synchronization."""
     with write_transaction(db_path) as conn:
         conn.executescript(
             """
@@ -27,18 +27,7 @@ def init_name_history_index(db_path: Path = DEFAULT_DB_PATH) -> None:
             );
             INSERT OR IGNORE INTO name_history_index_meta(key, value)
                 VALUES ('complete', 0), ('cursor_event_id', 0), ('target_event_id', 0);
-            CREATE TRIGGER IF NOT EXISTS trg_event_name_history_insert
-            AFTER INSERT ON event
-            WHEN NEW.uid IS NOT NULL
-              AND NEW.uname IS NOT NULL
-              AND TRIM(NEW.uname) <> ''
-              AND NEW.timestamp IS NOT NULL
-            BEGIN
-                INSERT INTO name_history(uid, uname, first_seen)
-                VALUES (NEW.uid, NEW.uname, NEW.timestamp)
-                ON CONFLICT(uid, uname) DO UPDATE SET
-                    first_seen = MIN(name_history.first_seen, excluded.first_seen);
-            END;
+            DROP TRIGGER IF EXISTS trg_event_name_history_insert;
             """
         )
 
@@ -51,12 +40,6 @@ def is_name_history_index_complete(conn) -> bool:
             WHERE key = 'complete'
             """
         ).fetchone()
-        trigger = conn.execute(
-            """
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'trigger' AND name = 'trg_event_name_history_insert'
-            """
-        ).fetchone()
     except sqlite3.Error:
         return False
-    return bool(meta and int(meta[0]) == 1 and trigger)
+    return bool(meta and int(meta[0]) == 1)

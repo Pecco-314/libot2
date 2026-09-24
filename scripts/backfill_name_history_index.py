@@ -28,10 +28,7 @@ def backfill(db_path: Path, batch_size: int) -> None:
         complete = _meta(conn, "complete")
         cursor = _meta(conn, "cursor_event_id")
         target = _meta(conn, "target_event_id")
-        if complete:
-            print(f"already complete cursor={cursor} target={target}")
-            return
-        if target <= 0:
+        if complete or target <= 0:
             target = int(
                 conn.execute("SELECT COALESCE(MAX(id), 0) FROM event").fetchone()[0]
             )

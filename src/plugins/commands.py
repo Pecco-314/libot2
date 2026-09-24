@@ -1745,7 +1745,7 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     if not events:
         await matcher.finish("暂无记录")
 
-    uname = await get_name_by_uid(uid) or str(uid)
+    uname = str(events[-1].get("uname") or query_user or uid)
     title = f"{uname} 的弹幕记录（{title_suffix}）"
 
     pages = await render_event_pages(title, events, show_date=(limit is not None))

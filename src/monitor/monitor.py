@@ -183,6 +183,13 @@ class MetricsDB:
             _execute_write(
                 conn,
                 """
+                CREATE INDEX IF NOT EXISTS idx_event_room_uid_time
+                ON event(room_id, uid, timestamp, id)
+                """,
+            )
+            _execute_write(
+                conn,
+                """
                 CREATE INDEX IF NOT EXISTS idx_event_cmd_time
                 ON event(cmd, timestamp)
                 """,
@@ -237,33 +244,6 @@ class MetricsDB:
                 """,
                 rows,
             )
-            name_first_seen: dict[tuple[int, str], int] = {}
-            for row in rows:
-                if (
-                    row[2] is None
-                    or row[3] is None
-                    or not str(row[3]).strip()
-                    or row[9] is None
-                ):
-                    continue
-                key = (int(row[2]), str(row[3]))
-                timestamp = int(row[9])
-                previous = name_first_seen.get(key)
-                if previous is None or timestamp < previous:
-                    name_first_seen[key] = timestamp
-            name_rows = [
-                (uid, uname, first_seen)
-                for (uid, uname), first_seen in name_first_seen.items()
-            ]
-            if name_rows:
-                _execute_many_write(
-                    conn,
-                    """
-                    INSERT OR IGNORE INTO name_history (uid, uname, first_seen)
-                    VALUES (?, ?, ?)
-                    """,
-                    list(name_rows),
-                )
 
 
     def close(self) -> None:

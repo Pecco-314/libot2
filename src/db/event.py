@@ -226,7 +226,21 @@ def get_latest_uid_by_uname(
     if not uname:
         return None
     with connect_sqlite(db_path) as conn:
-        candidate_uids = sorted(_find_uids_by_indexed_name(conn, uname))
+        candidates = _find_uids_by_indexed_name(conn, uname)
+        # The daily index covers a prefix; resolve fresh names from the tail
+        # by primary key, including names shared with an indexed user.
+        complete = is_name_history_index_complete(conn)
+        if complete:
+            cursor_row = conn.execute(
+                "SELECT value FROM name_history_index_meta WHERE key='cursor_event_id'"
+            ).fetchone()
+            cursor = int(cursor_row[0]) if cursor_row else 0
+            candidates.update(int(row[0]) for row in conn.execute(
+                "SELECT DISTINCT uid FROM event NOT INDEXED "
+                "WHERE id > ? AND room_id = ? AND uname = ? COLLATE NOCASE "
+                "AND uid IS NOT NULL", (cursor, room_id, uname)
+            ))
+        candidate_uids = sorted(candidates)
         if candidate_uids:
             latest_uid: int | None = None
             latest_key: tuple[int, int] | None = None
@@ -237,14 +251,13 @@ def get_latest_uid_by_uname(
                 row = conn.execute(
                     f"""
                     SELECT uid, timestamp, id
-                    FROM event INDEXED BY idx_uid
+                    FROM event
                     WHERE room_id = ?
                       AND uid IN ({placeholders})
-                      AND uname = ? COLLATE NOCASE
                     ORDER BY timestamp DESC, id DESC
                     LIMIT 1
                     """,
-                    (room_id, *chunk, uname),
+                    (room_id, *chunk),
                 ).fetchone()
                 if row is None or row[0] is None:
                     continue
@@ -255,7 +268,7 @@ def get_latest_uid_by_uname(
             if latest_uid is not None:
                 return latest_uid
 
-        if is_name_history_index_complete(conn):
+        if complete:
             return None
 
         # An incomplete name_history is not the source of truth yet.
@@ -279,7 +292,7 @@ def list_events_by_uid(room_id: int, uid: int, start_ts: int, end_ts: int) -> li
     with connect_sqlite() as conn:
         rows = conn.execute(
             """
-            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp
+            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp, uname
             FROM event
             WHERE room_id = ? AND uid = ? AND timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp ASC, id ASC
@@ -296,6 +309,7 @@ def list_events_by_uid(room_id: int, uid: int, start_ts: int, end_ts: int) -> li
             "total_coin": row[4],
             "title": row[5],
             "timestamp": int(row[6]) if row[6] is not None else 0,
+            "uname": str(row[7]) if row[7] is not None else None,
         }
         for row in rows
     ]
@@ -553,8 +567,33 @@ def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
 
 def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
+        # 索引进度与名字记录使用同一读快照，避免每日更新期间遗漏数据。
+        conn.execute("BEGIN")
         cur = conn.cursor()
-        target_uids = sorted(_find_uids_by_indexed_name(conn, target_name))
+        candidate_uids = _find_uids_by_indexed_name(conn, target_name)
+        cursor = None
+        if _table_exists(conn, "name_history") and is_name_history_index_complete(conn):
+            row = conn.execute(
+                "SELECT value FROM name_history_index_meta WHERE key = 'cursor_event_id'"
+            ).fetchone()
+            if row is not None:
+                cursor = int(row[0])
+        # 完整索引只覆盖截至游标的记录；未建好索引时扫描原始记录兜底。
+        # 即便索引已命中，也需收集增量里可能存在的其他同名用户。
+        if cursor is None:
+            rows = conn.execute(
+                "SELECT DISTINCT uid FROM event NOT INDEXED "
+                "WHERE uname = ? AND uid IS NOT NULL",
+                (target_name,),
+            )
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT uid FROM event NOT INDEXED "
+                "WHERE id > ? AND uname = ? AND uid IS NOT NULL",
+                (cursor, target_name),
+            )
+        candidate_uids.update(int(row[0]) for row in rows)
+        target_uids = sorted(candidate_uids)
         
         if not target_uids:
             return []
@@ -605,6 +644,7 @@ def list_recent_events_by_uid(
     uid: int,
     limit: int,
     end_ts: int | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
     end_condition = "AND timestamp <= ?" if end_ts is not None else ""
     params: tuple[Any, ...] = (
@@ -612,10 +652,10 @@ def list_recent_events_by_uid(
         if end_ts is not None
         else (room_id, uid, limit)
     )
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
         rows = conn.execute(
             f"""
-            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp
+            SELECT cmd, content, gift_name, gift_num, total_coin, title, timestamp, uname
             FROM event
             WHERE room_id = ? AND uid = ?
               {end_condition}
@@ -634,6 +674,7 @@ def list_recent_events_by_uid(
             "total_coin": row[4],
             "title": row[5],
             "timestamp": int(row[6]) if row[6] is not None else 0,
+            "uname": str(row[7]) if row[7] is not None else None,
         }
         for row in reversed(rows)
     ]
