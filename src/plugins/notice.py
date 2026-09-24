@@ -2,6 +2,7 @@ from nonebot import on_notice
 from nonebot.adapters.onebot.v11 import Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent
 
 from src.db.subscription import get_subscription_feature
+from .group_leave import cache_leave
 
 # leave notice
 leave_notice = on_notice(priority=50, block=False)
@@ -13,15 +14,9 @@ async def handle_group_decrease(bot: Bot, event: GroupDecreaseNoticeEvent):
         return
 
     group_id = int(event.group_id)
+    name = await cache_leave(bot, event)
     if not get_subscription_feature(group_id, "leave_notice"):
         return
-
-    user_id = event.user_id
-    try:
-        user_info = await bot.get_stranger_info(user_id=user_id)
-        name = user_info.get("nickname", str(user_id))
-    except Exception:
-        name = str(user_id)
 
     await bot.send_group_msg(group_id=event.group_id, message=f"{name}离开了我们...")
 
