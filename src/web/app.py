@@ -17,7 +17,7 @@ from src.db.state import init_state_db, get_state, set_state
 from src.db.meme import (
     count_pending_memes,
     get_meme_by_id,
-    list_memes,
+    get_meme_page,
     remove_meme,
     review_meme,
 )
@@ -98,10 +98,19 @@ def _get_csrf_token() -> str:
 @app.route('/meme-review')
 @login_required
 def meme_review_page():
-    memes = list_memes()
+    query = request.args.get('q', '').strip()[:200]
+    status = request.args.get('status', 'all' if query else 'pending')
+    if status not in {'pending', 'all'}:
+        status = 'pending'
+    pagination = get_meme_page(
+        page=request.args.get('page', 1, type=int),
+        status=status,
+        query=query,
+    )
     return render_template(
-        'meme_review.html',
-        memes=memes,
+        'meme_review_paginated.html',
+        memes=pagination['items'],
+        pagination=pagination,
         csrf_token=_get_csrf_token(),
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -537,6 +538,75 @@ def list_memes(
         }
         for row in rows
     ]
+
+
+def get_meme_page(
+    page: int = 1,
+    status: str = "pending",
+    page_size: int = 50,
+    db_path: Path = DEFAULT_DB_PATH,
+    query: str = "",
+) -> dict[str, Any]:
+    """Read totals and one bounded page from the same database snapshot."""
+    if status not in {"pending", "all"}:
+        raise ValueError("invalid meme filter")
+    page_size = max(1, min(int(page_size), 200))
+    query = query.strip()[:200]
+    conditions = ["e.status = 'pending'"] if status == "pending" else []
+    params: list[Any] = []
+    if query:
+        # Literal substring matching: '%' and '_' are not wildcards.
+        conditions.append("""(
+            instr(lower(g.display_name), lower(?)) > 0
+            OR (e.entry_type = 'text' AND instr(lower(e.content), lower(?)) > 0)
+            OR CAST(e.adder_uid AS TEXT) = ?
+            OR EXISTS (
+                SELECT 1 FROM meme_alias a WHERE a.meme_group_id = e.meme_group_id
+                AND instr(lower(a.display_name), lower(?)) > 0
+            )
+        )""")
+        params.extend([query] * 4)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    with connect_sqlite(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        counts = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(status = 'pending'), 0) AS pending FROM meme_entry"
+        ).fetchone()
+        total, pending = int(counts["total"]), int(counts["pending"])
+        filtered_total = int(conn.execute(
+            f"SELECT COUNT(*) FROM meme_entry e JOIN meme_group g "
+            f"ON g.id = e.meme_group_id {where}", params,
+        ).fetchone()[0])
+        pages = max(1, (filtered_total + page_size - 1) // page_size)
+        page = min(max(1, int(page)), pages)
+        rows = conn.execute(
+            f"""
+            SELECT e.id, g.display_name AS name, e.content, e.adder_uid,
+                   e.status, e.created_at, e.reviewed_at, e.reviewed_by,
+                   e.entry_type
+            FROM meme_entry AS e
+            JOIN meme_group AS g ON g.id = e.meme_group_id
+            {where}
+            ORDER BY CASE e.status WHEN 'pending' THEN 0
+                         WHEN 'approved' THEN 1 ELSE 2 END,
+                     e.created_at DESC, e.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, (page - 1) * page_size),
+        ).fetchall()
+    return {
+        "items": [dict(row) for row in rows],
+        "page": page,
+        "pages": pages,
+        "page_size": page_size,
+        "status": status,
+        "total": total,
+        "pending": pending,
+        "filtered_total": filtered_total,
+        "query": query,
+    }
 
 
 def count_pending_memes(db_path: Path = DEFAULT_DB_PATH) -> int:
