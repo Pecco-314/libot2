@@ -37,6 +37,10 @@ TRACKED_CMDS = {
     "ONLINE_RANK_COUNT",
 }
 
+# These are batch/animation summaries, not additional paid gifts. Keep their
+# raw payloads for reconciliation; counting them alongside SEND_GIFT doubles totals.
+GIFT_SUMMARY_CMDS = {"COMBO_SEND", "COMBO_END", "GIFT_COMBO"}
+
 
 @dataclass(slots=True)
 class MonitorConfig:
@@ -269,12 +273,12 @@ def _extract_heartbeat_popularity(command: dict[str, Any]) -> int | None:
     return None
 
 
-def _payload_for_log(command: dict[str, Any], limit: int = 12000) -> str:
+def _payload_for_log(command: dict[str, Any], limit: int | None = None) -> str:
     try:
         payload = json.dumps(command, ensure_ascii=False, default=str)
     except Exception:
         payload = repr(command)
-    if len(payload) > limit:
+    if limit is not None and len(payload) > limit:
         return f"{payload[:limit]}...<truncated {len(payload) - limit} chars>"
     return payload
 
@@ -357,7 +361,7 @@ def _proto_bytes(fields: dict[int, list[int | bytes]], number: int) -> bytes:
     raise ValueError(f"protobuf 缺少 bytes 字段 {number}")
 
 
-def _extract_v2_gift_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...]:
+def _extract_v2_gift_rows(room_id: int, command: dict[str, Any]) -> list[tuple[Any, ...]]:
     data = command.get("data")
     if not isinstance(data, dict):
         raise TypeError(f"SEND_GIFT_V2 data 不是对象: {type(data).__name__}")
@@ -366,7 +370,21 @@ def _extract_v2_gift_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ..
         raise ValueError("SEND_GIFT_V2 缺少 data.pb")
     payload = base64.b64decode(encoded, validate=True)
     root_fields = _decode_proto_fields(payload)
-    gift_fields = _decode_proto_fields(_proto_bytes(root_fields, 10))
+    gifts = root_fields.get(10, [])
+    if not gifts or any(not isinstance(gift, bytes) for gift in gifts):
+        raise ValueError("SEND_GIFT_V2 缺少合法的礼物明细")
+    return [_extract_v2_gift_detail(room_id, root_fields, gift) for gift in gifts]
+
+
+def _extract_v2_gift_row(room_id: int, command: dict[str, Any]) -> tuple[Any, ...]:
+    rows = _extract_v2_gift_rows(room_id, command)
+    if len(rows) != 1:
+        raise ValueError("多项礼物必须使用 _extract_v2_gift_rows 解析")
+    return rows[0]
+
+
+def _extract_v2_gift_detail(room_id: int, root_fields: dict, gift: bytes) -> tuple[Any, ...]:
+    gift_fields = _decode_proto_fields(gift)
     uid = _proto_int(root_fields, 1)
     uname = _proto_bytes(root_fields, 2).decode("utf-8")
     gift_name = _proto_bytes(gift_fields, 2).decode("utf-8")
@@ -579,6 +597,21 @@ class RawEventHandler(handlers.HandlerInterface):
             except Exception:
                 pass
             return
+        if any(token in cmd.upper() for token in ("GIFT", "COMBO", "BLIND_BOX")):
+            # Preserve the original pb/JSON before any decoding, including all
+            # repeated fields in multi-draw gifts. Never truncate this record.
+            logger.info(
+                "房间 %d 礼物完整原始信号 cmd=%s raw=%s",
+                client.room_id, cmd, _payload_for_log(command),
+            )
+        if cmd in GIFT_SUMMARY_CMDS:
+            logger.info(
+                "房间 %d 收到礼物连击汇总（不重复计入逐笔礼物） cmd=%s raw=%s",
+                client.room_id,
+                cmd,
+                _payload_for_log(command),
+            )
+            return
         if cmd not in TRACKED_CMDS and any(
             token in cmd.upper() for token in ("GIFT", "COMBO", "BLIND_BOX")
         ):
@@ -589,15 +622,25 @@ class RawEventHandler(handlers.HandlerInterface):
                 _payload_for_log(command),
             )
 
-        row = _extract_row(client.room_id, command)
-        if row is None:
-            return
+        if cmd == "SEND_GIFT_V2":
+            try:
+                rows = _extract_v2_gift_rows(client.room_id, command)
+            except Exception:
+                logger.exception("房间 %d 解析 SEND_GIFT_V2 失败 raw=%s", client.room_id, _payload_for_log(command))
+                return
+        else:
+            row = _extract_row(client.room_id, command)
+            rows = [row] if row is not None else []
+        for row in rows:
+            self._enqueue_gift_or_event(client.room_id, row)
+
+    def _enqueue_gift_or_event(self, room_id: int, row: tuple[Any, ...]) -> None:
         try:
             self.queue.put_nowait(row)
             if row[1] == "SEND_GIFT":
                 logger.info(
                     "房间 %d 礼物已入队，queue_size=%d uid=%s gift_name=%s",
-                    client.room_id,
+                    room_id,
                     self.queue.qsize(),
                     row[2],
                     row[5],
