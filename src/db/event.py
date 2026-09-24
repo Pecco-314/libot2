@@ -69,6 +69,68 @@ def get_newest_live_event() -> dict[str, object] | None:
     }
 
 
+def get_max_event_id(db_path: Path = DEFAULT_DB_PATH) -> int:
+    with connect_sqlite(db_path) as conn:
+        row = conn.execute("SELECT MAX(id) FROM event").fetchone()
+    if row is None or row[0] is None:
+        return 0
+    return int(row[0])
+
+
+def list_streamer_danmaku_events_after(
+    last_id: int,
+    through_id: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, object]]:
+    """List new danmaku sent by a monitored room's own streamer."""
+    if through_id <= last_id:
+        return []
+    with connect_sqlite(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                event.id,
+                event.room_id,
+                event.uid,
+                COALESCE(
+                    NULLIF(liver.nickname, ''),
+                    NULLIF(liver.uname, ''),
+                    NULLIF(event.uname, ''),
+                    CAST(event.uid AS TEXT)
+                ) AS display_name,
+                event.content,
+                event.timestamp
+            FROM event
+            JOIN liver
+              ON liver.room_id = event.room_id
+             AND liver.uid = event.uid
+            WHERE event.id > ?
+              AND event.id <= ?
+              AND event.cmd = 'DANMU_MSG'
+              AND event.content IS NOT NULL
+              AND TRIM(event.content) != ''
+              AND EXISTS (
+                  SELECT 1
+                  FROM subscription
+                  WHERE subscription.room_id = event.room_id
+              )
+            ORDER BY event.id ASC
+            """,
+            (last_id, through_id),
+        ).fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "room_id": int(row[1]),
+            "uid": int(row[2]),
+            "uname": str(row[3]),
+            "content": str(row[4]),
+            "timestamp": int(row[5] or 0),
+        }
+        for row in rows
+    ]
+
+
 def get_latest_live_cmd(room_id: int) -> str | None:
     with connect_sqlite() as conn:
         row = conn.execute(
@@ -138,7 +200,7 @@ def is_streaming_event(row) -> bool:
     with connect_sqlite() as conn:
         row = conn.execute(
             """
-            SELECT cmd FROM event
+            SELECT cmd FROM event INDEXED BY idx_event_cmd_time
             WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING') AND id < ?
             ORDER BY id DESC LIMIT 1
             """,
@@ -159,7 +221,7 @@ def is_duplicate_room_change(row) -> bool:
     with connect_sqlite() as conn:
         row = conn.execute(
             """
-            SELECT title FROM event
+            SELECT title FROM event INDEXED BY idx_event_cmd_time
             WHERE room_id = ? AND cmd = 'ROOM_CHANGE' AND id < ?
             ORDER BY id DESC LIMIT 1
             """,

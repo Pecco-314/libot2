@@ -18,7 +18,13 @@ from src.db.activity import (
     get_max_activity_id,
     list_activities_after,
 )
-from src.db.event import get_newest_live_event, is_streaming_event, is_duplicate_room_change
+from src.db.event import (
+    get_max_event_id,
+    get_newest_live_event,
+    is_duplicate_room_change,
+    is_streaming_event,
+    list_streamer_danmaku_events_after,
+)
 from src.db.state import get_state, set_state
 from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
 
@@ -28,6 +34,8 @@ from .utils import _format_name
 logger = logging.getLogger("libot.scheduler")
 LOCK_FILE = ROOT / "data" / ".bot_offline.lock"
 NAPCAT_PID = ROOT / "data" / ".pids" / "napcat.pid"
+_streamer_danmaku_cursor: int | None = None
+_streamer_danmaku_cursor_saved_at = 0.0
 
 
 def _is_mention_all_enabled(group_id: int) -> bool:
@@ -151,29 +159,75 @@ async def _build_message(row: dict[str, Any]) -> str | None:
     misfire_grace_time=1,
 )
 async def watch_live_events() -> None:
-    row = get_newest_live_event()
+    row = await asyncio.to_thread(get_newest_live_event)
     if row is None:
         return
     row_id = int(row.get("id"))
+    last_id = await asyncio.to_thread(get_state, "last_event_id")
+    if last_id and last_id.isdigit() and row_id <= int(last_id):
+        return
     room_id = int(row.get("room_id"))
     timestamp = int(row.get("timestamp") or 0)
     if timestamp > 0 and datetime.now().timestamp() - timestamp > 300:
-        set_state("last_event_id", str(row_id))
+        await asyncio.to_thread(set_state, "last_event_id", str(row_id))
         return
-    if is_streaming_event(row) or is_duplicate_room_change(row):
-        set_state("last_event_id", str(row_id))
+    if (await asyncio.to_thread(is_streaming_event, row)
+            or await asyncio.to_thread(is_duplicate_room_change, row)):
+        await asyncio.to_thread(set_state, "last_event_id", str(row_id))
         return
-    last_event_id = 0
-    last_event_id_str = get_state("last_event_id")
-    if last_event_id_str is not None and last_event_id_str.isdigit():
-        last_event_id = int(last_event_id_str)
-    if row_id <= last_event_id:
-        return
-    set_state("last_event_id", str(row_id))
+    await asyncio.to_thread(set_state, "last_event_id", str(row_id))
     message = await _build_message(row)
     if message is None:
         return
     await send_to_room(room_id, message, mention_all=(row.get("cmd") == "LIVE"))
+
+
+@scheduler.scheduled_job(
+    "interval",
+    seconds=1,
+    id="libot_streamer_danmaku_watcher",
+    name="libot_streamer_danmaku_watcher",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=1,
+)
+async def watch_streamer_danmaku() -> None:
+    global _streamer_danmaku_cursor, _streamer_danmaku_cursor_saved_at
+
+    state_key = "last_streamer_danmaku_event_id"
+    through_id = await asyncio.to_thread(get_max_event_id)
+    if _streamer_danmaku_cursor is None:
+        last_id_text = await asyncio.to_thread(get_state, state_key)
+        if last_id_text is None or not last_id_text.isdigit():
+            # Enabling the feature must not replay historical danmaku.
+            await asyncio.to_thread(set_state, state_key, str(through_id))
+            _streamer_danmaku_cursor_saved_at = time.monotonic()
+            _streamer_danmaku_cursor = through_id
+            return
+        _streamer_danmaku_cursor = int(last_id_text)
+
+    last_id = _streamer_danmaku_cursor
+    if through_id <= last_id:
+        return
+
+    rows = await asyncio.to_thread(list_streamer_danmaku_events_after, last_id, through_id)
+    now = int(time.time())
+    for row in rows:
+        timestamp = int(row.get("timestamp") or 0)
+        if timestamp > 0 and now - timestamp <= 300:
+            await send_to_room(
+                int(row["room_id"]),
+                f"[{row['uname']}]: {row['content']}",
+            )
+    # Advance across every inspected event in memory, including non-matching
+    # events, so the one-second watcher never repeatedly scans a growing range.
+    # Persist at most once a minute unless an own-danmaku was handled; this
+    # avoids competing with monitor's high-frequency event writes.
+    _streamer_danmaku_cursor = through_id
+    now_monotonic = time.monotonic()
+    if rows or now_monotonic - _streamer_danmaku_cursor_saved_at >= 60:
+        await asyncio.to_thread(set_state, state_key, str(through_id))
+        _streamer_danmaku_cursor_saved_at = now_monotonic
 
 
 @scheduler.scheduled_job(
