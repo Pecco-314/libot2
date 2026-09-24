@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>私人 Paste</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#202b40;font:16px system-ui,sans-serif}main{max-width:820px;margin:auto;padding:24px 16px}header{display:flex;justify-content:space-between;align-items:center}a{color:#245dcc}section,article{background:white;padding:22px;border:1px solid #dfe5ef;border-radius:14px;margin:18px 0}textarea{width:100%;min-height:140px;border:1px solid #bbc6d9;border-radius:8px;padding:12px;font:inherit;resize:vertical}button,.button{background:#245dcc;color:white;border:0;border-radius:7px;padding:10px 18px;cursor:pointer;font:inherit}small{color:#647089}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:420px;overflow:auto}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}img{max-width:100%;max-height:380px;border-radius:8px}input{max-width:100%}.delete{background:#fff;color:#b03232;border:1px solid #e4bcbc}nav{display:flex;gap:24px}form{margin:0}.filename{overflow-wrap:anywhere}h1{font-size:26px}
+.dropzone{border:2px dashed #a9bddb;border-radius:12px;padding:30px 16px;text-align:center;background:#f7faff;margin-bottom:16px}.dragging .dropzone{border-color:#245dcc;background:#e5eeff}.queue{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:12px;margin:16px 0}.queued{border:1px solid #dfe5ef;border-radius:10px;padding:10px;min-width:0}.queued img{width:100%;height:120px;object-fit:contain}.queued p{font-size:13px;overflow-wrap:anywhere;margin:8px 0}.queued button{padding:5px 10px;font-size:13px}progress{width:100%;margin-top:12px}#upload-status{white-space:pre-wrap;color:#425979}button:disabled{opacity:.6;cursor:wait}
+textarea{min-height:80px}.dropzone{padding:22px 16px}.dropzone small{display:block;margin-top:12px}.queue:empty,#upload-status:empty{display:none}.actions{justify-content:space-between}.image-note{display:block;margin-top:6px;font-size:12px}a{text-underline-offset:3px}article .row{font-size:14px}@media(max-width:540px){main{padding:16px 12px}section,article{padding:16px;margin:12px 0}h1{font-size:23px}}
+</style></head><body><main>
+<header><h1>Paste</h1><a href="/">控制台</a></header>
+<section><form method="post" enctype="multipart/form-data" id="upload">
+<input type="hidden" name="csrf_token" value="{{ session.csrf_token }}">
+<div class="dropzone" id="dropzone"><button type="button" id="choose-files">选择图片 / 文件</button><small>拖拽或粘贴 · 单文件 ≤ 100 MiB</small></div>
+<input type="file" name="file" id="file-picker" multiple hidden aria-label="选择图片或文件">
+<div id="queue" class="queue" aria-live="polite"></div>
+<textarea name="text" maxlength="100000" placeholder="写点什么…" aria-label="文字内容"></textarea>
+<div class="row actions"><button type="submit" id="save">保存</button><a href="{{ url_for('paste.index') }}">刷新</a></div>
+<progress id="upload-progress" max="100" value="0" hidden></progress><p id="upload-status" role="status" aria-live="polite"></p>
+</form></section>
+{% for item in items %}<article>
+<small>{{ item.created }} UTC</small>
+{% if item.text %}<pre id="text-{{ item.id }}">{{ item.text }}</pre><button type="button" data-copy="text-{{ item.id }}">复制文字</button>{% endif %}
+{% if item.id in previews %}<p><a href="{{ url_for('paste.image',ident=item.id) }}"><img loading="lazy" src="{{ url_for('paste.preview',ident=item.id) }}" alt="{{ item.name }}"></a><small class="image-note">点开原图，长按保存</small></p>{% endif %}
+<div class="row">{% if item.name %}<a class="filename" href="{{ url_for('paste.download',ident=item.id) }}">下载 {{ item.name }}</a><small>{{ '%.2f'|format(item.size/1024/1024) }} MiB</small>{% endif %}
+<form method="post" action="{{ url_for('paste.delete',ident=item.id) }}" class="remove"><input type="hidden" name="csrf_token" value="{{ session.csrf_token }}"><button class="delete">删除</button></form></div>
+</article>{% else %}<p>暂无内容</p>{% endfor %}
+<nav>{% if page>1 %}<a href="?page={{ page-1 }}">上一页</a>{% endif %}{% if more %}<a href="?page={{ page+1 }}">下一页</a>{% endif %}</nav>
+</main><script>
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{const t=document.getElementById(b.dataset.copy).textContent;try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(t)}else{const e=document.createElement('textarea');e.value=t;document.body.appendChild(e);e.select();const ok=document.execCommand('copy');e.remove();if(!ok)throw Error('copy')}b.textContent='已复制'}catch{b.textContent='请长按文字复制'}});
+document.querySelectorAll('.remove').forEach(f=>f.onsubmit=()=>confirm('确定删除？删除后无法恢复。'));
+</script><script src="{{ url_for('static', filename='paste.js') }}"></script></body></html>

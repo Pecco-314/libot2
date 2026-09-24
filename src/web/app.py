@@ -286,7 +286,11 @@ def change_password():
     logger.info("用户修改了 Web 密码")
     return jsonify({"success": True, "msg": "密码已成功修改"})
 
+from src.web.paste import create_paste_blueprint
+
+app.register_blueprint(create_paste_blueprint(ROOT / 'data' / 'paste', login_required))
+
 if __name__ == '__main__':
     socketio.start_background_task(start_tail_tasks)
     logger.info("Web 服务已启动")
-    socketio.run(app, host='0.0.0.0', port=5000)
+    socketio.run(app, host='127.0.0.1', port=15000)
