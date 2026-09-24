@@ -19,6 +19,7 @@ from nonebot.permission import SUPERUSER
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
 from src.db.song_list import search_songs_by_title, add_new_song, add_song_record
+from src.db.clip_marker import add_clip_marker, list_clip_markers, format_clip_marker
 from src.render.superchat import get_daily_superchat_images, get_user_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
 from src.render.stats import render_fans_trend, render_guards_trend, render_fan_club_trend, render_concurrent_trend
@@ -45,7 +46,14 @@ from src.render.fan_club import (
 from src.spider.medal_wall import MedalWallError, get_public_medal_wall
 from src.spider.api import get_room_info as _api_get_room_info, get_master_info as _api_get_master_info
 from src.db.liver import get_name_by_uid as _db_get_name_by_uid
-from src.db.live_list import add_live_list, remove_live_list, get_live_list, get_live_list_info, update_live_list_tags
+from src.db.live_list import (
+    add_live_list,
+    remove_live_list,
+    get_live_list,
+    get_live_list_by_tag,
+    get_live_list_info,
+    update_live_list_tags,
+)
 from src.spider.wrapper import (
     get_name_by_roomid,
     get_name_by_uid,
@@ -218,9 +226,14 @@ dc_cmd = on_command("斗虫", priority=5, block=True)
 live_list_add_cmd = on_command("添加直播", aliases={"增加直播"}, priority=5, block=True)
 live_list_remove_cmd = on_command("删除直播", priority=5, block=True)
 live_list_show_cmd = on_command("开播列表", aliases={"开播"}, priority=5, block=True)
+live_list_tag_members_cmd = on_command(
+    "查看标签", aliases={"标签列表"}, priority=5, block=True
+)
 live_list_add_tag_cmd = on_command("添加标签", aliases={"增加标签"}, priority=5, block=True)
 live_list_set_tag_cmd = on_command("修改标签", priority=5, block=True)
 live_sessions_cmd = on_command("直播记录", aliases={"查直播"}, priority=5, block=True)
+clip_marker_cmd = on_command("切片", priority=5, block=True)
+clip_document_cmd = on_command("切片文档", priority=5, block=True)
 activity_list_cmd = on_command("查动态", priority=5, block=True)
 activity_generate_cmd = on_command("生成动态", priority=5, block=True)
 cmd_add_song = on_command("新增歌曲", priority=5, block=True)
@@ -1469,6 +1482,60 @@ def _resolve_live_session(room_id: int, date_str: str | None, session_index: int
     return target_session, session_label, ongoing
 
 
+@clip_marker_cmd.handle()
+async def handle_clip_marker(matcher: Matcher, event: Event, arg=CommandArg()):
+    if not isinstance(event, GroupMessageEvent):
+        await matcher.finish("请在群聊中标记切片")
+    note = " ".join(arg.extract_plain_text().split())
+    if len(note) > 500:
+        await matcher.finish("切片备注最多 500 字")
+    room_id = get_query_room_id(event)
+    timestamp = int(event.time)
+    session = await asyncio.to_thread(get_latest_live_session, room_id)
+    if not session or not session.get("ongoing"):
+        await matcher.finish("当前没有正在进行的直播")
+    start = int(session["start_ts"])
+    try:
+        await asyncio.to_thread(add_clip_marker, room_id, start, timestamp,
+                                int(event.user_id), int(event.group_id), int(event.message_id), note)
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+    await matcher.finish("已记录切片：\n" + format_clip_marker(timestamp, start, note))
+
+
+@clip_document_cmd.handle()
+async def handle_clip_document(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
+    parts = arg.extract_plain_text().strip().split()
+    if len(parts) > 2 or (len(parts) == 2 and not parts[1].isdigit()):
+        await matcher.finish("用法：/切片文档 [YYYY-MM-DD] [直播场次]")
+    date = parts[0] if parts else None
+    index = int(parts[1]) if len(parts) == 2 else None
+    room_id = get_query_room_id(event)
+    try:
+        session, label, _ = await asyncio.to_thread(_resolve_live_session, room_id, date, index)
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+    start = int(session["start_ts"])
+    markers = await asyncio.to_thread(list_clip_markers, room_id, start)
+    if not markers:
+        await matcher.finish(f"{label}暂无切片记录")
+    from zoneinfo import ZoneInfo
+    started = datetime.fromtimestamp(start, ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    header = f"切片文档 · {label}\n开播：{started}（北京时间）\n[北京时间] (开播后时间) 备注"
+    lines = [format_clip_marker(m["timestamp"], start, m["note"]) for m in markers]
+    chunks = [header]
+    for line in lines:
+        if len(chunks[-1]) + len(line) + 1 > 1500:
+            chunks.append(line)
+        else:
+            chunks[-1] += "\n" + line
+    if len(chunks) == 1:
+        await matcher.finish(MessageSegment.text(chunks[0]))
+    nodes = [{"type": "node", "data": {"name": "Libot", "uin": bot.self_id,
+              "content": MessageSegment.text(chunk)}} for chunk in chunks]
+    await send_forward_message(bot, event, nodes)
+
+
 @concurrent_cmd.handle()
 async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
     room_id = get_query_room_id(event)
@@ -2480,6 +2547,53 @@ async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()
         await matcher.finish(msg)
         
     await matcher.finish(MessageSegment.image(file=str(image_path)))
+
+
+@live_list_tag_members_cmd.handle()
+async def handle_live_list_tag_members(
+    matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()
+):
+    tag = arg.extract_plain_text().strip()
+    if not tag:
+        await matcher.finish("用法：/查看标签 <标签>")
+
+    rooms = get_live_list_by_tag(tag)
+    if not rooms:
+        await matcher.finish(f"当前列表中未找到标签 [{tag}] 的直播间。")
+
+    # 不查直播状态：这是标签的完整收录列表，而非当前开播列表。
+    lines = [f"{room.get('uname') or room['room_id']}（{room['room_id']}）" for room in rooms]
+    header = f"标签 [{tag}] 下的直播间（{len(lines)} 个）"
+    chunk_size = 25
+    if len(lines) <= chunk_size:
+        await matcher.finish(f"{header}\n" + "\n".join(lines))
+
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "LiBot",
+                "uin": event.self_id,
+                "content": header,
+            },
+        }
+    ]
+    for start in range(0, len(lines), chunk_size):
+        nodes.append(
+            {
+                "type": "node",
+                "data": {
+                    "name": "LiBot",
+                    "uin": event.self_id,
+                    "content": "\n".join(lines[start : start + chunk_size]),
+                },
+            }
+        )
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception as exc:
+        logger.error("发送标签直播间列表失败: %s", exc)
+        await matcher.finish("发送列表失败，请稍后再试。")
 
 @live_sessions_cmd.handle()
 async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg()):

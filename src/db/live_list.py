@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from src.db.sqlite import connect_sqlite, execute_write, write_transaction
+from pathlib import Path
+
+from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, execute_write, write_transaction
 
 
 def init_live_list_db() -> None:
@@ -86,7 +88,7 @@ def _parse_tags(tags_raw: str | None) -> list[str]:
         return []
     try:
         parsed = json.loads(tags_raw)
-        return parsed if isinstance(parsed, list) else []
+        return [tag for tag in parsed if isinstance(tag, str)] if isinstance(parsed, list) else []
     except Exception:
         return []
 
@@ -107,8 +109,8 @@ def get_live_list_info(room_id: int) -> dict | None:
         }
 
 
-def get_live_list() -> list[dict]:
-    with connect_sqlite() as conn:
+def get_live_list(db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    with connect_sqlite(db_path) as conn:
         rows = conn.execute(
             "SELECT room_id, uname, adder_uid, tags FROM global_live_list",
         ).fetchall()
@@ -121,6 +123,24 @@ def get_live_list() -> list[dict]:
         }
         for r in rows
     ]
+
+
+def get_live_list_by_tag(tag: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict]:
+    """Return every tracked room with an exact, case-insensitive tag match."""
+    normalized_tag = tag.strip().casefold()
+    if not normalized_tag:
+        return []
+
+    rooms = get_live_list(db_path)
+    matched = [
+        room
+        for room in rooms
+        if any(item.casefold() == normalized_tag for item in room["tags"])
+    ]
+    return sorted(
+        matched,
+        key=lambda room: ((room.get("uname") or "").casefold(), room["room_id"]),
+    )
 
 # 初始化表结构
 init_live_list_db()
