@@ -91,6 +91,19 @@ class CommandConfigDatabaseTest(unittest.TestCase):
         self.assertIn("command_config", tables)
         self.assertNotIn("command_cooldown", tables)
 
+    def test_count_round_trip_and_reset(self) -> None:
+        set_command_cooldown(100, "来点", 180, 123, self.db_path, count=3)
+        self.assertEqual(
+            get_command_config(100, "来点", self.db_path),
+            CommandConfig(cooldown_seconds=180, cooldown_count=3),
+        )
+        init_command_config_db(self.db_path)
+        self.assertEqual(get_command_config(100, "来点", self.db_path).cooldown_count, 3)
+        with self.assertRaises(ValueError):
+            set_command_cooldown(100, "来点", 180, 123, self.db_path, count=0)
+        set_command_cooldown(100, "来点", None, 123, self.db_path)
+        self.assertEqual(get_command_config(100, "来点", self.db_path), CommandConfig())
+
 
 if __name__ == "__main__":
     unittest.main()

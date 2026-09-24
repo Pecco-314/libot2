@@ -10,6 +10,7 @@ from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, execute_write, write_
 class CommandConfig:
     enabled: bool = True
     cooldown_seconds: float | None = None
+    cooldown_count: int = 1
 
 
 def init_command_config_db(db_path: Path = DEFAULT_DB_PATH) -> None:
@@ -87,6 +88,14 @@ def init_command_config_db(db_path: Path = DEFAULT_DB_PATH) -> None:
         )
 
 
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(command_config)")}
+        if "cooldown_count" not in columns:
+            conn.execute(
+                "ALTER TABLE command_config ADD COLUMN cooldown_count INTEGER "
+                "NOT NULL DEFAULT 1 CHECK (cooldown_count > 0)"
+            )
+
+
 def get_command_config(
     group_id: int,
     command_name: str,
@@ -95,7 +104,7 @@ def get_command_config(
     with connect_sqlite(db_path) as conn:
         row = conn.execute(
             """
-            SELECT enabled, cooldown_seconds
+            SELECT enabled, cooldown_seconds, cooldown_count
             FROM command_config
             WHERE group_id = ? AND command_name = ?
             """,
@@ -106,6 +115,7 @@ def get_command_config(
     return CommandConfig(
         enabled=bool(row[0]),
         cooldown_seconds=float(row[1]) if row[1] is not None else None,
+        cooldown_count=int(row[2]),
     )
 
 
@@ -138,20 +148,25 @@ def set_command_cooldown(
     seconds: float | None,
     updated_by: int,
     db_path: Path = DEFAULT_DB_PATH,
+    *,
+    count: int = 1,
 ) -> None:
     if seconds is not None and seconds <= 0:
         raise ValueError("cooldown must be positive")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise ValueError("cooldown count must be a positive integer")
     with write_transaction(db_path) as conn:
         execute_write(
             conn,
             """
             INSERT INTO command_config (
-                group_id, command_name, enabled, cooldown_seconds, updated_by
-            ) VALUES (?, ?, 1, ?, ?)
+                group_id, command_name, enabled, cooldown_seconds, updated_by, cooldown_count
+            ) VALUES (?, ?, 1, ?, ?, ?)
             ON CONFLICT(group_id, command_name) DO UPDATE SET
                 cooldown_seconds = excluded.cooldown_seconds,
+                cooldown_count = excluded.cooldown_count,
                 updated_by = excluded.updated_by,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (group_id, command_name, seconds, updated_by),
+            (group_id, command_name, seconds, updated_by, count if seconds else 1),
         )

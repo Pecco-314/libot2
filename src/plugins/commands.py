@@ -228,7 +228,9 @@ cmd_generate_list = on_command("生成歌单", priority=5, block=True)
 cmd_update_list = on_command("提交歌单", aliases={"提交"}, priority=5, block=True)
 
 _COMMAND_CONFIG_CACHE: dict[tuple[int, str], CommandConfig] = {}
-_COMMAND_LAST_USED: dict[tuple[int, str, int], float] = {}
+from .command_rate_limit import CommandRateLimiter
+
+_COMMAND_RATE_LIMITER = CommandRateLimiter()
 
 
 def _canonical_command_name(name: str) -> str | None:
@@ -280,7 +282,7 @@ async def apply_configured_command_cooldown(
 ) -> None:
     # 命令事件还会被 sharekeeper 等通用 matcher 处理；只在本模块真正执行
     # 对应命令时计入一次，避免同一条消息提前消耗或重复触发 CD。
-    if matcher.module != __name__:
+    if matcher.module_name != __name__:
         return
     group_id = get_group_id(event)
     if group_id is None or not command:
@@ -310,17 +312,22 @@ async def apply_configured_command_cooldown(
     user_id = int(event.get_user_id())
     usage_key = (group_id, canonical_name, user_id)
     now = time.monotonic()
-    previous = _COMMAND_LAST_USED.get(usage_key)
-    if previous is not None and now - previous < seconds:
+    allowed, notify = _COMMAND_RATE_LIMITER.check(
+        usage_key, seconds, config.cooldown_count, now
+    )
+    if not allowed and notify:
         await matcher.finish(
             Message(
                 [
                     MessageSegment.at(user_id),
-                    MessageSegment.text(" CD中"),
+                    MessageSegment.text(
+                        f" CD中（当前CD：{_format_duration(seconds)}{config.cooldown_count}次）"
+                    ),
                 ]
             )
         )
-    _COMMAND_LAST_USED[usage_key] = now
+    if not allowed:
+        await matcher.finish()
 
 _MIT3URI_CHOOSE_OPTIONS = frozenset(
     option.casefold()
@@ -720,7 +727,7 @@ async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
     _COMMAND_CONFIG_CACHE[(group_id, feature)] = config
     status = "已开启" if config.enabled else "已关闭"
     cooldown = (
-        _format_duration(config.cooldown_seconds)
+        f"{_format_duration(config.cooldown_seconds)}{config.cooldown_count}次"
         if config.cooldown_seconds is not None
         else "无限制"
     )
@@ -766,11 +773,17 @@ async def handle_feature_status(matcher: Matcher, event: Event, arg=CommandArg()
 @cooldown_set_cmd.handle()
 @group_manager_required
 async def handle_set_cooldown(matcher: Matcher, event: Event, arg=CommandArg()):
-    parts = arg.extract_plain_text().strip().split(maxsplit=1)
-    if len(parts) != 2:
-        await matcher.finish("用法：/设置CD <功能名> <时间>")
+    parts = arg.extract_plain_text().strip().split()
+    if len(parts) not in {2, 3}:
+        await matcher.finish("用法：/设置CD <功能名> <时间> [次数]，例如：设置CD 来点 3分钟 3次")
 
-    requested_name, duration_text = parts
+    requested_name, duration_text = parts[:2]
+    count = 1
+    if len(parts) == 3:
+        match = re.fullmatch(r"([0-9]+)次?", parts[2])
+        if match is None or int(match[1]) < 1:
+            await matcher.finish("次数应为正整数，例如：3次")
+        count = int(match[1])
     command_name = _canonical_command_name(requested_name)
     if command_name is None:
         await matcher.finish(f"没有找到功能：{requested_name}")
@@ -790,6 +803,7 @@ async def handle_set_cooldown(matcher: Matcher, event: Event, arg=CommandArg()):
         command_name,
         stored_seconds,
         int(event.get_user_id()),
+        count=count,
     )
     setting_key = (group_id, command_name)
     _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
@@ -797,14 +811,12 @@ async def handle_set_cooldown(matcher: Matcher, event: Event, arg=CommandArg()):
         group_id,
         command_name,
     )
-    for usage_key in list(_COMMAND_LAST_USED):
-        if usage_key[:2] == setting_key:
-            del _COMMAND_LAST_USED[usage_key]
+    _COMMAND_RATE_LIMITER.reset(group_id, command_name)
 
     if stored_seconds is None:
         await matcher.finish(f"已取消本群「{command_name}」的CD限制")
     await matcher.finish(
-        f"已将本群「{command_name}」的CD设为{_format_duration(stored_seconds)}"
+        f"已将本群「{command_name}」的CD设为{_format_duration(stored_seconds)}{count}次"
     )
 
 
