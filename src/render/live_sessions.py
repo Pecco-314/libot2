@@ -88,11 +88,26 @@ def _prefer_local_concurrency(room_id: int, sessions: list[dict[str, Any]]) -> N
 
 
 async def fetch_live_sessions_data(room_id: int, month: str) -> dict[str, Any]:
-    url = f"https://dc.hihivr.top/gift/live_sessions?room_id={room_id}&union=VirtuaReal&month={month}"
+    url = "https://vr.qianqiuzy.cn/gift/live_sessions"
     async with httpx.AsyncClient(trust_env=False) as client:
-        resp = await client.get(url, timeout=15)
+        resp = await client.get(url, params={"room_id": room_id, "month": month}, timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        raise ValueError("直播记录接口响应格式错误")
+    if str(data.get("room_id")) != str(room_id) or str(data.get("month")) != month:
+        raise ValueError("直播记录接口返回的房间或月份与请求不一致")
+    for item in data["sessions"]:
+        start_ts = _parse_session_time(item.get("start_time"))
+        end_ts = _parse_session_time(item.get("end_time"))
+        item["duration_minutes"] = (
+            max(0, (end_ts - start_ts) // 60)
+            if start_ts is not None and end_ts is not None else 0
+        )
+        item["total_revenue"] = sum(
+            float(item.get(field) or 0) for field in ("gift", "guard", "super_chat")
+        )
+    return data
 
 def _format_duration(minutes: int) -> str:
     if not minutes:
@@ -112,9 +127,6 @@ async def render_live_sessions_image(room_id: int, month: str) -> Path | None:
     await prefetch_emoji_assets([
         *(str(item.get("title") or "") for item in sessions),
     ])
-
-    queried_user = data.get("queried_user", str(room_id))
-    refresh_time = data.get("refresh_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     save_dir = ROOT / "data" / "images" / "live_sessions"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -261,7 +273,7 @@ async def render_live_sessions_image(room_id: int, month: str) -> Path | None:
 
     # 底部说明小字
     y += 20
-    footer_text = "数据来自dc.hihivr.top，感谢作者"
+    footer_text = "数据来源千秋紫莹，感谢作者"
     footer_t2i = Text2Image.from_text(footer_text, 20, fill=(180, 180, 180))
     footer_x = width - padding - footer_t2i.width
     footer_t2i.draw_on_image(canvas.image, (footer_x, y))

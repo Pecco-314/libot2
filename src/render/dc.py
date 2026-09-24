@@ -18,6 +18,9 @@ DC_BASE_URLS = {
     "all": ("https://vr.qianqiuzy.cn", "https://psp.qianqiuzy.cn"),
 }
 
+# 上游报表接口共享有限并发容量；斗虫查询在进程内串行发起请求。
+_DC_REQUEST_LOCK = asyncio.Lock()
+
 
 async def fetch_dc_data(filter_type: str, month: str) -> list[dict[str, Any]]:
     base_urls = DC_BASE_URLS.get(filter_type)
@@ -25,16 +28,16 @@ async def fetch_dc_data(filter_type: str, month: str) -> list[dict[str, Any]]:
         raise ValueError(f"不支持的斗虫社团筛选：{filter_type}")
 
     async with httpx.AsyncClient(trust_env=False) as client:
-        responses = await asyncio.gather(
-            *(
-                client.get(
+        responses = []
+        for base_url in base_urls:
+            async with _DC_REQUEST_LOCK:
+                response = await client.get(
                     f"{base_url}/gift/by_month",
                     params={"month": month},
                     timeout=30,
                 )
-                for base_url in base_urls
-            )
-        )
+                response.raise_for_status()
+            responses.append(response)
 
     anchors_by_room: dict[int, dict[str, Any]] = {}
     for response in responses:
@@ -89,18 +92,12 @@ async def get_dc_data(
 ) -> list[dict[str, Any]]:
     months_to_fetch = _months_for_period(time_str, end_time_str)
 
-    semaphore = asyncio.Semaphore(3)
-
-    async def fetch_month(month: str) -> tuple[str, list[dict[str, Any]]]:
-        async with semaphore:
-            data = await fetch_dc_data(filter_type, month)
+    month_results = []
+    for month in months_to_fetch:
+        data = await fetch_dc_data(filter_type, month)
         if not data:
             raise RuntimeError(f"{month} 没有斗虫数据")
-        return month, data
-
-    month_results = await asyncio.gather(
-        *(fetch_month(month) for month in months_to_fetch)
-    )
+        month_results.append((month, data))
 
     aggregated: dict[int, dict[str, Any]] = {}
     for month, data in month_results:
