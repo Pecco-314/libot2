@@ -273,9 +273,11 @@ async def watch_activities() -> None:
             continue
 
         uname = str(row.get("uname") or "UP主")
+        activity_url = f"https://t.bilibili.com/{row['activity_id']}"
         message = Message([
-            MessageSegment.text(f"{uname}发布了新动态！"),
+            MessageSegment.text(f"{uname}发布了新动态！\n"),
             MessageSegment.image(file=str(image_path)),
+            MessageSegment.text(f"\n({activity_url})"),
         ])
         await send_activity_to_room(int(row.get("room_id") or 0), message)
         set_state("last_activity_id", activity_id)
