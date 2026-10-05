@@ -1552,7 +1552,7 @@ async def handle_clip_document(matcher: Matcher, bot: Bot, event: Event, arg=Com
             chunks.append(line)
         else:
             chunks[-1] += "\n" + line
-    if len(chunks) == 1:
+    if len(chunks) == 1 and len(chunks[0]) <= 300 and len(lines) <= 5:
         await matcher.finish(MessageSegment.text(chunks[0]))
     nodes = [{"type": "node", "data": {"name": "Libot", "uin": bot.self_id,
               "content": MessageSegment.text(chunk)}} for chunk in chunks]
