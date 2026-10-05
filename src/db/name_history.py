@@ -19,6 +19,8 @@ def init_name_history_index(db_path: Path = DEFAULT_DB_PATH) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_nh_name_uid
                 ON name_history(uname, uid);
+            CREATE INDEX IF NOT EXISTS idx_nh_name_uid_nocase
+                ON name_history(uname COLLATE NOCASE, uid);
             CREATE INDEX IF NOT EXISTS idx_nh_uid_time
                 ON name_history(uid, first_seen);
             CREATE TABLE IF NOT EXISTS name_history_index_meta (

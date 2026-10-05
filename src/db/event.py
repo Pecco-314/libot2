@@ -27,7 +27,7 @@ def _find_uids_by_indexed_name(conn, target_name: str) -> set[int]:
     uids: set[int] = set()
     if _table_exists(conn, "name_history"):
         rows = conn.execute(
-            "SELECT uid FROM name_history WHERE uname = ?",
+            "SELECT uid FROM name_history WHERE uname = ? COLLATE NOCASE",
             (target_name,),
         ).fetchall()
         uids.update(int(row[0]) for row in rows if row[0] is not None)
@@ -44,7 +44,7 @@ def _find_uids_by_indexed_name(conn, target_name: str) -> set[int]:
         rows = conn.execute(
             """
             SELECT uid FROM liver
-            WHERE uid IS NOT NULL AND (uname = ? OR nickname = ?)
+            WHERE uid IS NOT NULL AND (uname = ? COLLATE NOCASE OR nickname = ? COLLATE NOCASE)
             """,
             (target_name, target_name),
         ).fetchall()
@@ -645,13 +645,13 @@ def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
         if cursor is None:
             rows = conn.execute(
                 "SELECT DISTINCT uid FROM event NOT INDEXED "
-                "WHERE uname = ? AND uid IS NOT NULL",
+                "WHERE uname = ? COLLATE NOCASE AND uid IS NOT NULL",
                 (target_name,),
             )
         else:
             rows = conn.execute(
                 "SELECT DISTINCT uid FROM event NOT INDEXED "
-                "WHERE id > ? AND uname = ? AND uid IS NOT NULL",
+                "WHERE id > ? AND uname = ? COLLATE NOCASE AND uid IS NOT NULL",
                 (cursor, target_name),
             )
         candidate_uids.update(int(row[0]) for row in rows)

@@ -62,6 +62,16 @@ class EventNameLookupTest(unittest.TestCase):
     def test_uses_name_history_fast_path(self) -> None:
         self.assertEqual(get_latest_uid_by_uname(1, "已索引", self.db_path), 11)
 
+    def test_indexed_name_and_liver_alias_ignore_case(self) -> None:
+        from src.db.event import _find_uids_by_indexed_name
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT INTO name_history VALUES (42, 'Mito_Mashiro', 100)")
+            conn.execute("CREATE TABLE liver(uid INTEGER, uname TEXT, nickname TEXT)")
+            conn.execute("INSERT INTO liver VALUES (43, 'MixedName', 'AliasName')")
+            self.assertEqual(_find_uids_by_indexed_name(conn, 'mito_mashiro'), {42})
+            self.assertEqual(_find_uids_by_indexed_name(conn, 'mixedname'), {43})
+            self.assertEqual(_find_uids_by_indexed_name(conn, 'aliasname'), {43})
+
     def test_indexed_old_name_resolves_after_user_renames(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(

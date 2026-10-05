@@ -83,6 +83,29 @@ class NameHistoryIndexTest(unittest.TestCase):
             conn.execute("DELETE FROM name_history_index_meta WHERE key='cursor_event_id'")
         self.assertEqual(self.lookup("旧名字"), [{"uid": 11, "history": ["旧名字"]}])
 
+    def test_case_insensitive_lookup_preserves_spelling_in_all_paths(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE event SET uname='Mito_Mashiro'")
+        expected = [{"uid": 11, "history": ["Mito_Mashiro"]}]
+        self.assertEqual(self.lookup("mito_mashiro"), expected)
+        init_name_history_index(self.db_path)
+        self.assertEqual(self.lookup("MITO_MASHIRO"), expected)
+        backfill(self.db_path, batch_size=1)
+        self.assertEqual(self.lookup("mito_mashiro"), expected)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO event(id, room_id, cmd, uid, uname, timestamp) "
+                "VALUES (2, 1, 'DANMU_MSG', 22, 'MITO_MASHIRO', 200)"
+            )
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN SELECT uid FROM name_history "
+                "WHERE uname = ? COLLATE NOCASE", ("mito_mashiro",)
+            ).fetchall()
+        self.assertTrue(any("SEARCH" in r[3] and "idx_nh_name_uid_nocase" in r[3] for r in plan))
+        self.assertEqual(self.lookup("mito_mashiro"), expected + [
+            {"uid": 22, "history": ["MITO_MASHIRO"]}
+        ])
+
     def test_daily_sync_and_tail_lookup(self) -> None:
         init_name_history_index(self.db_path)
         backfill(self.db_path, batch_size=1)
