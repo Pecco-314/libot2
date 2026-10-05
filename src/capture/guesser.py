@@ -3,7 +3,6 @@ import time
 from typing import Any
 
 from src.db.transcript import get_recent_transcripts, list_transcripts_in_range
-# 修正了导入路径
 from src.capture.fuzzy import LyricsMatcher
 
 _matcher = LyricsMatcher()
@@ -25,8 +24,7 @@ def _calc_combined_probability(evidences: list[float], top_n: int = 3) -> float:
 
 
 def _ensure_matcher() -> None:
-    if getattr(_matcher, "_index", None) is None:
-        _matcher.refresh()
+    _matcher.ensure_fresh()
 
 
 def _score_text(text: str) -> list[tuple[int, dict[str, Any], float]]:

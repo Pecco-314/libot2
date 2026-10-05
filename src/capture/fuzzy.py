@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from typing import Any
 
 from rapidfuzz import fuzz
@@ -86,11 +88,55 @@ class LyricsSearchIndex:
 
 
 class LyricsMatcher:
-    def __init__(self, index: LyricsSearchIndex | None = None):
+    """按需检查歌库内容，每分钟至多一次；外部进程的歌词更新同样生效。"""
+
+    def __init__(
+        self,
+        index: LyricsSearchIndex | None = None,
+        *,
+        check_interval: float = 60.0,
+    ):
         self._index = index
+        self._auto_refresh = index is None
+        self._check_interval = check_interval
+        self._checked_at: float | None = None
+        self._snapshot: list[tuple[Any, ...]] | None = None
+        self._lock = threading.Lock()
+
+    def ensure_fresh(self) -> None:
+        if not self._auto_refresh:
+            return
+        with self._lock:
+            now = time.monotonic()
+            if (
+                self._index is not None
+                and self._checked_at is not None
+                and now - self._checked_at < self._check_interval
+            ):
+                return
+            self._refresh_if_changed()
 
     def refresh(self) -> None:
+        with self._lock:
+            self._refresh_if_changed(force=True)
+            self._auto_refresh = True
+
+    def _refresh_if_changed(self, *, force: bool = False) -> None:
         with connect_sqlite() as conn:
+            # 内容比较覆盖直接 SQL 修改和同秒更新，不依赖 updated_at。
+            # 只检查歌曲表，弹幕等高频写入不会触发索引重建。
+            conn.execute("BEGIN")
+            snapshot = conn.execute(
+                """
+                SELECT id, title, title_trans, original_singer, lyrics_cleaned
+                FROM song_info
+                WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
+                ORDER BY id
+                """
+            ).fetchall()
+            if not force and self._index is not None and snapshot == self._snapshot:
+                self._checked_at = time.monotonic()
+                return
             rows = conn.execute(
                 """
                 SELECT 
@@ -103,15 +149,20 @@ class LyricsMatcher:
                     lyrics_cleaned
                 FROM song_info
                 WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
+                ORDER BY id
                 """
             ).fetchall()
-        self._index = LyricsSearchIndex.from_rows(rows)
+        new_index = LyricsSearchIndex.from_rows(rows)
+        self._index = new_index
+        self._snapshot = snapshot
+        self._checked_at = time.monotonic()
 
     def search(
         self,
         keyword: str,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
+        self.ensure_fresh()
         if self._index is None:
             return []
         return self._index.search(keyword, limit=limit)
