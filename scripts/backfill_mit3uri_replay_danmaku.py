@@ -40,7 +40,7 @@ from src.common.bilibili_auth import build_bilibili_cookies  # noqa: E402
 DEFAULT_DB = ROOT / "data" / "libot.db"
 DEFAULT_WORK_DIR = ROOT / "data" / "mit3uri_replay_danmaku"
 DEFAULT_BACKUP_DIR = ROOT / "data" / "backups"
-DEFAULT_CUTOFF = "2026-04-20"
+DEFAULT_CUTOFF = "2026-04-19"
 SOURCE_UID = 2030198123
 ROOM_ID = 1967216004
 TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -69,6 +69,8 @@ class DmRow:
     content: str
     ctime: int
     uid: int | None
+    dm_from: int = 0
+    attr: int = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -379,9 +381,28 @@ def parse_dm_segment(
                 content=content,
                 ctime=proto_int(fields, 8),
                 uid=uid_by_hash.get(mid_hash),
+                dm_from=proto_int(fields, 27),
+                attr=proto_int(fields, 13),
             )
         )
     return result
+
+
+def replay_row_exclusion(row: DmRow, pubdate: int) -> str | None:
+    """Only verified live-relay rows may contribute to historical live data.
+
+    Field 27 distinguishes video comments (1) from live-relay batches (3)
+    in the cached official replays. Relay ctime is the batch import time,
+    which can be days after publication; it is not the live sending time.
+    Unknown origins stay in staging for review, outside alignment/import.
+    """
+    if row.dm_from == 3:
+        return None
+    if row.dm_from == 1:
+        return "video_comment"
+    if pubdate > 0 and row.ctime > pubdate + 300:
+        return "late_unverified_source"
+    return "unverified_source"
 
 
 def normalize_hash(value: str) -> str:
@@ -3033,6 +3054,10 @@ def create_audit_db(
         if not required.issubset(present):
             conn.close()
             raise RuntimeError("existing audit.db cannot be resumed")
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(source_row)")}
+        if not {"dm_from", "dm_attr"}.issubset(columns):
+            conn.close()
+            raise RuntimeError("audit.db lacks replay source filtering; run a fresh audit without --resume")
         return conn
     if path.exists():
         path.unlink()
@@ -3052,6 +3077,8 @@ def create_audit_db(
             mid_hash TEXT NOT NULL,
             content TEXT NOT NULL,
             ctime INTEGER NOT NULL,
+            dm_from INTEGER NOT NULL,
+            dm_attr INTEGER NOT NULL,
             uid INTEGER,
             uname TEXT,
             mapped_timestamp_ms INTEGER NOT NULL,
@@ -3149,7 +3176,8 @@ def command_audit(args: argparse.Namespace) -> int:
     )
     if not isinstance(locks, dict):
         raise ValueError("alignment_locks.json sessions must be an object")
-    cutoff_timestamp = int(manifest["cutoff_timestamp_exclusive"])
+    from src.db.danmaku_sources import EXTERNAL_CUTOFF_MS
+    cutoff_timestamp = min(int(manifest["cutoff_timestamp_exclusive"]), EXTERNAL_CUTOFF_MS // 1000)
     cutoff_ms = cutoff_timestamp * 1000
     recordings_by_session: dict[
         str, list[dict[str, Any]]
@@ -3191,6 +3219,12 @@ def command_audit(args: argparse.Namespace) -> int:
             recordings.sort(key=lambda value: value["recording_index"])
             first = recordings[0]
             dm_rows = load_session_dm(work_dir, recordings, uid_by_hash)
+            pubdates = {r["bvid"]: int(r.get("pubdate") or 0) for r in recordings}
+            exclusions = {
+                (row.cid, row.dm_id): replay_row_exclusion(row, pubdates[row.bvid])
+                for row in dm_rows
+            }
+            live_dm_rows = [row for row in dm_rows if exclusions[(row.cid, row.dm_id)] is None]
             expected_base_ms = int(first["start_timestamp"]) * 1000
             duration_ms = max(
                 (
@@ -3207,7 +3241,7 @@ def command_audit(args: argparse.Namespace) -> int:
                 duration_ms=duration_ms,
             )
             candidates = alignment_candidates(
-                dm_rows,
+                live_dm_rows,
                 existing_rows,
                 expected_base_ms,
             )
@@ -3245,7 +3279,7 @@ def command_audit(args: argparse.Namespace) -> int:
                 alignment["method"] != "catalog_hour"
             )
             matched = match_existing_rows(
-                dm_rows,
+                live_dm_rows,
                 existing_rows,
                 base_ms=int(alignment["base_ms"]),
                 tolerance_ms=args.duplicate_tolerance_ms,
@@ -3256,7 +3290,9 @@ def command_audit(args: argparse.Namespace) -> int:
                     int(alignment["base_ms"]) + row.session_progress_ms
                 )
                 duplicate_event_id = matched.get((row.cid, row.dm_id))
-                if mapped_ms >= cutoff_ms:
+                if exclusions[(row.cid, row.dm_id)] is not None:
+                    action = exclusions[(row.cid, row.dm_id)]
+                elif mapped_ms >= cutoff_ms:
                     action = "outside_cutoff"
                 elif duplicate_event_id is not None:
                     action = "existing"
@@ -3287,6 +3323,8 @@ def command_audit(args: argparse.Namespace) -> int:
                         row.mid_hash,
                         row.content,
                         row.ctime,
+                        row.dm_from,
+                        row.attr,
                         row.uid,
                         uname,
                         mapped_ms,
@@ -3304,10 +3342,10 @@ def command_audit(args: argparse.Namespace) -> int:
                 """
                 INSERT INTO source_row (
                     session_id, bvid, cid, dm_id, progress_ms,
-                    session_progress_ms, mid_hash, content, ctime,
+                    session_progress_ms, mid_hash, content, ctime, dm_from, dm_attr,
                     uid, uname, mapped_timestamp_ms, action,
                     duplicate_event_id, alignment_method
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows_to_insert,
             )
@@ -3446,6 +3484,9 @@ def command_audit(args: argparse.Namespace) -> int:
                 "outside_cutoff",
                 "unresolved_alignment",
                 "unknown_uid",
+                "video_comment",
+                "late_unverified_source",
+                "unverified_source",
             )
         },
         "identity": {
