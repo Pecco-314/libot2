@@ -208,6 +208,22 @@ fan_club_list_cmd = on_command(
 concurrent_cmd = on_command("查同接", priority=5, block=True)
 blind_box_cmd = on_command("查盲盒", priority=5, block=True)
 danmaku_rank_cmd = on_command("弹幕榜", priority=5, block=True)
+reaction_rank_cmd = on_command("贴表情榜", priority=5, block=True)
+reaction_received_rank_cmd = on_command("被贴表情榜", priority=5, block=True)
+
+
+@reaction_rank_cmd.handle()
+async def handle_reaction_rank(bot: Bot, event: Event, matcher: Matcher, arg: Message = CommandArg()):
+    from src.plugins.qq_reactions import show_rank
+    await show_rank(bot, event, matcher, arg.extract_plain_text().strip(), False)
+
+
+@reaction_received_rank_cmd.handle()
+async def handle_reaction_received_rank(bot: Bot, event: Event, matcher: Matcher, arg: Message = CommandArg()):
+    from src.plugins.qq_reactions import show_rank
+    await show_rank(bot, event, matcher, arg.extract_plain_text().strip(), True)
+
+
 events_cmd = on_command("查弹幕", priority=5, block=True)
 content_search_cmd = on_command(
     "有谁说过", aliases={"谁说过"}, priority=5, block=True
