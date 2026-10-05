@@ -7,6 +7,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+from src.common.singers import singer_query_names, split_singers
+from src.db.singer_alias import resolve_singer_alias
 
 from src.db.sqlite import (
     DEFAULT_DB_PATH,
@@ -657,11 +659,12 @@ def random_daily_last_song(
     }
 
 
-def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
+def list_songs_by_singer(singer: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict[str, Any]]:
     normalized = singer.strip().casefold()
     if not normalized:
         return []
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
+        query_names = singer_query_names(resolve_singer_alias(singer, conn=conn))
         rows = conn.execute(
             """
             SELECT id, title, original_singer, 
@@ -675,8 +678,8 @@ def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for row in rows:
         original_singer = row[2] or ""
-        parts = [part.strip().casefold() for part in original_singer.split("/")]
-        if normalized in [part for part in parts if part]:
+        parts = [part.casefold() for part in split_singers(original_singer)]
+        if query_names.intersection(parts):
             results.append(
                 {
                     "id": row[0],
@@ -691,11 +694,13 @@ def list_songs_by_singer(singer: str) -> list[dict[str, Any]]:
 def list_recent_song_records_by_singer(
     singer: str,
     limit: int = 5,
+    db_path: Path = DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
     normalized = singer.strip().casefold()
     if not normalized or limit <= 0:
         return []
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
+        query_names = singer_query_names(resolve_singer_alias(singer, conn=conn))
         rows = conn.execute(
             """
             SELECT r.id, r.record_date, i.id, i.title, i.original_singer
@@ -709,8 +714,8 @@ def list_recent_song_records_by_singer(
     results: list[dict[str, Any]] = []
     for row in rows:
         original_singer = str(row[4] or "")
-        parts = [part.strip().casefold() for part in original_singer.split("/")]
-        if normalized not in [part for part in parts if part]:
+        parts = [part.casefold() for part in split_singers(original_singer)]
+        if not query_names.intersection(parts):
             continue
         results.append(
             {

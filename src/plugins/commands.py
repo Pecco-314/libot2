@@ -19,6 +19,7 @@ from nonebot.permission import SUPERUSER
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
 
 from src.db.song_list import search_songs_by_title, add_new_song, add_song_record
+from src.db.singer_alias import add_singer_alias
 from src.db.clip_marker import add_clip_marker, list_clip_markers, format_clip_marker
 from src.render.superchat import get_daily_superchat_images, get_user_superchat_images
 from src.render.help import render_help_image, render_admin_help_image
@@ -218,6 +219,7 @@ _CONTENT_SEARCH_HIDDEN_RANGE = (
 )
 song_search_cmd = on_command("查歌曲", priority=5, block=True)
 song_singer_cmd = on_command("查歌手", priority=5, block=True)
+singer_alias_cmd = on_command("新增歌手别名", priority=5, block=True)
 song_list_cmd = on_command("查歌单", priority=5, block=True)
 random_search_cmd = on_command("随机歌曲", priority=5, block=True)
 now_playing_cmd = on_command("在唱什么", aliases={"正在演唱"}, priority=5, block=True)
@@ -2122,6 +2124,19 @@ async def handle_song_singer(matcher: Matcher, arg=CommandArg()):
         MessageSegment.image(file=str(result["image_path"])),
     ])
     await matcher.finish(message)
+
+
+@singer_alias_cmd.handle()
+@group_manager_required
+async def handle_singer_alias(matcher: Matcher, event: Event, arg=CommandArg()):
+    parts = [part.strip() for part in re.split(r"[|｜=＝]", arg.extract_plain_text())]
+    if len(parts) != 2 or not all(parts):
+        await matcher.finish("用法：新增歌手别名 别名 | 完整歌手名，例如：邓紫棋 | G.E.M. 邓紫棋")
+    try:
+        singer, changed = await asyncio.to_thread(add_singer_alias, *parts)
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+    await matcher.finish(f"{'已登记' if changed else '已可使用'}：{parts[0]} = {singer}")
 
 
 async def _handle_random_song(matcher: Matcher, count: str):

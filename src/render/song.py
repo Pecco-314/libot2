@@ -7,6 +7,8 @@ from PIL import ImageDraw
 from nonebot_plugin_imageutils import BuildImage
 
 from src.common.utils import ROOT
+from src.common.singers import SLASHED_SINGER_NAMES, split_singers
+from src.db.singer_alias import resolve_singer_alias
 from src.db.song_list import (
     get_songs_of_date,
     list_song_catalog,
@@ -349,6 +351,7 @@ def _save_singer_song_list(
 
 
 async def render_songs_by_singer(singer: str) -> dict[str, Any] | None:
+    singer = resolve_singer_alias(singer)
     songs = list_songs_by_singer(singer)
     if not songs:
         return None
@@ -454,7 +457,6 @@ async def render_songs_by_date(target_date: date) -> dict[str, Any] | None:
 
 
 SONG_LIST_MODES = {"按顺序", "按歌手", "按语言", "按歌名", "按次数"}
-SLASHED_SINGER_NAMES = ("K/DA", "HUNTR/X")
 
 
 def _song_sort_text(value: Any) -> tuple[str, str]:
@@ -463,20 +465,7 @@ def _song_sort_text(value: Any) -> tuple[str, str]:
 
 
 def _split_singers(value: Any) -> list[str]:
-    text = str(value or "未知")
-    protected: dict[str, str] = {}
-    for index, singer in enumerate(SLASHED_SINGER_NAMES):
-        token = f"\x00{index}\x00"
-        if singer in text:
-            text = text.replace(singer, token)
-            protected[token] = singer
-    return list(
-        dict.fromkeys(
-            protected.get(part.strip(), part.strip())
-            for part in text.split("/")
-            if part.strip()
-        )
-    ) or ["未知"]
+    return split_singers(value) or ["未知"]
 
 
 def _count_singer_appearances(songs: list[dict[str, Any]]) -> Counter[str]:
