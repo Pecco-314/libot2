@@ -2555,18 +2555,20 @@ async def handle_live_list_remove(matcher: Matcher, event: Event, arg=CommandArg
 @live_list_show_cmd.handle()
 async def handle_live_list_show(matcher: Matcher, event: Event, arg=CommandArg()):
     args = arg.extract_plain_text().strip().split()
-    filter_tag = args[0] if args else None
+    filter_tag = args[0] if args else "VR+PSP+LDC"
+    filter_tags = {args[0].lower()} if args else {"vr", "psp", "ldc"}
+    if filter_tag == "全部":
+        filter_tag = None
     
     rooms_info = get_live_list()
     if not rooms_info:
         await matcher.finish("目前尚未添加任何直播间，请使用 /添加直播 <直播间号> 增加主播哦。")
         
-    # 如果指定了标签，则进行本地过滤
+    # 默认标签取并集；显式指定时按单个标签精确匹配。
     if filter_tag:
-        filter_tag_lower = filter_tag.lower()
         rooms_info = [
             r for r in rooms_info 
-            if filter_tag_lower in [t.lower() for t in r["tags"]]
+            if filter_tags.intersection(t.lower() for t in r["tags"])
         ]
         if not rooms_info:
             await matcher.finish(f"当前列表中未找到包含标签 [{filter_tag}] 的直播间。")
