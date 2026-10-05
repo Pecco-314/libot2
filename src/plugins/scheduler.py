@@ -12,6 +12,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot_plugin_apscheduler import scheduler
 
 from src.common.utils import send_notification_email, ROOT
+from src.common.push_features import OWN_ROOM_ACTIVITY, is_push_enabled
 from src.render.activity import render_bilibili_card
 from src.db.activity import (
     LIVE_RCMD_ACTIVITY_TYPE,
@@ -42,7 +43,8 @@ def _is_mention_all_enabled(group_id: int) -> bool:
     return get_subscription_feature(group_id, "mention_all")
 
 
-async def send_to_room(room_id: int, message: str, *, mention_all: bool = False) -> None:
+async def send_to_room(room_id: int, message: str, *, mention_all: bool = False,
+                       feature: str | None = None) -> None:
     group_ids = list_subscribed_group_ids(room_id)
     if not group_ids:
         return
@@ -55,6 +57,8 @@ async def send_to_room(room_id: int, message: str, *, mention_all: bool = False)
     bot = bots[0]
     for group_id in group_ids:
         try:
+            if feature is not None and not await asyncio.to_thread(is_push_enabled, group_id, feature):
+                continue
             if mention_all and _is_mention_all_enabled(group_id):
                 msg = Message([MessageSegment.at("all"), MessageSegment.text(message)])
                 await bot.call_api("send_group_msg", group_id=group_id, message=msg)
@@ -218,6 +222,7 @@ async def watch_streamer_danmaku() -> None:
             await send_to_room(
                 int(row["room_id"]),
                 f"[{row['uname']}]: {row['content']}",
+                feature=OWN_ROOM_ACTIVITY,
             )
     # Advance across every inspected event in memory, including non-matching
     # events, so the one-second watcher never repeatedly scans a growing range.

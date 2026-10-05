@@ -64,6 +64,7 @@ from src.spider.wrapper import (
     get_fan_club_num,
 )
 from src.common.utils import ROOT
+from src.common.push_features import PUSH_FEATURE_ALIASES
 from src.common.blind_box import BLIND_BOX_DATA_START
 from src.common.meme_image import (
     MemeImageError,
@@ -687,6 +688,8 @@ def _parse_feature_name(text: str) -> str | None:
         return "退群通知"
     if normalized in {"进群欢迎", "进群通知", "欢迎"}:
         return "进群欢迎"
+    if normalized in PUSH_FEATURE_ALIASES:
+        return PUSH_FEATURE_ALIASES[normalized]
     if normalized in RESERVED_FEATURE_REGISTRY:
         return normalized
     return _canonical_command_name(normalized)
@@ -741,6 +744,8 @@ async def _handle_feature_status(matcher: Matcher, event: Event, feature: str):
     config = await asyncio.to_thread(get_command_config, group_id, feature)
     _COMMAND_CONFIG_CACHE[(group_id, feature)] = config
     status = "已开启" if config.enabled else "已关闭"
+    if feature in PUSH_FEATURE_ALIASES:
+        await matcher.finish(f"{feature}：{status}")
     cooldown = (
         f"{_format_duration(config.cooldown_seconds)}{config.cooldown_count}次"
         if config.cooldown_seconds is not None
