@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
-from src.db.clip_marker import add_clip_marker, list_clip_markers, format_clip_marker
+from src.db.clip_marker import add_clip_marker, format_clip_marker, list_clip_markers
+from tests.command_sources import command_tree
 
 
 class ClipMarkerTest(unittest.TestCase):
@@ -39,7 +40,7 @@ class Finished(Exception):
 
 class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         handler = next(node for node in tree.body
                        if isinstance(node, ast.AsyncFunctionDef) and node.name == "handle_clip_document")
         handler.decorator_list = []

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import unittest
-import ast
-from pathlib import Path
-from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 from src.common.meme_image import extract_reply_text
 from src.db.meme import is_valid_meme_name
+from tests.command_sources import command_tree
 
 
 class MemeReplyTest(unittest.TestCase):
@@ -40,7 +40,7 @@ class MemeReplyTest(unittest.TestCase):
 
 class MemeAddRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_reply_tags_and_direct_content(self):
-        node = next(n for n in ast.parse(Path('src/plugins/commands.py').read_text()).body
+        node = next(n for n in command_tree().body
                     if isinstance(n, ast.AsyncFunctionDef) and n.name == 'handle_meme_add')
         node.decorator_list = []
         class Finished(Exception):
@@ -68,7 +68,7 @@ class MemeAddRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 class MemeDailyQueryRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_cheat_wife_uses_daily_draw_and_own_heading(self):
-        node = next(n for n in ast.parse(Path('src/plugins/commands.py').read_text()).body
+        node = next(n for n in command_tree().body
                     if isinstance(n, ast.AsyncFunctionDef) and n.name == '_handle_meme_query')
         daily = Mock(return_value={'content': '测试内容', 'entry_type': 'text'})
         random = Mock()

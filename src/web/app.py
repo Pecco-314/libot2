@@ -15,6 +15,7 @@ from src.common.utils import ROOT, load_env_file, init_logger
 from src.common.meme_image import resolve_meme_image_path
 from src.db.state import init_state_db, get_state, set_state
 from src.db.meme import (
+    init_meme_db,
     count_pending_memes,
     get_meme_by_id,
     get_meme_page,
@@ -50,6 +51,7 @@ if not app.secret_key:
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 init_state_db()
+init_meme_db()
 if get_state("web_password") is None:
     initial_password = os.environ.get("FLASK_INITIAL_PASSWORD")
     set_state("web_password", generate_password_hash(initial_password))

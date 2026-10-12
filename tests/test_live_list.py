@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from src.db.live_list import get_live_list_by_tag
+from tests.command_sources import command_tree
 
 
 class LiveListTest(unittest.TestCase):
@@ -41,7 +42,7 @@ class Finished(Exception):
 
 class LiveListCommandTest(unittest.IsolatedAsyncioTestCase):
     async def test_add_tags_is_public_but_modify_and_remove_require_permission(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         for name in ("handle_live_list_add_tag", "handle_live_list_set_tag", "handle_live_list_remove"):
             for allowed in (False, True):
                 with self.subTest(handler=name, allowed=allowed):
@@ -75,7 +76,7 @@ class LiveListCommandTest(unittest.IsolatedAsyncioTestCase):
                             remove.assert_called_once_with(123)
 
     async def test_default_all_and_explicit_tags(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         handler = next(n for n in tree.body
                        if isinstance(n, ast.AsyncFunctionDef) and n.name == "handle_live_list_show")
         handler.decorator_list = []

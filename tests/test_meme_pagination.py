@@ -22,9 +22,10 @@ class MemePaginationTests(unittest.TestCase):
         self.db = Path(self.temp.name) / 'meme.db'
         spec = importlib.util.spec_from_file_location('isolated_meme', ROOT / 'src/db/meme.py')
         self.meme = importlib.util.module_from_spec(spec)
-        # meme.py initializes its default DB on import; never let tests touch production.
+        # 默认连接绑定临时数据库，所有初始化与查询都在隔离环境中执行。
         with patch.object(sqlite_helpers, 'DEFAULT_DB_PATH', self.db):
             spec.loader.exec_module(self.meme)
+        self.meme.init_meme_db(self.db)
         with sqlite3.connect(self.db) as con:
             con.execute("INSERT INTO meme_group(id, display_name) VALUES (1, '测试')")
             con.executemany(

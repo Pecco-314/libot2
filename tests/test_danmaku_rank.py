@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from src.common.danmaku_rank import TZ, parse_rank_period, build_danmaku_rank_items
+from src.common.danmaku_rank import TZ, build_danmaku_rank_items, parse_rank_period
 from src.db.danmaku_rank import query_danmaku_rank
+from tests.command_sources import command_tree
 
 
 class PeriodTests(unittest.TestCase):
@@ -82,7 +83,7 @@ class QueryTests(unittest.TestCase):
 
 class HandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_period_and_session_routing(self):
-        tree = ast.parse(Path('src/plugins/commands.py').read_text())
+        tree = command_tree()
         fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'handle_danmaku_rank')
         fn.decorator_list = []
         class Finished(Exception):

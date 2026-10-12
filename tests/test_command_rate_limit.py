@@ -1,13 +1,13 @@
 import ast
 import asyncio
 import os
-from pathlib import Path
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from src.db.command_config import CommandConfig
 from src.plugins.command_rate_limit import CommandRateLimiter
+from tests.command_sources import command_tree
 
 
 class CommandRateLimitTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class CommandRateLimitTests(unittest.TestCase):
 
     def test_real_preprocessor_command_scope(self):
         # 仅提取预处理函数，避免加载生产插件及其数据库初始化。
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                     and n.name == "apply_configured_command_cooldown")
         node.decorator_list = []
@@ -36,7 +36,7 @@ class CommandRateLimitTests(unittest.TestCase):
             arg.annotation = None
         limiter = CommandRateLimiter()
         env = {
-            "__name__": "test_commands", "asyncio": asyncio, "os": os,
+            "__name__": "test_policy", "COMMAND_MODULE_NAME": "test_commands", "asyncio": asyncio, "os": os,
             "get_group_id": lambda event: event.group_id,
             "_canonical_command_name": lambda name: {"来点": "来点", "别名": "来点"}.get(name),
             "_COMMAND_CONFIG_CACHE": {(1, "来点"): CommandConfig(cooldown_seconds=180, cooldown_count=3)},

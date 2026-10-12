@@ -141,6 +141,3 @@ def get_live_list_by_tag(tag: str, db_path: Path = DEFAULT_DB_PATH) -> list[dict
         matched,
         key=lambda room: ((room.get("uname") or "").casefold(), room["room_id"]),
     )
-
-# 初始化表结构
-init_live_list_db()

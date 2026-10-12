@@ -117,6 +117,3 @@ def remove_abbreviations(
             ids,
         )
     return cursor.rowcount
-
-
-init_abbreviation_db()

@@ -745,6 +745,3 @@ def remove_meme(
             (int(record_id),),
         )
     return cursor.rowcount > 0
-
-
-init_meme_db()

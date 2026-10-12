@@ -1,13 +1,14 @@
 import ast
-from pathlib import Path
-from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+from tests.command_sources import command_tree
 
 
 class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_numeric_unique_missing_and_ambiguous_queries(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                     and n.name == "_resolve_user_uid")
         lookup = Mock()
@@ -43,7 +44,7 @@ class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(finish.call_args.args[0].endswith("……"))
 
     def test_user_query_commands_use_shared_resolver(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         for name in ("handle_events", "handle_superchat", "handle_medal_wall"):
             with self.subTest(command=name):
                 node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
@@ -51,7 +52,7 @@ class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
                                     and n.func.id == "_resolve_user_uid" for n in ast.walk(node)))
 
     async def test_name_history_displays_all_same_name_users(self):
-        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        tree = command_tree()
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                     and n.name == "handle_name_history")
         node.decorator_list = []

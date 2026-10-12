@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.common import chat_summary_service as service
 from src.db import chat_summary as db
+from tests.command_sources import command_tree
 
 
 class CountTests(unittest.IsolatedAsyncioTestCase):
@@ -89,7 +90,7 @@ class CountTests(unittest.IsolatedAsyncioTestCase):
 
 class ClosedJobTests(unittest.IsolatedAsyncioTestCase):
     async def test_handler_notifies_on_generation_and_always_uses_forward(self):
-        tree = ast.parse(Path('src/plugins/commands.py').read_text())
+        tree = command_tree()
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                     and n.name == 'handle_chat_summary')
         node.decorator_list = []
@@ -150,7 +151,7 @@ class ClosedJobTests(unittest.IsolatedAsyncioTestCase):
         process.assert_not_called()
 
     async def test_disabled_handler_does_not_bypass_for_manager(self):
-        tree = ast.parse(Path('src/plugins/commands.py').read_text())
+        tree = command_tree()
         node = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
                     and n.name == 'handle_chat_summary')
         node.decorator_list = []

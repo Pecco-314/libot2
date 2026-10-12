@@ -3,16 +3,16 @@ import asyncio
 import json
 import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from PIL import Image
 from nonebot.adapters.onebot.v11 import MessageSegment
+from PIL import Image
 
 from src.common.chat_summary import attach_participants, summary_for_model
 from src.common.chat_summary_service import parse_summary_count
-from src.render.chat_summary import render_summary, _display_text
+from src.render.chat_summary import _display_text, render_summary
+from tests.command_sources import command_tree
 
 
 class ParticipantsTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
     async def test_one_or_multiple_images_always_use_forward(self):
         node = next(
             n
-            for n in ast.parse(Path("src/plugins/commands.py").read_text()).body
+            for n in command_tree().body
             if isinstance(n, ast.AsyncFunctionDef) and n.name == "handle_chat_summary"
         )
         node.decorator_list = []

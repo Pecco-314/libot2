@@ -1,16 +1,22 @@
 import ast
 import asyncio
 import logging
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, Mock
 
-from src.common.push_features import OWN_ROOM_ACTIVITY, OTHER_ROOM_ACTIVITY, PUSH_FEATURE_ALIASES, room_activity_feature
+from src.common.push_features import (
+    OTHER_ROOM_ACTIVITY,
+    OWN_ROOM_ACTIVITY,
+    PUSH_FEATURE_ALIASES,
+    room_activity_feature,
+)
+from tests.command_sources import command_tree
 
 
 def load_functions(path, names, env):
-    tree = ast.parse(Path(path).read_text())
+    tree = command_tree() if path == "src/plugins/commands.py" else ast.parse(Path(path).read_text())
     funcs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     for node in funcs:
         node.decorator_list = []
