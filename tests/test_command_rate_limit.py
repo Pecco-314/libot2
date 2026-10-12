@@ -1,9 +1,10 @@
 import ast
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.db.command_config import CommandConfig
 from src.plugins.command_rate_limit import CommandRateLimiter
@@ -35,7 +36,7 @@ class CommandRateLimitTests(unittest.TestCase):
             arg.annotation = None
         limiter = CommandRateLimiter()
         env = {
-            "__name__": "test_commands", "asyncio": asyncio,
+            "__name__": "test_commands", "asyncio": asyncio, "os": os,
             "get_group_id": lambda event: event.group_id,
             "_canonical_command_name": lambda name: {"来点": "来点", "别名": "来点"}.get(name),
             "_COMMAND_CONFIG_CACHE": {(1, "来点"): CommandConfig(cooldown_seconds=180, cooldown_count=3)},
@@ -68,6 +69,15 @@ class CommandRateLimitTests(unittest.TestCase):
                 with self.assertRaises(Finished):
                     await call(matcher, None, event, ("来点",))
             self.assertEqual(messages, [["@2", " CD中（当前CD：3分钟3次）"], None])
+            with patch.dict(os.environ, {"MANAGER_QQ": "2"}):
+                for _ in range(5):
+                    await call(matcher, None, event, ("来点",))
+                self.assertEqual(len(messages), 2)
+                # 豁免不需要读取群配置，也不占用普通用户额度。
+                env["_COMMAND_CONFIG_CACHE"].clear()
+                await call(matcher, None, event, ("来点",))
+                self.assertEqual(env["_COMMAND_CONFIG_CACHE"], {})
+            env["_COMMAND_CONFIG_CACHE"][(1, "来点")] = CommandConfig(cooldown_seconds=180, cooldown_count=3)
             env["SUPERUSER"].return_value = True
             await call(matcher, None, event, ("来点",))
             matcher.module_name = "another_plugin"

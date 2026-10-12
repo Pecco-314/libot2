@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import re
 import asyncio
@@ -102,9 +103,9 @@ from src.db.abbreviation import (
 )
 from src.db.meme import (
     MemePoolExhausted,
-    add_meme,
+    add_meme_tags,
     add_meme_alias,
-    add_meme_image,
+    add_meme_image_tags,
     find_meme,
     get_daily_meme,
     get_random_meme,
@@ -326,14 +327,16 @@ async def apply_configured_command_cooldown(
     setting_key = (group_id, canonical_name)
     if setting_key not in _COMMAND_CONFIG_CACHE:
         _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
+    # 项目管理员与 NoneBot 超级管理员均不受群命令开关和 CD 限制。
+    manager_qq = os.environ.get("MANAGER_QQ", "").strip()
+    if (manager_qq and event.get_user_id() == manager_qq) or await SUPERUSER(bot, event):
+        return
             get_command_config,
             group_id,
             canonical_name,
         )
     config = _COMMAND_CONFIG_CACHE[setting_key]
     if config.enabled and config.cooldown_seconds is None:
-        return
-    if await SUPERUSER(bot, event):
         return
     if not config.enabled:
         await matcher.finish("本群未开启此功能")
@@ -402,35 +405,37 @@ async def handle_choose(matcher: Matcher, arg=CommandArg()):
 
 @meme_add_cmd.handle()
 async def handle_meme_add(matcher: Matcher, event: Event, arg=CommandArg()):
-    parts = arg.extract_plain_text().strip().split(maxsplit=1)
+    raw = arg.extract_plain_text().strip()
+    replying = getattr(event, "reply", None) is not None
+    parts = raw.split() if replying else raw.split(maxsplit=1)
     if not parts:
-        await matcher.finish("用法：新增梗 <名字> <内容>，或回复文本后新增梗 <名字>")
+        await matcher.finish("用法：新增梗 <名字> <内容>，或回复文本后新增梗 <标签1> [标签2 ...]")
 
-    name = parts[0]
-    content = parts[1] if len(parts) == 2 else extract_reply_text(event)
+    names = parts if replying else [parts[0]]
+    content = extract_reply_text(event) if replying else (parts[1] if len(parts) == 2 else None)
     if content is None:
         await matcher.finish("请提供内容，或回复一条文本消息")
-    if not is_valid_meme_name(name):
+    if not all(is_valid_meme_name(name) for name in names):
         await matcher.finish("名字需为1至32个不含空格的字符")
     if len(content) > 1000:
         await matcher.finish("内容过长，最多1000个字符")
 
     added = await asyncio.to_thread(
-        add_meme,
-        name,
+        add_meme_tags,
+        names,
         content,
         int(event.get_user_id()),
     )
     if not added:
         await matcher.finish("这条内容已经存在或已在审核中")
-    await matcher.finish("已提交至管理员审核")
+    await matcher.finish("已提交至管理员审核" + (f"：{'、'.join(added)}" if len(names) > 1 else ""))
 
 
 @meme_image_add_cmd.handle()
 async def handle_meme_image_add(matcher: Matcher, event: Event, arg=CommandArg()):
-    name = arg.extract_plain_text().strip()
-    if not is_valid_meme_name(name):
-        await matcher.finish("用法：回复一张图片后发送 新增图片 <名字>")
+    names = arg.extract_plain_text().split()
+    if not names or not all(is_valid_meme_name(name) for name in names):
+        await matcher.finish("用法：回复一张图片后发送 新增图片 <标签1> [标签2 ...]，每个标签为1至32个字符")
 
     image_url = extract_reply_image_url(event)
     if image_url is None:
@@ -442,14 +447,14 @@ async def handle_meme_image_add(matcher: Matcher, event: Event, arg=CommandArg()
         await matcher.finish(str(exc))
 
     added = await asyncio.to_thread(
-        add_meme_image,
-        name,
+        add_meme_image_tags,
+        names,
         image_path,
         int(event.get_user_id()),
     )
     if not added:
         await matcher.finish("这张图片已经存在或已在审核中")
-    await matcher.finish("已提交至管理员审核")
+    await matcher.finish("已提交至管理员审核" + (f"：{'、'.join(added)}" if len(names) > 1 else ""))
 
 
 @meme_alias_cmd.handle()

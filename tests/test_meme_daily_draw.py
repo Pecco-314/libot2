@@ -84,6 +84,27 @@ class MemeDailyDrawTest(unittest.TestCase):
             )
         )
 
+    def test_cheat_wife_alias_shares_daily_result_and_separate_pool(self) -> None:
+        add_meme("老婆.", "作弊内容一", 1, self.db_path)
+        add_meme("老婆.", "作弊内容二", 1, self.db_path)
+        add_meme_alias("老婆.", "作弊老婆", self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE meme_entry SET status = 'approved'")
+        self.assertEqual(resolve_daily_meme_name("老婆.", self.db_path), "老婆.")
+        self.assertEqual(resolve_daily_meme_name("作弊老婆", self.db_path), "老婆.")
+        now = datetime(2026, 10, 11, 23, 59, tzinfo=ZoneInfo("Asia/Shanghai"))
+        first = get_daily_meme("老婆.", 123, now=now, db_path=self.db_path)
+        name = resolve_daily_meme_name("作弊老婆", self.db_path)
+        self.assertEqual(get_daily_meme(name, 123, now=now, db_path=self.db_path), first)
+        normal = get_daily_meme("老婆", 123, now=now, db_path=self.db_path)
+        self.assertNotEqual(normal["id"], first["id"])
+        second = get_daily_meme("老婆.", 456, now=now, db_path=self.db_path)
+        self.assertNotEqual(first["id"], second["id"])
+        with self.assertRaises(MemePoolExhausted):
+            get_daily_meme("老婆.", 789, now=now, db_path=self.db_path)
+        midnight = now.replace(day=12, hour=0, minute=0)
+        self.assertIsNotNone(get_daily_meme("老婆.", 789, now=midnight, db_path=self.db_path))
+
     def test_title_rank_counts_only_approved_entries(self) -> None:
         add_meme("其他", "审核通过", 1, self.db_path)
         add_meme("其他", "仍在审核", 1, self.db_path)

@@ -11,7 +11,7 @@ from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
 
 
 BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
-DAILY_MEME_NAMES = ("老婆", "老公")
+DAILY_MEME_NAMES = ("老婆", "老公", "老婆.")
 
 
 class MemePoolExhausted(LookupError):
@@ -151,25 +151,44 @@ def add_meme(
     adder_uid: int,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> bool:
-    if not is_valid_meme_name(name):
+    return bool(add_meme_tags([name], content, adder_uid, db_path))
+
+
+def add_meme_tags(
+    names: list[str],
+    content: str,
+    adder_uid: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[str]:
+    """同一文本原子地提交到多个独立内容池，重复及同组别名只处理一次。"""
+    if not names or not all(is_valid_meme_name(name) for name in names):
         raise ValueError("meme name must contain 1-32 non-whitespace characters")
     cleaned_content = _clean_content(content)
     if not cleaned_content:
         raise ValueError("meme content must not be empty")
 
+    added = []
+    seen_groups = set()
     with write_transaction(db_path) as conn:
-        group_id = _find_group_id(conn, name)
-        if group_id is None:
-            group_id = _create_group(conn, name)
-        cursor = conn.execute(
-            """
-            INSERT OR IGNORE INTO meme_entry
-                (meme_group_id, content, adder_uid, entry_type, status)
-            VALUES (?, ?, ?, 'text', 'pending')
-            """,
-            (group_id, cleaned_content, int(adder_uid)),
-        )
-    return cursor.rowcount > 0
+        for name in names:
+            name = name.strip()
+            group_id = _find_group_id(conn, name)
+            if group_id is None:
+                group_id = _create_group(conn, name)
+            if group_id in seen_groups:
+                continue
+            seen_groups.add(group_id)
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO meme_entry
+                    (meme_group_id, content, adder_uid, entry_type, status)
+                VALUES (?, ?, ?, 'text', 'pending')
+                """,
+                (group_id, cleaned_content, int(adder_uid)),
+            )
+            if cursor.rowcount > 0:
+                added.append(name)
+    return added
 
 
 def add_meme_image(
@@ -178,25 +197,44 @@ def add_meme_image(
     adder_uid: int,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> bool:
-    if not is_valid_meme_name(name):
+    return bool(add_meme_image_tags([name], image_path, adder_uid, db_path))
+
+
+def add_meme_image_tags(
+    names: list[str],
+    image_path: str,
+    adder_uid: int,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[str]:
+    """同一图片原子地加入多个独立内容池；别名去重，各条目单独审核。"""
+    if not names or not all(is_valid_meme_name(name) for name in names):
         raise ValueError("meme name must contain 1-32 non-whitespace characters")
     cleaned_path = image_path.strip()
     if not cleaned_path:
         raise ValueError("meme image path must not be empty")
 
+    added = []
+    seen_groups = set()
     with write_transaction(db_path) as conn:
-        group_id = _find_group_id(conn, name)
-        if group_id is None:
-            group_id = _create_group(conn, name)
-        cursor = conn.execute(
-            """
-            INSERT OR IGNORE INTO meme_entry
-                (meme_group_id, content, adder_uid, entry_type, status)
-            VALUES (?, ?, ?, 'image', 'pending')
-            """,
-            (group_id, cleaned_path, int(adder_uid)),
-        )
-    return cursor.rowcount > 0
+        for name in names:
+            name = name.strip()
+            group_id = _find_group_id(conn, name)
+            if group_id is None:
+                group_id = _create_group(conn, name)
+            if group_id in seen_groups:
+                continue
+            seen_groups.add(group_id)
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO meme_entry
+                    (meme_group_id, content, adder_uid, entry_type, status)
+                VALUES (?, ?, ?, 'image', 'pending')
+                """,
+                (group_id, cleaned_path, int(adder_uid)),
+            )
+            if cursor.rowcount > 0:
+                added.append(name)
+    return added
 
 
 def add_meme_alias(
