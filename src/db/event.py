@@ -594,10 +594,13 @@ def get_live_end_near_start(
 
 
 def _merge_and_sort_histories(history_rows: list, event_rows: list) -> list[dict[str, object]]:
+    """按首次出现时间合并有效用户名称，忽略缺失或空白名称。"""
     user_data = {}  # 结构: {uid: {uname: min_timestamp}}
     
     # 融合并保留每个名字的最早时间戳
     for uid, uname, ts in history_rows + event_rows:
+        if uid is None or not isinstance(uname, str) or not uname.strip():
+            continue
         if uid not in user_data:
             user_data[uid] = {}
             

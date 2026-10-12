@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.db.event import list_name_history_by_name
+from src.db.event import (
+    _merge_and_sort_histories,
+    list_name_history_by_name,
+    list_name_history_by_uid,
+)
 from src.db.sqlite import connect_sqlite
 
 from scripts.backfill_name_history_index import backfill
@@ -55,6 +59,42 @@ class NameHistoryIndexTest(unittest.TestCase):
     def test_history_without_index_falls_back_to_events(self):
         self.assertEqual(self.lookup("旧名字"), [{"uid": 11, "history": ["旧名字"]}])
         self.assertEqual(self.lookup("不存在"), [])
+
+    def test_history_ignores_missing_names_in_all_sources(self):
+        init_name_history_index(self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO event(id, room_id, cmd, uid, uname, timestamp) "
+                "VALUES (?, 1, 'SEND_GIFT', 11, ?, ?)",
+                [(2, None, 110), (3, '', 120), (4, '  ', 130)],
+            )
+            conn.executemany(
+                "INSERT INTO name_history VALUES (11, ?, ?)",
+                [(None, 10), ('', 20), ('  ', 30), ('索引名字', 250)],
+            )
+            conn.execute(
+                "CREATE TABLE fan_club_name_history "
+                "(member_uid INTEGER, uname TEXT, first_seen INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO fan_club_name_history VALUES (11, ?, ?)",
+                [(None, 30), ('', 40), ('  ', 50), ('粉丝团名字', 200)],
+            )
+        expected = [{"uid": 11, "history": ["旧名字", "粉丝团名字", "索引名字"]}]
+        self.assertEqual(self.lookup("旧名字"), expected)
+        with patch("src.db.event.connect_sqlite", lambda: connect_sqlite(self.db_path)):
+            self.assertEqual(list_name_history_by_uid(11), expected)
+
+    def test_missing_names_produce_no_user_history(self):
+        self.assertEqual(_merge_and_sort_histories(
+            [(11, None, 1), (11, '', 2), (11, '  ', 3), (None, '名字', 4)], []
+        ), [])
+
+    def test_valid_names_keep_spelling_and_first_seen_order(self):
+        self.assertEqual(_merge_and_sort_histories(
+            [(11, 'Mito_Mashiro', 100), (11, '新名', 90)],
+            [(11, 'Mito_Mashiro', 80), (11, '新名', 200)],
+        ), [{"uid": 11, "history": ['Mito_Mashiro', '新名']}])
 
     def test_history_incomplete_index_includes_unindexed_users(self):
         init_name_history_index(self.db_path)
