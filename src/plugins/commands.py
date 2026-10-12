@@ -32,7 +32,9 @@ from src.render.song import (
     render_songs_by_keyword,
     render_songs_by_singer,
 )
-from src.render.danmaku_rank import render_danmaku_rank, build_danmaku_rank_items
+from src.render.danmaku_rank import render_danmaku_rank
+from src.common.danmaku_rank import parse_rank_period
+from src.db.danmaku_rank import query_danmaku_rank
 from src.render.blind_box import render_blind_box_rank, build_blind_box_rank_items
 from src.render.danmaku_logs import render_event_pages
 from src.render.dc import render_dc_images
@@ -120,8 +122,7 @@ from src.db.event import (
     list_online_counts,
     list_live_sessions_by_date,
     get_latest_live_session,
-    list_session_events,
-    get_latest_uid_by_uname,
+    list_uids_by_uname,
     list_events_by_uid,
     list_recent_events_by_uid,
     list_recent_events_by_content,
@@ -625,6 +626,20 @@ async def handle_meme_remove(matcher: Matcher, event: Event, arg=CommandArg()):
     await matcher.finish(f"已删除一条{name}内容")
 
 
+async def _resolve_user_uid(matcher: Matcher, query: str) -> int:
+    """同名用户必须通过 UID 消歧，数字输入不依赖名字索引。"""
+    if query.isdigit():
+        return int(query)
+    matches = await asyncio.to_thread(list_uids_by_uname, query)
+    if not matches:
+        await matcher.finish(f"未找到用户：{query}")
+    if len(matches) > 1:
+        choices = "、".join(f"{query}（{uid}）" for uid in matches[:10])
+        suffix = "……" if len(matches) > 10 else ""
+        await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
+    return matches[0]
+
+
 @superchat_cmd.handle()
 async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
     room_id = get_query_room_id(event)
@@ -641,16 +656,7 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
         images = await get_daily_superchat_images(room_id, day, chunk_size=40)
         empty_message = f"{query} 没有找到醒目留言"
     else:
-        if query.isdigit():
-            uid = int(query)
-        else:
-            uid = await asyncio.to_thread(
-                get_latest_uid_by_uname,
-                room_id,
-                query,
-            )
-            if uid is None:
-                await matcher.finish(f"未找到用户：{query}")
+        uid = await _resolve_user_uid(matcher, query)
 
         user_name = await get_name_by_uid(uid) or query
         images = await get_user_superchat_images(
@@ -954,29 +960,9 @@ async def handle_medal_wall(
         await matcher.finish("用法：/查牌子 <UID/用户名>")
 
     fallback_name = query
-    if query.isdigit():
-        member_uid = int(query)
-        history = await asyncio.to_thread(list_name_history_by_name_or_uid, query)
-        if history:
-            names = [
-                str(name)
-                for name in history[0].get("history") or []
-                if str(name).strip()
-            ]
-            if names:
-                fallback_name = str(names[-1])
-    else:
-        matches = await asyncio.to_thread(list_name_history_by_name_or_uid, query)
-        if not matches:
-            await matcher.finish(f"没有找到用户：{query}")
-        if len(matches) > 1:
-            choices = "、".join(
-                f"{(entry.get('history') or [query])[-1]}（{entry['uid']}）"
-                for entry in matches[:10]
-            )
-            suffix = "……" if len(matches) > 10 else ""
-            await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
-        member_uid = int(matches[0]["uid"])
+    member_uid = await _resolve_user_uid(matcher, query)
+    matches = await asyncio.to_thread(list_name_history_by_name_or_uid, str(member_uid))
+    if matches:
         names = [
             str(name)
             for name in matches[0].get("history") or []
@@ -1723,24 +1709,21 @@ async def handle_danmaku_rank(matcher: Matcher, event: Event, arg=CommandArg()):
     room_id = get_query_room_id(event)
 
     raw = arg.extract_plain_text()
-    date_str, session_index = _parse_concurrent_args(raw)
-
     try:
-        target_session, session_label, _ongoing = _resolve_live_session(room_id, date_str, session_index)
+        period = parse_rank_period(raw)
+        if period is None:
+            date_str, session_index = _parse_concurrent_args(raw)
+            target_session, session_label, _ongoing = await asyncio.to_thread(
+                _resolve_live_session, room_id, date_str, session_index
+            )
+            start_ts = int(target_session["start_ts"])
+            end = target_session["end_ts"]
+            end_ts = int(end if end is not None else datetime.now().timestamp()) + 1
+        else:
+            start_ts, end_ts, session_label = period
     except ValueError as exc:
         await matcher.finish(str(exc))
-
-    start_ts = int(target_session["start_ts"])
-    end_ts = target_session["end_ts"]
-    if end_ts is None:
-        end_ts = int(datetime.now().timestamp())
-    end_ts = int(end_ts)
-
-    rows = list_session_events(room_id, start_ts, end_ts)
-    if not rows:
-        await matcher.finish("暂无弹幕数据")
-
-    top_items = build_danmaku_rank_items(rows, limit=20)
+    top_items = await asyncio.to_thread(query_danmaku_rank, room_id, start_ts, end_ts)
     if not top_items:
         await matcher.finish("暂无弹幕数据")
 
@@ -1804,17 +1787,7 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
             "用法：/查弹幕 <UID/用户名> [日期/数量] [日期/数量]"
         )
 
-    # 获取 UID
-    if query_user.isdigit():
-        uid = int(query_user)
-    else:
-        uid = await asyncio.to_thread(
-            get_latest_uid_by_uname,
-            room_id,
-            query_user,
-        )
-        if uid is None:
-            await matcher.finish(f"未找到用户：{query_user}")
+    uid = await _resolve_user_uid(matcher, query_user)
 
     start_ts = None
     end_ts = None
@@ -2510,13 +2483,11 @@ async def handle_live_list_add_tag(matcher: Matcher, event: Event, arg=CommandAr
     if not info:
         await matcher.finish("该直播间不在列表中")
         
-    if not await _check_modify_permission(info, event):
-        await matcher.finish("权限不足：仅群管理员或该直播间的添加者可修改")
-        
     new_tags = list(set(t.lower() for t in args[1:]))
     updated_tags = list(set(info["tags"] + new_tags))
     update_live_list_tags(info["room_id"], updated_tags)
-    await matcher.finish(f"已增加标签，当前标签：{' '.join(updated_tags) if updated_tags else '无'}")
+    room_name = info.get("uname") or str(info["room_id"])
+    await matcher.finish(f"已为{room_name}直播间添加标签，当前标签：{' '.join(updated_tags) if updated_tags else '无'}")
 
 
 @live_list_set_tag_cmd.handle()
@@ -2608,7 +2579,7 @@ async def handle_live_list_tag_members(
     lines = [f"{room.get('uname') or room['room_id']}（{room['room_id']}）" for room in rooms]
     header = f"标签 [{tag}] 下的直播间（{len(lines)} 个）"
     chunk_size = 25
-    if len(lines) <= chunk_size:
+    if len(lines) <= 5:
         await matcher.finish(f"{header}\n" + "\n".join(lines))
 
     nodes = [

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from src.db.live_list import get_live_list_by_tag
 
@@ -40,6 +40,40 @@ class Finished(Exception):
 
 
 class LiveListCommandTest(unittest.IsolatedAsyncioTestCase):
+    async def test_add_tags_is_public_but_modify_and_remove_require_permission(self):
+        tree = ast.parse(Path("src/plugins/commands.py").read_text())
+        for name in ("handle_live_list_add_tag", "handle_live_list_set_tag", "handle_live_list_remove"):
+            for allowed in (False, True):
+                with self.subTest(handler=name, allowed=allowed):
+                    handler = next(n for n in tree.body
+                                   if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+                    handler.decorator_list = []
+                    info = {"room_id": 123, "uname": "测试主播", "tags": ["vr"]}
+                    check = AsyncMock(return_value=allowed)
+                    update, remove = Mock(), Mock(return_value=True)
+                    env = dict(Matcher=object, Event=object, CommandArg=lambda: None,
+                               _resolve_info_from_args=AsyncMock(return_value=info),
+                               _check_modify_permission=check,
+                               update_live_list_tags=update, remove_live_list=remove)
+                    exec(compile(ast.Module(body=[handler], type_ignores=[]), "tag_handler", "exec"), env)
+                    matcher = SimpleNamespace(finish=AsyncMock(side_effect=Finished))
+                    with self.assertRaises(Finished):
+                        await env[name](matcher, object(), SimpleNamespace(extract_plain_text=lambda: "123 PSP"))
+                    if name == "handle_live_list_add_tag":
+                        check.assert_not_awaited()
+                        self.assertEqual(set(update.call_args.args[1]), {"vr", "psp"})
+                        self.assertIn("已为测试主播直播间添加标签", matcher.finish.call_args.args[0])
+                    else:
+                        check.assert_awaited_once()
+                        if not allowed:
+                            update.assert_not_called()
+                            remove.assert_not_called()
+                            self.assertIn("权限不足", matcher.finish.call_args.args[0])
+                        elif name == "handle_live_list_set_tag":
+                            update.assert_called_once_with(123, ["psp"])
+                        else:
+                            remove.assert_called_once_with(123)
+
     async def test_default_all_and_explicit_tags(self):
         tree = ast.parse(Path("src/plugins/commands.py").read_text())
         handler = next(n for n in tree.body

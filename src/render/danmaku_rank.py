@@ -5,49 +5,7 @@ from nonebot_plugin_imageutils import BuildImage
 from src.render.emoji_text import Text2Image, prefetch_emoji_assets
 
 from src.common.utils import ROOT, truncate_name
-
-
-def _count_special_tags(text: str) -> tuple[int, int, int]:
-    if not text:
-        return 0, 0, 0
-    dc = 1 if "打call" in text else 0
-    dc += 1 if text.count("三理") >= 3 else 0
-    dc += 1 if text.count("理理") >= 3 and "晚安" not in text else 0
-    gn = 1 if "晚安" in text else 0
-    ky = 1 if text in ["看你", "[UPOWER_2030198123_看你]"] else 0
-    return dc, gn, ky
-
-
-def build_danmaku_rank_items(rows: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
-    user_map: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        uid = int(row.get("uid") or 0)
-        if uid == 0:
-            continue
-        uname = str(row.get("uname") or "")
-        content = row.get("content")
-        entry = user_map.setdefault(uid, {"uid": uid, "uname": uname, "count": 0, "dc": 0, "gn": 0, "ky": 0})
-        if uname:
-            entry["uname"] = uname
-        entry["count"] += 1
-        if isinstance(content, str):
-            dc, gn, ky = _count_special_tags(content)
-            entry["dc"] += dc
-            entry["gn"] += gn
-            entry["ky"] += ky
-
-    ranked = sorted(user_map.values(), key=lambda x: (-x["count"], x["uname"]))
-    items: list[dict[str, Any]] = []
-    for i, entry in enumerate(ranked[:limit], start=1):
-        items.append({
-            "rank": i,
-            "uname": entry["uname"],
-            "count": entry["count"],
-            "dc": entry["dc"],
-            "gn": entry["gn"],
-            "ky": entry["ky"],
-        })
-    return items
+from src.common.danmaku_rank import _count_special_tags, build_danmaku_rank_items
 
 
 def draw_danmaku_rank(title: str, items: list[dict[str, Any]]) -> BuildImage:
@@ -56,7 +14,7 @@ def draw_danmaku_rank(title: str, items: list[dict[str, Any]]) -> BuildImage:
     content_width = width - padding * 2
     bg_color = (255, 255, 255, 255)
 
-    title_t2i = Text2Image.from_text(title, 36, weight="bold", fill=(34, 34, 34))
+    title_t2i = Text2Image.from_text(title, 36, weight="bold", fill=(34, 34, 34)).wrap(content_width)
 
     row_items: list[dict[str, Any]] = []
     for entry in items:

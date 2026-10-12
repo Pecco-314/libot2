@@ -627,35 +627,40 @@ def list_name_history_by_uid(uid: int) -> list[dict[str, object]]:
     return _merge_and_sort_histories(history_rows, event_rows)
 
 
+def _collect_uids_by_name(conn, target_name: str) -> list[int]:
+    """合并每日名字索引与未覆盖的事件，保留所有同名 UID。"""
+    candidate_uids = _find_uids_by_indexed_name(conn, target_name)
+    cursor = None
+    if _table_exists(conn, "name_history") and is_name_history_index_complete(conn):
+        row = conn.execute(
+            "SELECT value FROM name_history_index_meta WHERE key = 'cursor_event_id'"
+        ).fetchone()
+        if row is not None:
+            cursor = int(row[0])
+    sql = "SELECT DISTINCT uid FROM event NOT INDEXED WHERE uname = ? COLLATE NOCASE AND uid IS NOT NULL"
+    params = (target_name,)
+    if cursor is not None:
+        sql += " AND id > ?"
+        params = (target_name, cursor)
+    candidate_uids.update(int(row[0]) for row in conn.execute(sql, params))
+    return sorted(candidate_uids)
+
+
+def list_uids_by_uname(
+    target_name: str, db_path: Path = DEFAULT_DB_PATH,
+) -> list[int]:
+    """查询所有同名用户，仅解析 UID，不加载用户的完整弹幕或曾用名记录。"""
+    with connect_sqlite(db_path) as conn:
+        conn.execute("BEGIN")
+        return _collect_uids_by_name(conn, target_name)
+
+
 def list_name_history_by_name(target_name: str) -> list[dict[str, object]]:
     with connect_sqlite() as conn:
         # 索引进度与名字记录使用同一读快照，避免每日更新期间遗漏数据。
         conn.execute("BEGIN")
         cur = conn.cursor()
-        candidate_uids = _find_uids_by_indexed_name(conn, target_name)
-        cursor = None
-        if _table_exists(conn, "name_history") and is_name_history_index_complete(conn):
-            row = conn.execute(
-                "SELECT value FROM name_history_index_meta WHERE key = 'cursor_event_id'"
-            ).fetchone()
-            if row is not None:
-                cursor = int(row[0])
-        # 完整索引只覆盖截至游标的记录；未建好索引时扫描原始记录兜底。
-        # 即便索引已命中，也需收集增量里可能存在的其他同名用户。
-        if cursor is None:
-            rows = conn.execute(
-                "SELECT DISTINCT uid FROM event NOT INDEXED "
-                "WHERE uname = ? COLLATE NOCASE AND uid IS NOT NULL",
-                (target_name,),
-            )
-        else:
-            rows = conn.execute(
-                "SELECT DISTINCT uid FROM event NOT INDEXED "
-                "WHERE id > ? AND uname = ? COLLATE NOCASE AND uid IS NOT NULL",
-                (cursor, target_name),
-            )
-        candidate_uids.update(int(row[0]) for row in rows)
-        target_uids = sorted(candidate_uids)
+        target_uids = _collect_uids_by_name(conn, target_name)
         
         if not target_uids:
             return []

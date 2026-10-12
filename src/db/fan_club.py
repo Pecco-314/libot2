@@ -8,6 +8,13 @@ from typing import Any, Iterable
 from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, write_transaction
 
 
+MEMBER_UID_INDEX = "idx_fan_club_member_uid_medals"
+MEMBER_UID_INDEX_SQL = f"""
+    CREATE INDEX IF NOT EXISTS {MEMBER_UID_INDEX}
+    ON fan_club_member(member_uid, snapshot_id, level, guard_level)
+"""
+
+
 def init_fan_club_db(db_path: Path = DEFAULT_DB_PATH) -> None:
     with write_transaction(db_path) as conn:
         conn.executescript(
@@ -99,6 +106,9 @@ def init_fan_club_db(db_path: Path = DEFAULT_DB_PATH) -> None:
                 ON fan_club_name_history(uname COLLATE NOCASE, member_uid);
             """
         )
+        # 存量大表通过显式迁移建索引，避免服务初始化时长时间占用写锁。
+        if conn.execute("SELECT 1 FROM fan_club_member LIMIT 1").fetchone() is None:
+            conn.execute(MEMBER_UID_INDEX_SQL)
 
 
 def sync_targets(
@@ -663,34 +673,48 @@ def list_latest_member_medals(
     member_uid: int,
     db_path: Path = DEFAULT_DB_PATH,
 ) -> list[dict[str, Any]]:
-    """列出用户在每个抓取对象最新完整快照中的牌子。"""
+    """列出用户在各直播间最后一次被完整快照收录的牌子，不因后续缺席丢弃。"""
     with connect_sqlite(db_path) as conn:
-        rows = conn.execute(
+        has_uid_index = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (MEMBER_UID_INDEX,),
+        ).fetchone() is not None
+        if has_uid_index:
+            observation_source = f"""
+                FROM fan_club_member AS member INDEXED BY {MEMBER_UID_INDEX}
+                CROSS JOIN fan_club_snapshot AS s ON s.id = member.snapshot_id
+                JOIN fan_club_run AS r ON r.id = s.run_id
+                WHERE member.member_uid = ? AND s.status = 'complete'
             """
-            WITH latest_snapshot AS (
-                SELECT s.id, s.streamer_uid, r.snapshot_date,
+        else:
+            observation_source = """
+                FROM fan_club_snapshot AS s
+                CROSS JOIN fan_club_member AS member
+                  ON member.snapshot_id = s.id AND member.member_uid = ?
+                JOIN fan_club_run AS r ON r.id = s.run_id
+                WHERE s.status = 'complete'
+            """
+        rows = conn.execute(
+            f"""
+            WITH latest_observation AS (
+                SELECT s.streamer_uid, r.snapshot_date, member.level, member.guard_level,
                        ROW_NUMBER() OVER (
                            PARTITION BY s.streamer_uid
                            ORDER BY r.snapshot_date DESC,
                                     s.finished_at DESC,
                                     s.id DESC
                        ) AS row_num
-                FROM fan_club_snapshot AS s
-                JOIN fan_club_run AS r ON r.id = s.run_id
-                WHERE s.status = 'complete'
+                {observation_source}
             )
-            SELECT latest_snapshot.streamer_uid,
+            SELECT latest_observation.streamer_uid,
                    target.full_name, target.short_name,
-                   member.level, member.guard_level,
-                   latest_snapshot.snapshot_date
-            FROM latest_snapshot
-            JOIN fan_club_member AS member
-              ON member.snapshot_id = latest_snapshot.id
+                   latest_observation.level, latest_observation.guard_level,
+                   latest_observation.snapshot_date
+            FROM latest_observation
             JOIN fan_club_target AS target
-              ON target.uid = latest_snapshot.streamer_uid
-            WHERE latest_snapshot.row_num = 1
-              AND member.member_uid = ?
-            ORDER BY member.level DESC, latest_snapshot.streamer_uid ASC
+              ON target.uid = latest_observation.streamer_uid
+            WHERE latest_observation.row_num = 1
+            ORDER BY latest_observation.level DESC, latest_observation.streamer_uid ASC
             """,
             (int(member_uid),),
         ).fetchall()

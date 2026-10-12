@@ -66,6 +66,7 @@ def backfill(db_path: Path, batch_size: int) -> None:
         conn.execute(
             "UPDATE name_history_index_meta SET value = 1 WHERE key = 'complete'"
         )
+    with connect_sqlite(db_path) as conn:
         indexed = int(conn.execute("SELECT COUNT(*) FROM name_history").fetchone()[0])
     print(f"complete target={target} indexed_names={indexed}")
 

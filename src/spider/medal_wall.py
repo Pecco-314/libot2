@@ -48,12 +48,14 @@ def _parse_wall(uid: int, payload: dict[str, Any]) -> dict[str, Any]:
             }
         )
     medals.sort(key=lambda row: (-int(row["level"]), int(row["target_uid"])))
+    wearing_only = bool(int(data.get("only_show_wearing") or 0))
     return {
         "uid": int(uid),
         "uname": str(data.get("name") or ""),
         "medals": medals,
-        "hidden": bool(int(data.get("close_space_medal") or 0)),
-        "wearing_only": bool(int(data.get("only_show_wearing") or 0)),
+        # 仅展示佩戴中的牌子也会隐藏其余牌子，合并历史记录仍无法保证完整。
+        "hidden": bool(int(data.get("close_space_medal") or 0)) or wearing_only,
+        "wearing_only": wearing_only,
     }
 
 

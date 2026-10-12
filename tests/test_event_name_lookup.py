@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.db.event import get_latest_uid_by_uname, list_recent_events_by_uid
+from src.db.event import get_latest_uid_by_uname, list_recent_events_by_uid, list_uids_by_uname
 
 
 class EventNameLookupTest(unittest.TestCase):
@@ -101,6 +101,20 @@ class EventNameLookupTest(unittest.TestCase):
 
     def test_returns_none_when_both_routes_miss(self) -> None:
         self.assertIsNone(get_latest_uid_by_uname(1, "不存在", self.db_path))
+
+    def test_all_same_name_uids_are_preserved(self):
+        self.assertEqual(list_uids_by_uname("遗漏名字", self.db_path), [21, 22, 23])
+        self.assertEqual(list_uids_by_uname("不存在", self.db_path), [])
+
+    def test_indexed_and_fresh_same_name_users_are_both_returned(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript("""
+                CREATE TABLE name_history_index_meta(key TEXT PRIMARY KEY,value INTEGER);
+                INSERT INTO name_history_index_meta VALUES ('complete',1),('cursor_event_id',4);
+                INSERT INTO event(id,room_id,cmd,uid,uname,timestamp)
+                    VALUES (5,1,'DANMU_MSG',12,'已索引',500);
+            """)
+        self.assertEqual(list_uids_by_uname("已索引", self.db_path), [11, 12])
 
     def test_complete_index_miss_does_not_scan_event(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
