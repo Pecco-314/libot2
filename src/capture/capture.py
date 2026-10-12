@@ -64,6 +64,7 @@ class BilibiliLiveStreamResolver:
         try:
             with httpx.Client(
                 timeout=10.0,
+                trust_env=False,
                 headers=headers,
                 cookies=build_cookies(),
             ) as client:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.db.stats import init_stats_db, insert_stats
 from src.db.subscription import list_subscribed_room_ids
-from spider.wrapper import get_stats
+from src.spider.wrapper import get_stats
 
 
 logger = logging.getLogger("spider.jobs.stats")
@@ -24,7 +25,8 @@ async def collect_stats() -> None:
     for room_id in room_ids:
         try:
             stats = await get_stats(room_id)
-            insert_stats(
+            await asyncio.to_thread(
+                insert_stats,
                 room_id=room_id,
                 uid=stats.uid,
                 uname=stats.uname,

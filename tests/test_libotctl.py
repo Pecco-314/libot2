@@ -4,8 +4,9 @@ import sqlite3
 import shlex
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src import libotctl
 
@@ -112,6 +113,26 @@ class LibotctlNapcatTest(unittest.TestCase):
         self.assertIn("--disable-gpu", command)
         self.assertIn("--no-sandbox", command)
         self.assertEqual(command[-2:], ["-q", str(libotctl.BOT_QQ)])
+
+
+class LibotctlSpiderStartupTest(unittest.TestCase):
+    def test_spider_startup_failure_is_logged_without_writing_dead_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = replace(libotctl.MODULES['spider'], log_file=root/'spider.log',
+                           pid_file=root/'spider.pid', cwd=root)
+            process = Mock(pid=12345, returncode=1)
+            process.poll.return_value = 1
+            with patch.object(libotctl, '_status', return_value=(libotctl.ProcessState.DEAD, None)), \
+                    patch.object(libotctl.subprocess, 'Popen', return_value=process) as popen, \
+                    patch.object(libotctl.time, 'sleep'):
+                self.assertEqual(libotctl._start(spec), 1)
+            self.assertFalse(spec.pid_file.exists())
+            self.assertTrue(spec.log_file.exists())
+            kwargs = popen.call_args.kwargs
+            self.assertIs(kwargs['stdout'], kwargs['stderr'])
+            self.assertTrue(kwargs['stdout'].closed)
+            self.assertTrue(kwargs['start_new_session'])
 
 
 class LibotctlLiveGuardTest(unittest.TestCase):

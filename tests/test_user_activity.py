@@ -275,6 +275,23 @@ class UserActivityFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(collect.await_count,2)
             self.assertEqual(job._retry_at,0)
 
+    async def test_connect_timeout_is_explicit_and_does_not_advance_state(self):
+        error = httpx.ConnectTimeout('')
+        with patch.object(job,'_retry_at',0.0), patch.object(job,'_failures',0), \
+                patch.object(job.time,'monotonic',return_value=100), \
+                patch.object(job,'collect_user_activity',side_effect=error), \
+                self.assertLogs(job.logger,level='WARNING') as captured:
+            await job.poll_user_activity()
+        self.assertIn('error=ConnectTimeout',captured.output[0])
+        self.assertIn('retry_in=30s',captured.output[0])
+
+    async def test_success_logs_recovery(self):
+        with patch.object(job,'_retry_at',0.0), patch.object(job,'_failures',3), \
+                patch.object(job,'collect_user_activity',return_value={}), \
+                self.assertLogs(job.logger,level='INFO') as captured:
+            await job.poll_user_activity()
+            self.assertEqual(job._failures,0)
+        self.assertIn('采集恢复 failures=3',captured.output[0])
 
 class UserActivityDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_delivery_preserves_failed_recipient(self):

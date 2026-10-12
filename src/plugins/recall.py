@@ -37,7 +37,7 @@ async def download(url, filename, sent_at):
         async with downloads:
             if time.time()-sent_at >= db.TTL:
                 return
-            async with httpx.AsyncClient(timeout=12) as client:
+            async with httpx.AsyncClient(timeout=12, trust_env=False) as client:
                 async with client.stream('GET',url) as response:
                     response.raise_for_status()
                     content = bytearray()

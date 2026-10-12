@@ -57,7 +57,7 @@ async def fetch_user_events(
     任何分页失败都不返回半份结果，调用方不得推进抓取状态。
     """
     if client is None:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as owned:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as owned:
             return await fetch_user_events(uid, since_ms=since_ms, page_size=page_size,
                                            max_pages=max_pages, delay=delay, client=owned,
                                            stop_after_page=stop_after_page)

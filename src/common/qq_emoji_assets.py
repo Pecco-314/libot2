@@ -46,7 +46,7 @@ def _save_image(data, path):
 
 async def ensure_assets(emoji_ids):
     index = asset_index()
-    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True, trust_env=False) as client:
         async def fetch(eid):
             eid = str(eid)
             if eid not in index or cache_path(eid).is_file() or time.monotonic() - _failed.get(eid, -4000) < 3600:

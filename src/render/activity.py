@@ -46,7 +46,7 @@ async def download_image(url: str, suffix: str | None = None) -> BuildImage:
         return IMG_CACHE[target_url].copy()
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, trust_env=False) as client:
             headers = {
                 "User-Agent": "Mozilla/5.0",
                 "Referer": "https://t.bilibili.com/",

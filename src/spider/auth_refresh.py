@@ -119,6 +119,7 @@ async def cookie_needs_refresh(
     owns_client = client is None
     request_client = client or httpx.AsyncClient(
         timeout=10.0,
+        trust_env=False,
         headers=AUTH_HEADERS,
         cookies=_scoped_cookies(auth.cookies),
         follow_redirects=True,
@@ -160,6 +161,7 @@ async def refresh_bilibili_auth(
     owns_client = client is None
     request_client = client or httpx.AsyncClient(
         timeout=15.0,
+        trust_env=False,
         headers=AUTH_HEADERS,
         cookies=_scoped_cookies(request_cookies),
         follow_redirects=True,

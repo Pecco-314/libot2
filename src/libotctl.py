@@ -61,7 +61,7 @@ MODULES = {
         pid_file=PID_DIR / "spider.pid",
         command=("python", "-m", "src.spider.cron"),
         identity_markers=("-m", "src.spider.cron"),
-        redirect_output=False,
+        redirect_output=True,
     ),
     "monitor": ModuleSpec(
         name="monitor",
@@ -371,7 +371,12 @@ def _start(spec: ModuleSpec) -> int:
     _ensure_parent(spec.pid_file)
     _ensure_parent(spec.log_file)
 
-    log_handle = spec.log_file.open("a", encoding="utf-8") if spec.redirect_output else None
+    supervised = spec.name == "napcat"
+    log_handle = spec.log_file.open("a", encoding="utf-8") if spec.redirect_output and not supervised else None
+    command = _resolve_command(spec)
+    if supervised:
+        command = [str(VENV_BIN / "python"), str(ROOT / "src/log_supervisor.py"),
+                   "--log", str(spec.log_file), "--", *command]
 
     work_dir = spec.cwd if spec.cwd else ROOT
     child_env = {
@@ -379,18 +384,17 @@ def _start(spec: ModuleSpec) -> int:
         for key, value in os.environ.items()
         if not key.lower().endswith("_proxy")
     }
-    if spec.name == "napcat":
-        child_env = os.environ.copy()
-        child_env["NO_PROXY"] = "*"
-        child_env["no_proxy"] = "*"
+    # 业务服务直连；Codex 子进程单独设置自己的出口。
+    child_env["NO_PROXY"] = "*"
+    child_env["no_proxy"] = "*"
 
     try:
         process = subprocess.Popen(
-            _resolve_command(spec),
+            command,
             cwd=work_dir,
             stdin=subprocess.DEVNULL,
-            stdout=log_handle if spec.redirect_output else subprocess.DEVNULL,
-            stderr=log_handle if spec.redirect_output else subprocess.DEVNULL,
+            stdout=log_handle if log_handle is not None else subprocess.DEVNULL,
+            stderr=log_handle if log_handle is not None else (None if supervised else subprocess.DEVNULL),
             env=child_env,
             start_new_session=True,
         )
@@ -400,6 +404,13 @@ def _start(spec: ModuleSpec) -> int:
         print(f"failed to start {spec.name}: {exc}", file=sys.stderr)
         return 1
 
+    if supervised or spec.name == 'spider':
+        time.sleep(1 if spec.name == 'spider' else 0.2)
+        if process.poll() is not None:
+            if log_handle is not None:
+                log_handle.close()
+            print(f"failed to start {spec.name}: process exited ({process.returncode}); check {spec.log_file}", file=sys.stderr)
+            return 1
     spec.pid_file.write_text(str(process.pid), encoding="utf-8")
     print(f"started {spec.name} (pid={process.pid}) at {work_dir}")
     if log_handle is not None:
@@ -536,14 +547,17 @@ def _show_log(spec: ModuleSpec, lines: int) -> int:
             print(_warn(f"waiting for log file: {spec.log_file}"))
 
         position = spec.log_file.stat().st_size if spec.log_file.exists() else 0
+        inode = spec.log_file.stat().st_ino if spec.log_file.exists() else None
         while True:
             if not spec.log_file.exists():
                 time.sleep(0.5)
                 continue
 
-            current_size = spec.log_file.stat().st_size
-            if current_size < position:
+            current_stat = spec.log_file.stat()
+            current_size = current_stat.st_size
+            if current_stat.st_ino != inode or current_size < position:
                 position = 0
+            inode = current_stat.st_ino
 
             with spec.log_file.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(position)

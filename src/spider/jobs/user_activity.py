@@ -50,6 +50,8 @@ async def poll_user_activity(full: bool = False, deep: bool = False) -> None:
     global _retry_at, _failures
     if time.monotonic() < _retry_at:
         return
+    started = time.monotonic()
+    failures_before = _failures
     try:
         await collect_user_activity(full=full, deep=deep)
     except Exception as exc:
@@ -60,10 +62,20 @@ async def poll_user_activity(full: bool = False, deep: bool = False) -> None:
             if retry_after.isdigit():
                 delay = max(delay, int(retry_after))
         _retry_at = time.monotonic() + delay
-        logger.warning("Danmakus 用户动态采集失败，%s 秒后重试 full=%s deep=%s: %s", delay, full, deep, exc)
+        logger.warning(
+            "Danmakus 用户动态采集失败 error=%s detail=%r elapsed=%.1fs "
+            "retry_in=%ss failures=%s full=%s deep=%s",
+            type(exc).__name__, str(exc), time.monotonic() - started,
+            delay, _failures, full, deep,
+        )
     else:
         _retry_at = 0.0
         _failures = 0
+        if failures_before:
+            logger.info(
+                "Danmakus 用户动态采集恢复 failures=%s elapsed=%.1fs full=%s deep=%s",
+                failures_before, time.monotonic() - started, full, deep,
+            )
 
 
 def register_jobs(scheduler) -> None:

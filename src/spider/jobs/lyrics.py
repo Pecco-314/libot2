@@ -92,7 +92,7 @@ async def sync_lyrics() -> None:
         return
 
     logger.info("lyrics sync begin, pending=%d", len(songs))
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
         for song in songs:
             song_id = song.get("id")
             title = song.get("title") or ""

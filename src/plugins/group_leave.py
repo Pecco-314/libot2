@@ -30,7 +30,7 @@ async def cache_leave(bot, event):
         logger.warning('退群昵称获取失败 user_id=%s', event.user_id)
     try:
         path = ROOT / 'data' / 'images' / 'group_leave' / f'{record_id}.jpg'
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=8, trust_env=False) as client:
             response = await client.get(f'https://q1.qlogo.cn/g?b=qq&nk={int(event.user_id)}&s=640')
             response.raise_for_status()
             if not response.headers.get('content-type', '').startswith('image/'):
