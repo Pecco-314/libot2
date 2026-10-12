@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,23 @@ def get_max_event_id(db_path: Path = DEFAULT_DB_PATH) -> int:
     return int(row[0])
 
 
+def list_live_notice_events_after(
+    last_id: int, through_id: int, since: int, db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, object]]:
+    """按入库顺序读取有效时限内的全部直播通知，不扫描普通弹幕。"""
+    if through_id <= last_id:
+        return []
+    with connect_sqlite(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id,cmd,room_id,title,timestamp FROM event INDEXED BY idx_event_cmd_time "
+            "WHERE cmd IN ('LIVE','PREPARING','ROOM_CHANGE') AND timestamp>=? "
+            "AND id>? AND id<=? ORDER BY id",
+            (since, last_id, through_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def list_streamer_danmaku_events_after(
     last_id: int,
     through_id: int,
@@ -131,11 +149,11 @@ def list_streamer_danmaku_events_after(
     ]
 
 
-def get_latest_live_cmd(room_id: int) -> str | None:
-    with connect_sqlite() as conn:
+def get_latest_live_cmd(room_id: int, db_path: Path = DEFAULT_DB_PATH) -> str | None:
+    with connect_sqlite(db_path) as conn:
         row = conn.execute(
             """
-            SELECT cmd FROM event
+            SELECT cmd FROM event INDEXED BY idx_event_cmd_time
             WHERE room_id = ? AND cmd IN ('LIVE', 'PREPARING')
             ORDER BY id DESC LIMIT 1
             """,
@@ -146,37 +164,40 @@ def get_latest_live_cmd(room_id: int) -> str | None:
     return str(row[0])
 
 
-def get_latest_live_event_id(room_ids: list[int]) -> int:
+def get_latest_live_event_id(room_ids: list[int], db_path: Path = DEFAULT_DB_PATH) -> int:
     if not room_ids:
         return 0
     placeholders = ",".join("?" for _ in room_ids)
     sql = (
-        "SELECT MAX(id) FROM event "
+        "SELECT MAX(id) FROM event INDEXED BY idx_event_cmd_time "
         "WHERE cmd IN ('LIVE', 'PREPARING') "
         f"AND room_id IN ({placeholders})"
     )
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
         row = conn.execute(sql, room_ids).fetchone()
     if row is None or row[0] is None:
         return 0
     return int(row[0])
 
 
-def list_live_events_after(room_ids: list[int], last_id: int) -> list[dict[str, object]]:
+def list_live_events_after(
+    room_ids: list[int], last_id: int, db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, object]]:
+    """扫描少量开下播标记，避免按房间扫描全部弹幕。"""
     if not room_ids:
         return []
 
     placeholders = ",".join("?" for _ in room_ids)
     sql = (
         "SELECT id, cmd, room_id, title, timestamp "
-        "FROM event "
+        "FROM event INDEXED BY idx_event_cmd_time "
         "WHERE cmd IN ('LIVE', 'PREPARING') "
         f"AND room_id IN ({placeholders}) "
         "AND id > ? "
         "ORDER BY id ASC"
     )
     params: list[object] = list(room_ids) + [last_id]
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
 
     return [

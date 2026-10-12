@@ -5,6 +5,7 @@ import asyncio
 import base64
 import http.cookies
 import json
+import logging
 import signal
 import sqlite3
 import time
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import blivedm
@@ -21,6 +23,7 @@ from src.common.utils import load_env_file, init_logger
 from src.db.sqlite import connect_sqlite, write_transaction
 from src.db.subscription import list_subscribed_room_ids
 from src.db.name_history import init_name_history_index
+from src.db.live_recovery import recover_live_start
 
 import blivedm.models.web as web_models
 
@@ -583,6 +586,11 @@ class RawEventHandler(handlers.HandlerInterface):
     def __init__(self, queue: asyncio.Queue[tuple[Any, ...]]):
         self.queue = queue
 
+    def on_client_stopped(self, client, exception):
+        if exception is not None:
+            logger.error("房间 %s 连接任务异常退出，等待自动恢复：%s", client.room_id, exception,
+                         exc_info=(type(exception), exception, exception.__traceback__))
+
     def handle(self, client: blivedm.BLiveClient, command: dict[str, Any]):
         cmd = _normalized_cmd(command)
         if cmd == "_HEARTBEAT":
@@ -676,6 +684,7 @@ def _replace_session_cookies(
 
 def _build_session(cookie_values: dict[str, str]) -> aiohttp.ClientSession:
     session = aiohttp.ClientSession(
+        trust_env=False,
         headers={
             "Accept-Encoding": "gzip, deflate",
             "User-Agent": "Mozilla/5.0",
@@ -707,7 +716,7 @@ async def _writer_loop(
         now = time.monotonic()
         if buffer and (len(buffer) >= batch_size or now - last_flush >= flush_interval):
             try:
-                db.insert_many(buffer)
+                await asyncio.to_thread(db.insert_many, buffer)
             except TimeoutError as e:
                 logger.warning("写入监控事件遇锁，保留缓冲等待下次刷新：%s", e)
                 await asyncio.sleep(0.5)
@@ -735,7 +744,7 @@ async def _writer_loop(
 
     if buffer:
         try:
-            db.insert_many(buffer)
+            await asyncio.to_thread(db.insert_many, buffer)
         except TimeoutError as e:
             logger.warning("退出前写入事件遇锁，放弃最后 %d 条：%s", len(buffer), e)
         except sqlite3.OperationalError as e:
@@ -747,7 +756,44 @@ async def _writer_loop(
             logger.info("退出前写入事件 %d 条", len(buffer))
 
 
+async def _recover_stopped_clients(clients, start_room) -> None:
+    """只重建已退出的房间连接，不干预仍在接收消息的连接。"""
+    for room_id, client in list(clients.items()):
+        if client.is_running:
+            continue
+        logger.warning("房间 %s 连接任务已退出，重新建立连接", room_id)
+        await client.close()
+        if clients.get(room_id) is client:
+            clients.pop(room_id)
+            await start_room(room_id)
+
+
+async def _recover_api_live_start(session, room_id: int, db_path: Path) -> None:
+    async with session.get(
+        "https://api.live.bilibili.com/room/v1/Room/get_info",
+        params={"room_id": room_id}, timeout=aiohttp.ClientTimeout(total=10),
+    ) as response:
+        response.raise_for_status()
+        body = await response.json()
+    data = body.get('data') or {}
+    if body.get('code') != 0 or data.get('live_status') != 1:
+        return
+    started_at = int(datetime.strptime(data['live_time'], '%Y-%m-%d %H:%M:%S')
+                     .replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp())
+    event_id = await asyncio.to_thread(
+        recover_live_start, room_id, started_at, title=data.get('title') or '', db_path=db_path,
+    )
+    if event_id is not None:
+        logger.warning("通过直播间 API 补回开播标记 room=%s event=%s live_time=%s",
+                       room_id, event_id, data['live_time'])
+
+
 async def run_monitor(config: MonitorConfig) -> None:
+    transport_logger = logging.getLogger('blivedm')
+    for handler in logger.handlers:
+        if handler not in transport_logger.handlers:
+            transport_logger.addHandler(handler)
+    transport_logger.propagate = False
     db = MetricsDB(config.database)
     queue: asyncio.Queue[tuple[Any, ...]] = asyncio.Queue(maxsize=10000)
     stop_event = asyncio.Event()
@@ -849,7 +895,33 @@ async def run_monitor(config: MonitorConfig) -> None:
             except asyncio.TimeoutError:
                 continue
 
+    async def _health_loop() -> None:
+        next_api_check = time.monotonic() + 5
+        while not stop_event.is_set():
+            try:
+                await _recover_stopped_clients(clients, _start_room)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("恢复已退出的房间连接失败，稍后重试")
+            if time.monotonic() >= next_api_check:
+                next_api_check = time.monotonic() + 60
+                for room_id in list(clients):
+                    if stop_event.is_set():
+                        break
+                    try:
+                        await _recover_api_live_start(session, room_id, config.database)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning("核对开播状态失败 room=%s：%s", room_id, exc)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+
     sync_task: asyncio.Task[None] | None = None
+    health_task: asyncio.Task[None] | None = None
     auth_sync_task = asyncio.create_task(_sync_auth_loop())
     try:
         for room_id in config.rooms:
@@ -857,10 +929,17 @@ async def run_monitor(config: MonitorConfig) -> None:
 
         if config.rooms_from_db:
             sync_task = asyncio.create_task(_sync_rooms_loop())
+        health_task = asyncio.create_task(_health_loop())
 
         logger.info("monitor 已启动完成，共监听 %d 个房间", len(clients))
         await stop_event.wait()
     finally:
+        if health_task is not None:
+            health_task.cancel()
+            try:
+                await health_task
+            except asyncio.CancelledError:
+                pass
         auth_sync_task.cancel()
         try:
             await auth_sync_task

@@ -11,9 +11,11 @@ from src.db.fan_club import init_fan_club_db
 from src.db.command_config import init_command_config_db
 from src.db.name_history import init_name_history_index
 from src.db.singer_alias import init_singer_alias_db
+from src.db.live_notice import init_live_notice_db
+from src.db.activity_notice import init_activity_notice_db
 
 load_env_file()
-init_logger("libot")
+logger = init_logger("libot")
 
 ACTIVITY_IMAGE_DIR = Path(__file__).resolve().parents[2] / "data" / "images" / "activity"
 
@@ -22,12 +24,15 @@ def init_all_db() -> None:
         init_command_config_db()
         init_subscription_db()
         init_state_db()
+        init_live_notice_db()
+        init_activity_notice_db()
         init_liver_db()
         init_activity_db()
         init_fan_club_db()
         init_name_history_index()
         init_singer_alias_db()
     except Exception:
-        pass
+        logger.exception("数据库初始化失败")
+        raise
 
 init_all_db()

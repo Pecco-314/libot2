@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +20,21 @@ from src.db.activity import (
 )
 from src.db.event import (
     get_max_event_id,
-    get_newest_live_event,
+    list_live_notice_events_after,
     is_duplicate_room_change,
     is_streaming_event,
     list_streamer_danmaku_events_after,
 )
 from src.db.state import get_state, set_state
 from src.db.subscription import list_subscribed_group_ids, get_subscription_feature
+from src.db.live_notice import (
+    MAX_NOTICE_AGE, stage_live_notices, list_pending_live_notices,
+    mark_live_notice_sent, retry_live_notice, prune_live_notices,
+)
+from src.db.activity_notice import (
+    MAX_ACTIVITY_NOTICE_AGE, stage_activity_notices, list_pending_activity_notices,
+    mark_activity_notice_sent, retry_activity_notice, prune_activity_notices,
+)
 
 from .config import ACTIVITY_IMAGE_DIR
 from .utils import _format_name
@@ -37,6 +44,11 @@ LOCK_FILE = ROOT / "data" / ".bot_offline.lock"
 NAPCAT_PID = ROOT / "data" / ".pids" / "napcat.pid"
 _streamer_danmaku_cursor: int | None = None
 _streamer_danmaku_cursor_saved_at = 0.0
+_live_event_cursor: int | None = None
+_live_event_cursor_saved_at = 0.0
+_live_notice_pruned_at = 0.0
+_activity_notice_pruned_at = 0.0
+_notification_group_cache: dict[str, tuple[float, set[int] | None]] = {}
 
 
 def _is_mention_all_enabled(group_id: int) -> bool:
@@ -153,6 +165,91 @@ async def _build_message(row: dict[str, Any]) -> str | None:
     return None
 
 
+async def _available_notification_groups(bot) -> set[int] | None:
+    """低频确认当前账号已加入的群；接口失败时保留通知发送路线。"""
+    key = str(getattr(bot, 'self_id', id(bot)))
+    now = time.monotonic()
+    cached = _notification_group_cache.get(key)
+    if cached is not None and now-cached[0] < (300 if cached[1] else 30):
+        return cached[1]
+    try:
+        rows = await asyncio.wait_for(bot.call_api('get_group_list'), timeout=15)
+        if not isinstance(rows, list):
+            raise ValueError('群列表接口返回格式无效')
+        groups = {int(row['group_id']) for row in rows}
+    except Exception as exc:
+        logger.warning('核对通知群列表失败，保留发送路线：%s', exc)
+        groups = None
+    _notification_group_cache[key] = (now, groups)
+    return groups
+
+
+async def _deliver_live_notices() -> None:
+    bots = list(get_bots().values())
+    if not bots:
+        return
+    bot = bots[0]
+    rows = await asyncio.to_thread(list_pending_live_notices)
+    if not rows:
+        return
+    available_groups = await _available_notification_groups(bot)
+    for row in rows:
+        event_id, group_id = int(row['event_id']), int(row['group_id'])
+        if available_groups is not None and group_id not in available_groups:
+            continue
+        try:
+            message = await _build_message(row)
+            if message is None:
+                await asyncio.to_thread(mark_live_notice_sent, event_id, group_id)
+                continue
+            if row['cmd'] == 'LIVE' and await asyncio.to_thread(_is_mention_all_enabled, group_id):
+                message = Message([MessageSegment.at('all'), MessageSegment.text(message)])
+            result = await bot.call_api('send_group_msg', group_id=group_id, message=message)
+        except Exception as exc:
+            await asyncio.to_thread(retry_live_notice, event_id, group_id)
+            logger.warning('直播通知发送失败，保留待重试 event=%s group=%s error=%s',
+                           event_id, group_id, exc)
+            continue
+        message_id = result.get('message_id') if isinstance(result, dict) else None
+        await asyncio.to_thread(mark_live_notice_sent, event_id, group_id, message_id)
+        logger.info('直播通知发送成功 event=%s group=%s room=%s cmd=%s',
+                    event_id, group_id, row['room_id'], row['cmd'])
+
+
+async def _deliver_activity_notices() -> None:
+    bots = list(get_bots().values())
+    if not bots:
+        return
+    bot = bots[0]
+    rows = await asyncio.to_thread(list_pending_activity_notices)
+    if not rows:
+        return
+    available_groups = await _available_notification_groups(bot)
+    for row in rows:
+        record_id, group_id = int(row['id']), int(row['group_id'])
+        if available_groups is not None and group_id not in available_groups:
+            continue
+        try:
+            image_path = await _render_activity_image(row)
+            if image_path is None:
+                raise RuntimeError('动态渲染暂不可用')
+            url = f"https://t.bilibili.com/{row['activity_id']}"
+            message = Message([
+                MessageSegment.text(f"{row.get('uname') or 'UP主'}发布了新动态！\n"),
+                MessageSegment.image(file=str(image_path)),
+                MessageSegment.text(f'\n{url}'),
+            ])
+            result = await bot.call_api('send_group_msg', group_id=group_id, message=message)
+        except Exception as exc:
+            await asyncio.to_thread(retry_activity_notice, record_id, group_id)
+            logger.warning('动态通知保留待重试 activity=%s group=%s error=%s',
+                           row['activity_id'], group_id, exc)
+            continue
+        message_id = result.get('message_id') if isinstance(result, dict) else None
+        await asyncio.to_thread(mark_activity_notice_sent, record_id, group_id, message_id)
+        logger.info('动态通知发送成功 activity=%s group=%s', row['activity_id'], group_id)
+
+
 @scheduler.scheduled_job(
     "interval",
     seconds=1,
@@ -163,27 +260,31 @@ async def _build_message(row: dict[str, Any]) -> str | None:
     misfire_grace_time=1,
 )
 async def watch_live_events() -> None:
-    row = await asyncio.to_thread(get_newest_live_event)
-    if row is None:
-        return
-    row_id = int(row.get("id"))
-    last_id = await asyncio.to_thread(get_state, "last_event_id")
-    if last_id and last_id.isdigit() and row_id <= int(last_id):
-        return
-    room_id = int(row.get("room_id"))
-    timestamp = int(row.get("timestamp") or 0)
-    if timestamp > 0 and datetime.now().timestamp() - timestamp > 300:
-        await asyncio.to_thread(set_state, "last_event_id", str(row_id))
-        return
-    if (await asyncio.to_thread(is_streaming_event, row)
-            or await asyncio.to_thread(is_duplicate_room_change, row)):
-        await asyncio.to_thread(set_state, "last_event_id", str(row_id))
-        return
-    await asyncio.to_thread(set_state, "last_event_id", str(row_id))
-    message = await _build_message(row)
-    if message is None:
-        return
-    await send_to_room(room_id, message, mention_all=(row.get("cmd") == "LIVE"))
+    global _live_event_cursor, _live_event_cursor_saved_at, _live_notice_pruned_at
+    now = int(time.time())
+    if _live_event_cursor is None:
+        last_id = await asyncio.to_thread(get_state, 'last_event_id')
+        _live_event_cursor = int(last_id) if last_id and last_id.isdigit() else 0
+    through_id = await asyncio.to_thread(get_max_event_id)
+    if through_id > _live_event_cursor:
+        rows = await asyncio.to_thread(list_live_notice_events_after, _live_event_cursor,
+                                       through_id, now - MAX_NOTICE_AGE)
+        notices = []
+        for row in rows:
+            if (await asyncio.to_thread(is_streaming_event, row)
+                    or await asyncio.to_thread(is_duplicate_room_change, row)):
+                continue
+            notices.append(row)
+        now_monotonic = time.monotonic()
+        # 含通知的批次立即原子落库；普通弹幕只推进内存游标，至多每分钟持久化一次。
+        if rows or now_monotonic - _live_event_cursor_saved_at >= 60:
+            await asyncio.to_thread(stage_live_notices, notices, through_id)
+            _live_event_cursor_saved_at = now_monotonic
+        _live_event_cursor = through_id
+    if time.monotonic() - _live_notice_pruned_at >= 3600:
+        await asyncio.to_thread(prune_live_notices)
+        _live_notice_pruned_at = time.monotonic()
+    await _deliver_live_notices()
 
 
 @scheduler.scheduled_job(
@@ -245,42 +346,24 @@ async def watch_streamer_danmaku() -> None:
     misfire_grace_time=1,
 )
 async def watch_activities() -> None:
+    global _activity_notice_pruned_at
     await _ensure_last_activity_id_initialized()
-
     last_activity_id = _get_last_activity_id()
-    rows = list_activities_after(last_activity_id)
-    if not rows:
-        return
-
+    rows = await asyncio.to_thread(list_activities_after, last_activity_id)
+    notices = []
+    now = int(time.time())
     for row in rows:
-        timestamp = int(row.get("timestamp") or 0)
-        upload_time = datetime.fromtimestamp(timestamp)
-        activity_id = row.get("id")
         if row.get("dy_type_str") == LIVE_RCMD_ACTIVITY_TYPE:
-            logger.info(
-                "跳过 B 站自动开播动态 activity_id=%s",
-                row.get("activity_id"),
-            )
-            set_state("last_activity_id", activity_id)
             continue
-        logger.info("发现新动态，开始渲染")
-        image_path = await _render_activity_image(row)
-        if image_path is None:
-            set_state("last_activity_id", activity_id)
+        if now-int(row.get('timestamp') or 0)>MAX_ACTIVITY_NOTICE_AGE:
             continue
-        if datetime.now() - upload_time > timedelta(minutes=10):
-            set_state("last_activity_id", activity_id)
-            continue
-
-        uname = str(row.get("uname") or "UP主")
-        activity_url = f"https://t.bilibili.com/{row['activity_id']}"
-        message = Message([
-            MessageSegment.text(f"{uname}发布了新动态！\n"),
-            MessageSegment.image(file=str(image_path)),
-            MessageSegment.text(f"\n({activity_url})"),
-        ])
-        await send_activity_to_room(int(row.get("room_id") or 0), message)
-        set_state("last_activity_id", activity_id)
+        notices.append(row)
+    if rows:
+        await asyncio.to_thread(stage_activity_notices, notices, int(rows[-1]['id']))
+    if time.monotonic()-_activity_notice_pruned_at>=3600:
+        await asyncio.to_thread(prune_activity_notices)
+        _activity_notice_pruned_at=time.monotonic()
+    await _deliver_activity_notices()
 
 
 @scheduler.scheduled_job(

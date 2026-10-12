@@ -36,7 +36,8 @@ async def request_json(
     body: dict[str, Any] | Any = {}
     for attempt in range(5):
         try:
-            async with httpx.AsyncClient(timeout=10.0, headers=request_headers, cookies=request_cookies) as client:
+            async with httpx.AsyncClient(timeout=10.0, headers=request_headers, cookies=request_cookies,
+                                         trust_env=False) as client:
                 resp = await client.get(url, params=params)
                 resp.raise_for_status()
                 body = resp.json()
@@ -99,11 +100,12 @@ async def get_activated_medal_info(target_id: int) -> dict[str, Any]:
     )
 
 
-async def get_space_history(uid: int) -> dict[str, Any]:
+async def get_space_history(uid: int, offset: str = '') -> dict[str, Any]:
     return await request_json(
         "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
         {
             "host_mid": uid,
+            "offset": offset,
             "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardUser",
         },
         headers=BILI_HEADERS,

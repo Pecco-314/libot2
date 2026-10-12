@@ -150,7 +150,13 @@ def init_activity_db(db_path: Path = DEFAULT_DB_PATH) -> None:
             ON activity_asset(content_sha256)
             """
         )
-        violations = list(conn.execute("PRAGMA foreign_key_check"))
+        # 初始化只核对引用动态的表，避免扫描粉丝团等无关的大型历史表。
+        violations = []
+        for (table_name,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            quoted = '"' + table_name.replace('"', '""') + '"'
+            references = conn.execute(f'PRAGMA foreign_key_list({quoted})').fetchall()
+            if any(reference[2] == 'activity' for reference in references):
+                violations.extend(conn.execute(f'PRAGMA foreign_key_check({quoted})').fetchall())
         if violations:
             raise RuntimeError(
                 f"activity migration produced foreign key violations: "
@@ -236,6 +242,12 @@ def get_max_activity_id() -> int:
     with connect_sqlite() as conn:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM activity").fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def get_latest_activity_timestamp(room_id: int) -> int | None:
+    with connect_sqlite() as conn:
+        row = conn.execute('SELECT MAX(timestamp) FROM activity WHERE room_id=?', (room_id,)).fetchone()
+    return int(row[0]) if row and row[0] else None
 
 
 def activity_exists(

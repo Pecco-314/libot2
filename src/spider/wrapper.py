@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from src.db import liver
@@ -8,10 +9,11 @@ from src.spider.models import LiverStats, MasterInfo, RoomInfo, SpaceHistory
 
 
 def _get_data(response: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return response["body"]["data"]
-    except Exception:
-        raise ValueError(f"invalid response data: {response}")
+    body = response.get("body") or {}
+    data = body.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid response data: code={body.get('code')} message={body.get('message')}")
+    return data
 
 
 async def get_master_info(uid: int) -> MasterInfo:
@@ -100,16 +102,12 @@ async def get_stats(room_id: int) -> LiverStats:
     )
 
 
-async def get_space_history(uid: int) -> list[SpaceHistory]:
-    response = await api.get_space_history(uid)
-    data = _get_data(response)
-    
-    items = data.get("items", [])
+def _space_history_items(items, uid: int) -> list[SpaceHistory]:
     result: list[SpaceHistory] = []
     
     for item in items:
-        modules = item.get("modules", {})
-        author = modules.get("module_author", {})
+        modules = item.get("modules") or {}
+        author = modules.get("module_author") or {}
         
         activity_id = item.get("id_str")
         uname = author.get("name", "未知")
@@ -128,3 +126,36 @@ async def get_space_history(uid: int) -> list[SpaceHistory]:
             )
         )
     return result
+
+
+async def get_space_history(uid: int, *, since: int | None = None, max_pages=10) -> list[SpaceHistory]:
+    """平时只访问首页；有历史边界时分页追赶到边界，置顶动态不充当边界。"""
+    offset = ''
+    seen_offsets = set()
+    result = {}
+    for page in range(max_pages):
+        response = await api.get_space_history(uid, offset)
+        data = _get_data(response)
+        raw_items = data.get('items') or []
+        for item in _space_history_items(raw_items, uid):
+            if item.activity_id:
+                result[item.activity_id] = item
+        crossed = False
+        for raw_item in raw_items:
+            modules = raw_item.get('modules') or {}
+            pinned = (modules.get('module_tag') or {}).get('text') == '置顶'
+            timestamp = int((modules.get('module_author') or {}).get('pub_ts') or 0)
+            if since is not None and not pinned and 0 < timestamp <= since:
+                crossed = True
+        next_offset = str(data.get('offset') or '')
+        if since is None or crossed or not data.get('has_more'):
+            return list(result.values())
+        if not raw_items:
+            raise RuntimeError('动态分页意外返回空页，保留边界等待后续补抓')
+        if not next_offset or next_offset in seen_offsets:
+            raise RuntimeError('动态分页未到达历史边界，offset未前进')
+        seen_offsets.add(next_offset)
+        offset = next_offset
+        if page+1 < max_pages:
+            await asyncio.sleep(1)
+    raise RuntimeError('动态分页未到达历史边界，保留边界等待后续补抓')
