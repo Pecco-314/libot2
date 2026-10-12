@@ -1,4 +1,4 @@
-"""500条自动整理；按需查询及时刷新，相邻小批次合并为连续讨论。"""
+"""累计500条自动整理；查询时新增50条刷新，否则复用缓存。"""
 
 from __future__ import annotations
 
@@ -47,7 +47,9 @@ async def cached_count_summary(group_id, count=500, *, db_path=db.DB_PATH, cache
     parse_summary_count(str(count))
     batches = await asyncio.to_thread(db.recent_count_batches, group_id, count, db_path)
     if not batches:
-        raise ValueError("尚无总结缓存，有新增消息即可按需整理，500条自动整理")
+        raise ValueError(
+            f"尚无总结缓存，累计{db.QUERY_THRESHOLD}条可查询整理，{db.BATCH_SIZE}条自动整理"
+        )
     parts = []
     for batch in batches:
         part = json.loads(batch['result'])
@@ -199,44 +201,9 @@ async def hydrate_participants(
     return value
 
 
-def query_refresh_due(state, pending_count, *, now=None):
-    """少量消息在两分钟内合并；首次查询或累计30条时立即整理。"""
-    now = int(time.time()) if now is None else now
-    return bool(pending_count) and (
-        not state["result"]
-        or pending_count >= db.QUERY_THRESHOLD
-        or now - state["updated_at"] >= db.QUERY_COALESCE_SECONDS
-    )
-
-
-async def coalesce_query_rows(group_id, state, pending, *, db_path=db.DB_PATH,
-                              cache_path=None):
-    """相邻小批次以原文一起归纳，缓存按消息身份排除旧版重叠。"""
-    batch_id = state["latest_batch_id"]
-    if not batch_id or len(pending) >= db.BATCH_SIZE:
-        return pending, None
-    batch = await asyncio.to_thread(db.get_batch, batch_id, db_path)
-    if (
-        not batch or batch["group_id"] != group_id or batch["status"] != "complete"
-        or batch["origin"] != "query"
-        or batch["start_ts"] < int(time.time()) - db.RAW_TTL
-        or len(pending) + batch["message_count"] > db.BATCH_SIZE
-        or pending[0]["sent_at"] - batch["end_ts"] > db.QUERY_MERGE_GAP_SECONDS
-    ):
-        return pending, None
-    keys = await asyncio.to_thread(db.batch_message_keys, batch_id, db_path)
-    previous_rows = await asyncio.to_thread(
-        chat_context.list_messages, group_id, batch["start_ts"], batch["end_ts"] + 1,
-        cache_path,
-    )
-    previous_rows = [r for r in previous_rows if (r["sent_at"], r["message_id"]) in keys]
-    if not keys or {(r["sent_at"], r["message_id"]) for r in previous_rows} != keys:
-        return pending, None
-    combined = {(r["sent_at"], r["message_id"]): r for r in [*previous_rows, *pending]}
-    # 一个批次内的消息ID唯一；跨天复用ID时保持独立批次。
-    if len({r["message_id"] for r in combined.values()}) != len(combined):
-        return pending, None
-    return [combined[key] for key in sorted(combined)], batch_id
+def query_refresh_due(pending_count):
+    """按上次成功总结后新增的消息条数决定是否重新分析。"""
+    return pending_count >= db.QUERY_THRESHOLD
 
 
 async def latest_summary(group_id, *, db_path=db.DB_PATH, cache_path=None, bot_qq=None,
@@ -252,7 +219,7 @@ async def latest_summary(group_id, *, db_path=db.DB_PATH, cache_path=None, bot_q
             detail = (
                 "正在后台整理，请稍后查询"
                 if busy
-                else f"尚无总结缓存，已累计{len(pending)}条；有新增消息即可按需整理，500条自动整理"
+                else f"尚无总结缓存，已累计{len(pending)}条；累计{db.QUERY_THRESHOLD}条可查询整理，{db.BATCH_SIZE}条自动整理"
             )
             raise ValueError(detail)
         value = json.loads(state["result"])
@@ -273,7 +240,7 @@ async def latest_summary(group_id, *, db_path=db.DB_PATH, cache_path=None, bot_q
         )
         return value
 
-    if not query_refresh_due(cycle, len(remaining)):
+    if not query_refresh_due(len(remaining)):
         return await reuse(cycle, remaining, busy=bool(cycle["claim_token"]))
     claimed = await asyncio.to_thread(db.claim_cycle, group_id, db_path)
     if claimed is None:
@@ -287,22 +254,17 @@ async def latest_summary(group_id, *, db_path=db.DB_PATH, cache_path=None, bot_q
         remaining = await asyncio.to_thread(
             unconsumed_rows, group_id, claimed, cache_path=cache_path, bot_qq=bot_qq
         )
-        if not query_refresh_due(claimed, len(remaining)):
+        if not query_refresh_due(len(remaining)):
             return await reuse(claimed, remaining)
         previous = json.loads(claimed["result"]) if claimed["result"] else None
-        analysis_rows, merged_batch_id = await coalesce_query_rows(
-            group_id, claimed, remaining, db_path=db_path, cache_path=cache_path
-        )
         if on_generate is not None:
             await on_generate()
         value, rev = await analyze_rows(
-            group_id, analysis_rows, db_path=db_path, bot_qq=bot_qq, previous=previous
+            group_id, remaining, db_path=db_path, bot_qq=bot_qq, previous=previous
         )
         value["new_message_count"] = len(remaining)
-        if merged_batch_id is not None:
-            value["coalesced_from_batch_id"] = merged_batch_id
         bid = await asyncio.to_thread(
-            db.finish_query, group_id, analysis_rows, value, rev, token, db_path
+            db.finish_query, group_id, remaining, value, rev, token, db_path
         )
         if not bid:
             raise RuntimeError("本轮整理已被更新的任务接管，请稍后再查")

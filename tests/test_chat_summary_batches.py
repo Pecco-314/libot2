@@ -379,7 +379,7 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
 
     async def test_generation_notice_is_sent_only_before_new_analysis(self):
         self.seed()
-        self.insert(self.records[500:529])
+        self.insert(self.records[500:549])
         notify = AsyncMock()
 
         async def generate(messages, *args, **kwargs):
@@ -391,7 +391,7 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
                                         on_generate=notify)
             notify.assert_not_awaited()
             model.assert_not_awaited()
-            self.insert(self.records[529:530])
+            self.insert(self.records[549:550])
             await service.count_summary(1, db_path=self.path, cache_path=self.cache,
                                         on_generate=notify)
             notify.assert_awaited_once()
@@ -400,9 +400,9 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
                                         on_generate=notify)
             notify.assert_awaited_once()
 
-    async def test_29_coalesces_30_refreshes_and_restarts_500_count(self):
+    async def test_49_reuses_50_refreshes_and_restarts_500_count(self):
         self.seed()
-        self.insert(self.records[500:529])
+        self.insert(self.records[500:549])
         fake = AsyncMock(
             side_effect=lambda msgs, *a, **kw: {
                 **result(msgs[0]["id"]),
@@ -414,28 +414,28 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
                 1, db_path=self.path, cache_path=self.cache
             )
             self.assertTrue(cached["cache_hit"])
-            self.assertEqual(cached["pending_message_count"], 29)
+            self.assertEqual(cached["pending_message_count"], 49)
             fake.assert_not_awaited()
-            self.insert(self.records[529:530])
+            self.insert(self.records[549:550])
             fresh = await service.latest_summary(
                 1, db_path=self.path, cache_path=self.cache
             )
             self.assertFalse(fresh["cache_hit"])
-            self.assertEqual(fresh["raw_message_count"], 30)
+            self.assertEqual(fresh["raw_message_count"], 50)
             self.assertEqual(fresh["pending_message_count"], 0)
             cached = await service.latest_summary(
                 1, db_path=self.path, cache_path=self.cache
             )
             self.assertTrue(cached["cache_hit"])
             self.assertEqual(fake.await_count, 1)
-            self.insert(self.records[530:1029])
+            self.insert(self.records[550:1049])
             self.assertEqual(
                 service.stage_ready(1, db_path=self.path, cache_path=self.cache)[
                     "staged"
                 ],
                 [],
             )
-            self.insert(self.records[1029:1030])
+            self.insert(self.records[1049:1050])
             staged = service.stage_ready(1, db_path=self.path, cache_path=self.cache)
             self.assertEqual(len(staged["staged"]), 1)
             await service.process_batch(
@@ -443,7 +443,7 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(len(fake.call_args.args[0]), 500)
         state = db.get_cycle(1, self.path)
-        self.assertEqual(state["cursor_mid"], self.records[1029]["message_id"])
+        self.assertEqual(state["cursor_mid"], self.records[1049]["message_id"])
         self.assertEqual(json.loads(state["result"])["raw_message_count"], 500)
 
     async def test_messages_arriving_during_request_remain_for_next_cycle(self):
@@ -525,20 +525,26 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
             await first
         self.assertEqual(fake.await_count, 1)
 
-    async def test_first_query_handles_one_message_and_context_edits_keep_counter(
+    async def test_first_query_requires_50_messages_and_context_edits_keep_counter(
         self,
     ):
-        self.seed(1)
+        self.seed(49)
         fake = AsyncMock(return_value=result())
         with patch.object(service, "summarize", fake):
+            with self.assertRaisesRegex(ValueError, "累计49条.*累计50条"):
+                await service.latest_summary(
+                    1, db_path=self.path, cache_path=self.cache
+                )
+            fake.assert_not_awaited()
+            self.insert(self.records[49:50])
             value = await service.latest_summary(
                 1, db_path=self.path, cache_path=self.cache
             )
             self.assertFalse(value["cache_hit"])
-            self.assertEqual(value["raw_message_count"], 1)
+            self.assertEqual(value["raw_message_count"], 50)
             fake.assert_awaited_once()
         fake.reset_mock()
-        self.insert(self.records[1:21])
+        self.insert(self.records[50:70])
         db.save_definition("新词", "含义", db_path=self.path)
         with patch.object(service, "summarize", fake):
             cached = await service.latest_summary(
@@ -549,28 +555,31 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
         fake.assert_not_awaited()
 
     def test_refresh_boundaries_and_empty_queries(self):
-        state = {"result": "{}", "updated_at": 1000}
-        self.assertFalse(service.query_refresh_due(state, 29, now=1119))
-        self.assertTrue(service.query_refresh_due(state, 29, now=1120))
-        self.assertTrue(service.query_refresh_due(state, 1, now=1120))
-        self.assertTrue(service.query_refresh_due(state, 30, now=1000))
-        self.assertFalse(service.query_refresh_due(state, 0, now=99999))
-        self.assertTrue(service.query_refresh_due({"result": None}, 1, now=1000))
-        self.assertFalse(service.query_refresh_due({"result": None}, 0, now=1000))
+        self.assertEqual(db.QUERY_THRESHOLD, 50)
+        for count in (0, 1, 29, 30, 49):
+            with self.subTest(count=count):
+                self.assertFalse(service.query_refresh_due(count))
+        for count in (50, 51, 200, 500):
+            with self.subTest(count=count):
+                self.assertTrue(service.query_refresh_due(count))
 
-    async def test_small_tail_refreshes_after_coalescing_window(self):
+    async def test_small_tail_reuses_cache_regardless_of_elapsed_time(self):
         self.seed()
         self.insert(self.records[500:501])
         with db.connection(self.path) as conn:
             conn.execute("UPDATE chat_summary_cycle SET updated_at=? WHERE group_id=1",
-                         (int(time.time()) - db.QUERY_COALESCE_SECONDS,))
+                         (int(time.time()) - 86400,))
+        before = db.get_cycle(1, self.path)
         with patch.object(service, "summarize", AsyncMock(return_value=result("501"))) as model:
             value = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
             again = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
-        self.assertEqual(value["new_message_count"], 1)
-        self.assertFalse(value["cache_hit"])
+        self.assertEqual(value["pending_message_count"], 1)
+        self.assertTrue(value["cache_hit"])
         self.assertTrue(again["cache_hit"])
-        model.assert_awaited_once()
+        model.assert_not_awaited()
+        after = db.get_cycle(1, self.path)
+        for key in ("cursor_ts", "cursor_mid", "latest_batch_id", "updated_at"):
+            self.assertEqual(after[key], before[key])
 
     async def test_empty_first_query_does_not_call_model(self):
         with patch.object(service, "summarize", AsyncMock()) as model:
@@ -578,8 +587,8 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
                 await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
         model.assert_not_awaited()
 
-    async def test_neighboring_query_batches_reanalyze_together_and_count_once(self):
-        self.seed(10)
+    async def test_neighboring_query_batches_analyze_new_messages_only(self):
+        self.seed(50)
 
         def generate(messages, *args, **kwargs):
             value = result(messages[0]["id"])
@@ -590,87 +599,76 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
         with patch.object(service, "summarize", AsyncMock(side_effect=generate)) as model:
             await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
             first_id = db.get_cycle(1, self.path)["latest_batch_id"]
-            self.insert(self.records[10:40])
+            self.insert(self.records[50:100])
             fresh = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
             count = await service.count_summary(1, db_path=self.path, cache_path=self.cache)
-            self.assertEqual([len(c.args[0]) for c in model.call_args_list], [10, 40])
-        self.assertEqual(fresh["raw_message_count"], 40)
-        self.assertEqual(fresh["new_message_count"], 30)
-        self.assertEqual(fresh["coalesced_from_batch_id"], first_id)
-        self.assertEqual(count["raw_message_count"], 40)
-        self.assertEqual(count["message_count"], 40)
-        self.assertEqual(len(count["topics"]), 1)
-        self.assertEqual(count["topics"][0]["message_ids"], ["1", "40"])
+            self.assertEqual([len(c.args[0]) for c in model.call_args_list], [50, 50])
+            self.assertEqual(model.call_args.args[0][0]["id"], "51")
+            previous = model.call_args.kwargs["previous_summary"]
+            self.assertEqual(previous["topics"][0]["message_ids"], ["1", "50"])
+        self.assertEqual(fresh["raw_message_count"], 50)
+        self.assertEqual(fresh["new_message_count"], 50)
+        self.assertNotIn("coalesced_from_batch_id", fresh)
+        self.assertEqual(count["raw_message_count"], 100)
+        self.assertEqual(count["message_count"], 100)
+        self.assertEqual(len(count["topics"]), 2)
+        self.assertEqual(count["topics"][0]["message_ids"], ["1", "50"])
+        self.assertEqual(count["topics"][1]["message_ids"], ["51", "100"])
         self.assertEqual(len(count["topics"][0]["participants"]), 1)
-        self.assertEqual(len(count["batch_ids"]), 1)
+        self.assertEqual(len(count["batch_ids"]), 2)
         self.assertEqual(db.get_batch(first_id, self.path)["status"], "complete")
 
     async def test_missing_previous_raw_keeps_batches_separate(self):
-        self.seed(10)
+        self.seed(50)
         with patch.object(service, "summarize", AsyncMock(return_value=result())):
             await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
         with sqlite3.connect(self.cache) as conn:
             conn.execute("DELETE FROM message WHERE message_id=1")
-        self.insert(self.records[10:40])
-        with patch.object(service, "summarize", AsyncMock(return_value=result("11"))) as model:
+        self.insert(self.records[50:100])
+        with patch.object(service, "summarize", AsyncMock(return_value=result("51"))) as model:
             fresh = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
-        self.assertEqual(len(model.call_args.args[0]), 30)
+        self.assertEqual(len(model.call_args.args[0]), 50)
         self.assertNotIn("coalesced_from_batch_id", fresh)
-        self.assertEqual(sum(b["message_count"] for b in db.recent_count_batches(1, 500, self.path)), 40)
+        self.assertEqual(sum(b["message_count"] for b in db.recent_count_batches(1, 500, self.path)), 100)
 
-    async def test_coalescing_leaves_messages_arriving_during_analysis_for_next_query(self):
-        self.seed(10)
+    async def test_incremental_analysis_leaves_new_arrivals_for_next_query(self):
+        self.seed(50)
         with patch.object(service, "summarize", AsyncMock(return_value=result())):
             await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
-        self.insert(self.records[10:40])
+        self.insert(self.records[50:100])
 
         async def generate(messages, *args, **kwargs):
-            self.assertEqual(len(messages), 40)
-            self.insert(self.records[40:45])
-            return result("40")
+            self.assertEqual(len(messages), 50)
+            self.insert(self.records[100:105])
+            return result("100")
 
         with patch.object(service, "summarize", AsyncMock(side_effect=generate)):
             fresh = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
         self.assertEqual(fresh["pending_message_count"], 5)
-        self.assertEqual(fresh["new_message_count"], 30)
-        self.assertEqual(db.get_cycle(1, self.path)["cursor_mid"], 40)
+        self.assertEqual(fresh["new_message_count"], 50)
+        self.assertEqual(db.get_cycle(1, self.path)["cursor_mid"], 100)
 
-    async def test_coalescing_skips_recalled_expired_and_reused_ids(self):
-        self.seed(10)
-        with patch.object(service, "summarize", AsyncMock(return_value=result())):
-            await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
-        state = db.get_cycle(1, self.path)
-        pending = self.records[10:40]
+    async def test_recalled_messages_do_not_count_toward_refresh(self):
+        self.seed()
+        self.insert(self.records[500:550])
         with sqlite3.connect(self.cache) as conn:
-            conn.execute("UPDATE message SET recalled_at=1 WHERE message_id=1")
-        combined, bid = await service.coalesce_query_rows(
-            1, state, pending, db_path=self.path, cache_path=self.cache
-        )
-        self.assertEqual(combined, pending)
-        self.assertIsNone(bid)
-        with sqlite3.connect(self.cache) as conn:
-            conn.execute("UPDATE message SET recalled_at=NULL WHERE message_id=1")
-        reused = [dict(pending[0], message_id=1), *pending[1:]]
-        combined, bid = await service.coalesce_query_rows(
-            1, state, reused, db_path=self.path, cache_path=self.cache
-        )
-        self.assertEqual(combined, reused)
-        self.assertIsNone(bid)
-        with db.connection(self.path) as conn:
-            conn.execute("UPDATE chat_summary_batch SET start_ts=? WHERE id=?",
-                         (int(time.time()) - db.RAW_TTL - 1, state["latest_batch_id"]))
-        combined, bid = await service.coalesce_query_rows(
-            1, state, pending, db_path=self.path, cache_path=self.cache
-        )
-        self.assertEqual(combined, pending)
-        self.assertIsNone(bid)
+            conn.execute("UPDATE message SET recalled_at=1 WHERE message_id=501")
+        with patch.object(service, "summarize", AsyncMock(return_value=result("502"))) as model:
+            cached = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
+            self.assertTrue(cached["cache_hit"])
+            self.assertEqual(cached["pending_message_count"], 49)
+            model.assert_not_awaited()
+            self.insert(self.records[550:551])
+            fresh = await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
+        self.assertEqual(fresh["raw_message_count"], 50)
+        self.assertNotIn("501", [message["id"] for message in model.call_args.args[0]])
 
-    async def test_merge_failure_keeps_prior_batch_and_new_message_counter(self):
-        self.seed(10)
+    async def test_incremental_failure_keeps_prior_batch_and_new_message_counter(self):
+        self.seed(50)
         with patch.object(service, "summarize", AsyncMock(return_value=result())):
             await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
         before = db.get_cycle(1, self.path)
-        self.insert(self.records[10:40])
+        self.insert(self.records[50:100])
         with patch.object(service, "summarize", AsyncMock(side_effect=RuntimeError("失败"))):
             with self.assertRaises(RuntimeError):
                 await service.latest_summary(1, db_path=self.path, cache_path=self.cache)
@@ -678,21 +676,7 @@ class RollingCycleTests(Fixtures, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["result"], before["result"])
         self.assertEqual(after["latest_batch_id"], before["latest_batch_id"])
         self.assertIsNone(after["claim_token"])
-        self.assertEqual(len(service.unconsumed_rows(1, after, cache_path=self.cache)), 30)
-
-    async def test_coalescing_respects_batch_size_and_conversation_gap(self):
-        for gap, old_count in ((0, 480), (db.QUERY_MERGE_GAP_SECONDS + 1, 10)):
-            with self.subTest(gap=gap, old_count=old_count):
-                pending = rows(30, first_id=old_count + 1)
-                earlier = rows(old_count, start=pending[0]["sent_at"] - old_count - gap)
-                token = db.claim_cycle(1, self.path)["claim_token"]
-                db.finish_query(1, earlier, result(), db.revision(self.path), token, self.path)
-                state = db.get_cycle(1, self.path)
-                combined, bid = await service.coalesce_query_rows(
-                    1, state, pending, db_path=self.path, cache_path=self.cache
-                )
-                self.assertEqual(combined, pending)
-                self.assertIsNone(bid)
+        self.assertEqual(len(service.unconsumed_rows(1, after, cache_path=self.cache)), 50)
 
     async def test_reanalysis_preserves_old_version_and_current_counter(self):
         bid = self.seed()

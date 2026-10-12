@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from src.db.chat_summary import load_context
+from src.db.chat_summary import BATCH_SIZE, QUERY_THRESHOLD, load_context
 from src.common.chat_summary_commands import (
     command_context,
     identify_command,
@@ -467,7 +467,7 @@ def format_summary(result):
             lines.append(f"复用上次总结，当前{pending}条新增消息正在整理。")
         elif result.get("cache_hit"):
             lines.append(
-                f"复用上次总结，新增{pending}条；短时间零碎消息合并，500条自动更新。"
+                f"复用上次总结，新增{pending}条；查询时累计{QUERY_THRESHOLD}条刷新，{BATCH_SIZE}条自动更新。"
             )
         elif pending:
             lines.append(f"本轮已更新，处理期间新增的{pending}条留待下一轮。")

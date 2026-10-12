@@ -17,9 +17,7 @@ from src.common.chat_summary_commands import identify_command, low_information_c
 
 DB_PATH = chat_context.DB_PATH
 BATCH_SIZE = 500
-QUERY_THRESHOLD = 30
-QUERY_COALESCE_SECONDS = 120
-QUERY_MERGE_GAP_SECONDS = 900
+QUERY_THRESHOLD = 50
 MAX_ATTEMPTS = 3
 RAW_TTL = 86400
 LEASE_SECONDS = 7200
@@ -1047,15 +1045,6 @@ def recent_count_batches(group_id, count=500, db_path=DB_PATH):
             if total >= count:
                 break
     return list(reversed(chosen))
-
-
-def batch_message_keys(batch_id, db_path=DB_PATH):
-    """时间戳与消息ID共同标识批次原文，避免跨天复用ID混入窗口。"""
-    with connection(db_path) as conn:
-        return {tuple(row) for row in conn.execute(
-            "SELECT sent_at,message_id FROM chat_summary_member WHERE batch_id=?",
-            (batch_id,),
-        )}
 
 
 def member_ids(batch_ids, db_path=DB_PATH):
