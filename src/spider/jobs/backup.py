@@ -12,7 +12,7 @@ logger = logging.getLogger("spider.jobs.backup")
 
 async def run_db_backup() -> None:
     try:
-        await asyncio.to_thread(backup_sqlite_db, keep_count=2)
+        await asyncio.to_thread(backup_sqlite_db, keep_count=1)
         logger.info("database backup job completed successfully")
     except Exception as exc:
         logger.warning("db backup job error: %s", exc)
