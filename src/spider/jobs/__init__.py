@@ -7,13 +7,11 @@ from src.spider.jobs.liver import register_jobs as register_liver_jobs
 from src.spider.jobs.stats import register_jobs as register_stats_jobs
 from src.spider.jobs.backup import register_jobs as register_backup_jobs
 from src.spider.jobs.cookie_monitor import register_jobs as register_cookie_monitor_jobs
-from src.spider.jobs.song_list import register_jobs as register_song_list_jobs
 from src.spider.jobs.song_clips import register_jobs as register_song_clip_jobs
 from src.spider.jobs.lyrics import register_jobs as register_lyrics_jobs
 from src.spider.jobs.fan_club import register_jobs as register_fan_club_jobs
 from src.spider.jobs.event_search import register_jobs as register_event_search_jobs
 from src.spider.jobs.name_history import register_jobs as register_name_history_jobs
-from src.spider.jobs.user_activity import register_jobs as register_user_activity_jobs
 
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
@@ -22,10 +20,8 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     register_stats_jobs(scheduler)
     register_backup_jobs(scheduler)
     register_cookie_monitor_jobs(scheduler)
-    # register_song_list_jobs(scheduler)
     register_song_clip_jobs(scheduler)
     register_lyrics_jobs(scheduler)
     register_fan_club_jobs(scheduler)
     register_event_search_jobs(scheduler)
     register_name_history_jobs(scheduler)
-    register_user_activity_jobs(scheduler)
