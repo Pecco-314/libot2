@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
-
-from nonebot_plugin_imageutils import BuildImage
-from src.render.emoji_text import Text2Image
+from typing import Any, TYPE_CHECKING
 
 from src.common.utils import ROOT
+
+if TYPE_CHECKING:
+    from nonebot_plugin_imageutils import BuildImage
 
 
 def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal") -> str:
     """按英文单词、汉字和完整 Emoji 序列换行。"""
+    from src.render.emoji_text import Text2Image
+
     return (
         Text2Image.from_text(text, font_size, weight=weight)
         .wrap(max_width)
@@ -19,6 +23,9 @@ def _smart_wrap(text: str, font_size: int, max_width: int, weight: str = "normal
 
 
 def draw_help_card(sections: list[dict[str, Any]], subtitle: str = "") -> BuildImage:
+    from nonebot_plugin_imageutils import BuildImage
+    from src.render.emoji_text import Text2Image
+
     width = 760
     padding = 40
     content_width = width - padding * 2
@@ -96,8 +103,9 @@ def _get_cache_path(prefix: str, sections: list[dict[str, Any]], subtitle: str) 
     return str(save_dir / file_name), digest
 
 
-def save_help_card() -> dict[str, Any]:
-    sections = [
+def get_help_sections() -> list[dict[str, Any]]:
+    """帮助图与群聊总结共用的公开命令说明。"""
+    return [
         {
             "title": "用户相关",
             "items": [
@@ -189,10 +197,14 @@ def save_help_card() -> dict[str, Any]:
                 ("新增梗/addmeme <名字> <内容>", "提交审核；回复文本时可仅填写多个空格分隔的标签"),
                 ("新增图片/addimage <标签1> [标签2 ...]", "回复图片，加入多个标签并等待管理员审核"),
                 ("来点 <名字>", "随机抽取内容，老婆和老公每日不重复"),
+                ("在聊什么 [条数]", "默认500条，可选500—5000条，按完整摘要批次取整；需先开启"),
             ],
         },
     ]
 
+
+def save_help_card() -> dict[str, Any]:
+    sections = get_help_sections()
     save_path, _ = _get_cache_path("help", sections, "")
     if not Path(save_path).exists():
         canvas = draw_help_card(sections)
@@ -201,8 +213,9 @@ def save_help_card() -> dict[str, Any]:
     return {"image_path": str(save_path)}
 
 
-def save_admin_help_card() -> dict[str, Any]:
-    sections = [
+def get_admin_help_sections() -> list[dict[str, Any]]:
+    """帮助图与群聊总结共用的管理命令说明。"""
+    return [
         {
             "title": "管理员命令",
             "items": [
@@ -220,6 +233,9 @@ def save_admin_help_card() -> dict[str, Any]:
         },
     ]
 
+
+def save_admin_help_card() -> dict[str, Any]:
+    sections = get_admin_help_sections()
     subtitle = "仅管理员可用"
     save_path, _ = _get_cache_path("admin_help", sections, subtitle)
     if not Path(save_path).exists():

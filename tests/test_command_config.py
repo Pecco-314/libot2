@@ -11,6 +11,7 @@ from src.db.command_config import (
     init_command_config_db,
     set_command_cooldown,
     set_command_enabled,
+    enabled_command_groups,
 )
 
 
@@ -28,6 +29,17 @@ class CommandConfigDatabaseTest(unittest.TestCase):
             get_command_config(100, "抉择", self.db_path),
             CommandConfig(enabled=True, cooldown_seconds=None),
         )
+
+    def test_summary_requires_explicit_opt_in_even_when_setting_cooldown(self):
+        self.assertFalse(get_command_config(100, '在聊什么', self.db_path).enabled)
+        set_command_cooldown(100, '在聊什么', 60, 123, self.db_path)
+        self.assertFalse(get_command_config(100, '在聊什么', self.db_path).enabled)
+        self.assertEqual(enabled_command_groups('在聊什么', self.db_path), [])
+        set_command_enabled(100, '在聊什么', True, 123, self.db_path)
+        self.assertEqual(enabled_command_groups('在聊什么', self.db_path), [100])
+        self.assertFalse(get_command_config(200, '在聊什么', self.db_path).enabled)
+        set_command_enabled(100, '在聊什么', False, 123, self.db_path)
+        self.assertEqual(enabled_command_groups('在聊什么', self.db_path), [])
 
     def test_enabled_and_cooldown_are_independent_and_group_scoped(self) -> None:
         set_command_enabled(100, "抉择", False, 123, self.db_path)

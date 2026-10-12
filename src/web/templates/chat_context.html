@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>群聊上下文 · Libot</title>
+    <style>
+        :root { color-scheme: light; font-family: system-ui, sans-serif; color: #253248; background: #f4f6fa; }
+        body { max-width: 1080px; margin: auto; padding: 28px 20px; }
+        a { color: #465ec7; text-decoration: none; } a:hover { text-decoration: underline; }
+        h1 { font-size: 25px; margin: 12px 0; } h2 { font-size: 18px; margin: 0 0 16px; }
+        .muted { color: #747d8d; font-size: 13px; } .notice { padding: 12px; background: #e7f5ed; border-radius: 8px; }
+        nav { display: flex; gap: 20px; margin: 24px 0; border-bottom: 1px solid #dce1eb; padding-bottom: 12px; }
+        .active { font-weight: 650; color: #253248; } section { background: white; border-radius: 12px; padding: 22px; margin: 18px 0; }
+        .toolbar, .fields { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        input, textarea, button { font: inherit; border: 1px solid #ced5e3; border-radius: 6px; padding: 9px 11px; box-sizing: border-box; }
+        button { background: #465ec7; color: white; border: 0; cursor: pointer; } button.secondary { background: #edf0f7; color: #525e74; }
+        label { display: block; margin: 12px 0 6px; } input[type=text], textarea { width: 100%; }
+        .fields > div { flex: 1; min-width: 150px; } .checks { display: flex; gap: 22px; margin: 12px 0 20px; }
+        .checks label { margin: 0; } textarea { min-height: 110px; resize: vertical; }
+        .row { display: flex; gap: 16px; padding: 17px 0; border-bottom: 1px solid #eef0f5; align-items: start; }
+        .row:last-child { border: 0; } .content { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .content p { margin: 6px 0; white-space: pre-wrap; } .actions { display: flex; gap: 12px; align-items: center; }
+        .pager { margin: 18px 0 0; display: flex; gap: 18px; } .evidence { margin: 10px 0; padding: 12px; background: #f6f8fc; }
+        .evidence p { white-space: pre-wrap; overflow-wrap: anywhere; } table { border-collapse: collapse; width: 100%; font-size: 14px; }
+        td, th { padding: 12px 8px; border-bottom: 1px solid #edf0f6; text-align: left; } .scroll { overflow-x: auto; }
+        .people-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:8px; max-height:320px; overflow:auto; margin:10px 0; }
+        .person-choice { display:flex; align-items:center; gap:10px; background:#f3f5fa; color:#253248; text-align:left; padding:10px; min-width:0; }
+        .person-choice img, #selected-avatar { width:38px; height:38px; border-radius:50%; object-fit:cover; background:#dce1eb; }
+        .person-choice span { overflow-wrap:anywhere; } .person-choice small { display:block; color:#747d8d; margin-top:3px; }
+        #selected-person { display:flex; align-items:center; gap:10px; margin:12px 0; }
+        #selected-person[hidden] { display:none; }
+        .person-avatar { width:42px; height:42px; border-radius:50%; object-fit:cover; background:#dce1eb; flex:none; }
+        .person-aliases { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
+        .person-aliases span { background:#f0f3f9; border-radius:5px; padding:3px 7px; font-size:13px; }
+        @media (max-width: 600px) { body { padding: 18px 12px; } .row { flex-direction: column; } }
+    </style>
+</head>
+<body>
+    <a href="/">← 控制台</a>
+    <h1>群聊上下文</h1>
+    <p class="muted">“在聊什么”默认展示最近500条，可选500—5000条，按完整摘要批次取整。功能开启后每累计500条消息自动整理；查询时有新增消息即可刷新，不足30条且距上次整理不足2分钟时复用缓存，累计30条立即刷新。连续的小批次合并归纳。解释和代号修改用于后续分析。当前词表版本 {{ revision }}。</p>
+    {% if saved %}<p class="notice">已保存，长期上下文已更新。</p>{% endif %}
+    <nav>
+        <a class="{{ 'active' if view == 'pending' }}" href="{{ url_for('chat_context.page', view='pending', group=group_id) }}">待解释</a>
+        <a class="{{ 'active' if view == 'glossary' }}" href="{{ url_for('chat_context.page', view='glossary', group=group_id) }}">长期词典</a>
+        <a class="{{ 'active' if view == 'people' }}" href="{{ url_for('chat_context.page', view='people', group=group_id) }}">群友代号</a>
+        <a class="{{ 'active' if view == 'batches' }}" href="{{ url_for('chat_context.page', view='batches', group=group_id) }}">整理记录</a>
+        <a href="{{ url_for('chat_context.page', view='glossary', term='新词条', group=group_id) }}">添加解释</a>
+    </nav>
+    {% if view == 'people' %}
+    <section>
+        <h2>{{ '修改群友代号' if person_edit else '添加群友代号' }}</h2>
+        <p class="muted">按QQ号绑定本人，无需等待模型发现。主名用于摘要称呼；其他代号用于理解大家的叫法。保存会保留已有代号和观察到的昵称。</p>
+        <form action="{{ url_for('chat_context.save_person') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="fields">
+                <div><label for="alias-group">群号</label><input id="alias-group" type="text" name="group_id" value="{{ group_id }}" inputmode="numeric" pattern="[0-9]+" maxlength="19" required></div>
+                <div><label for="alias-qq">QQ号</label><input id="alias-qq" type="text" name="qq" value="{{ person_qq }}" inputmode="numeric" pattern="[0-9]+" maxlength="19" required></div>
+                <div><label for="alias-name">主名 / 摘要中的称呼</label><input id="alias-name" type="text" name="canonical_name" value="{{ person_edit.name if person_edit else '' }}" placeholder="填写简短、常用的称呼" maxlength="100" required></div>
+            </div>
+            <label for="person-aliases">其他代号（可选，每行一个）</label>
+            <textarea id="person-aliases" name="aliases" rows="2" style="min-height:76px" placeholder="可以加入长昵称、简称或大家常用的代号；名字里的标点会完整保留"></textarea>
+            {% if person_edit %}<p class="muted">已登记：{{ person_edit.aliases|join('、') }}</p>{% endif %}
+            <p><button>保存群友代号</button>{% if person_edit %} <a href="{{ url_for('chat_context.page', view='people', group=group_id) }}">添加另一位群友</a>{% endif %}</p>
+        </form>
+    </section>
+    {% endif %}
+    {% if term %}
+    <section>
+        <h2>{{ '修改解释' if edit else '确认解释' }}</h2>
+        {% if unknown %}
+        <p class="muted">模型猜测（未确认）：{{ unknown.guess or '不确定' }}</p>
+        <div class="evidence">
+            {% for message in evidence.rows %}<p><span class="muted">{{ message.time|chat_time }} · {{ message.name }}</span><br>{{ message.text }}</p>{% endfor %}
+            {% if not evidence.rows %}<p class="muted">原消息已过期、撤回或不在缓存中。消息ID：{{ evidence.ids|join('、') }}</p>{% endif %}
+            {% if evidence.batch_id %}<a href="{{ url_for('chat_context.batch_page', batch_id=evidence.batch_id) }}">查看对应批次总结</a>{% endif %}
+        </div>
+        {% endif %}
+        <form action="{{ url_for('chat_context.save') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="term">词条</label><input id="term" name="term" value="{{ term }}" maxlength="100" required>
+            <label for="definition">解释</label><textarea id="definition" name="definition" maxlength="2000" required>{{ edit.definition if edit else '' }}</textarea>
+            <div class="checks">
+                <label><input type="checkbox" name="keep_original" {{ 'checked' if edit and edit.keep_original }}> 总结中保留原词</label>
+                <label><input type="checkbox" name="needs_context" {{ 'checked' if edit and edit.needs_context }}> 结合语境理解</label>
+            </div>
+            <details {{ 'open' if bindings }}><summary>群友称呼对应（可选，仅本地保存QQ）</summary>
+                {% for binding in bindings %}<p class="muted">已绑定：{{ binding.display_name }} · QQ {{ binding.qq }} · 群 {{ binding.group_id }}</p>{% endfor %}
+                <label for="person-search">选择已有群友</label>
+                <input id="person-search" type="search" placeholder="搜索名字或已登记称呼" autocomplete="off" style="width:100%">
+                <input type="hidden" id="selected-qq" name="selected_qq">
+                <div id="people-list" class="people-list"></div>
+                <div id="selected-person" hidden><img id="selected-avatar" alt="" referrerpolicy="no-referrer"><span id="selected-name"></span><button type="button" class="secondary" id="clear-person">取消选择</button></div>
+                <div class="fields">
+                    <div><label>群号</label><input id="person-group" name="group_id" value="{{ bindings[0].group_id if bindings else group_id }}" inputmode="numeric"></div>
+                    <div><label>QQ号（也可手动填写）</label><input id="person-qq" name="qq" value="{{ bindings[0].qq if bindings|length == 1 else '' }}" inputmode="numeric"></div>
+                    <div><label>主名</label><input id="person-name" name="canonical_name" value="{{ bindings[0].display_name if bindings|length == 1 else '' }}" maxlength="100"></div>
+                </div>
+            </details>
+            <p><button>保存解释</button></p>
+        </form>
+    </section>
+    {% endif %}
+    <section>
+    {% if view == 'people' %}
+        <h2>已记录的群友</h2>
+        <form class="toolbar" method="get">
+            <input type="hidden" name="view" value="people"><input type="hidden" name="group" value="{{ group_id }}">
+            <input type="text" name="q" value="{{ query }}" placeholder="搜索QQ号、名字或代号" maxlength="200" style="flex:1"><button>搜索</button>
+        </form>
+        <p class="muted">群 {{ group_id }} · {{ pagination.total }}位群友</p>
+        {% for person in pagination['items'] %}
+        <div class="row">
+            <img class="person-avatar" src="{{ person_avatar_url(person.qq) }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">
+            <div class="content"><strong>{{ person.name }}</strong><p class="muted">QQ {{ person.qq }}</p>
+                <div class="person-aliases">{% for alias in person.aliases %}{% if alias != person.name %}<span>{{ alias }}</span>{% endif %}{% endfor %}</div>
+            </div>
+            <a href="{{ url_for('chat_context.page', view='people', group=group_id, qq=person.qq) }}">设置代号</a>
+        </div>
+        {% else %}<p class="muted">没有匹配的群友，可在上方直接填写QQ号添加。</p>{% endfor %}
+        <div class="pager">{% if pagination.page > 1 %}<a href="{{ url_for('chat_context.page', view=view, group=group_id, q=query, page=pagination.page-1) }}">上一页</a>{% endif %}<span>{{ pagination.page }} / {{ pagination.pages }}</span>{% if pagination.page < pagination.pages %}<a href="{{ url_for('chat_context.page', view=view, group=group_id, q=query, page=pagination.page+1) }}">下一页</a>{% endif %}</div>
+    {% elif view == 'batches' %}
+        <h2>最近整理记录</h2>
+        <div class="scroll"><table><thead><tr><th>时间范围</th><th>群号</th><th>消息数</th><th>状态</th></tr></thead><tbody>
+        {% for batch in batches %}<tr><td><a href="{{ url_for('chat_context.batch_page', batch_id=batch.id) }}">{{ batch.start_ts|chat_time }}—{{ batch.end_ts|chat_time }}</a></td><td>{{ batch.group_id }}</td><td>{{ batch.message_count }} · {{ '按需' if batch.origin == 'query' else '自动' }}</td><td>{{ {'pending':'等待整理','running':'整理中','complete':'已保存','failed':'等待重试','cancelled':'已取消'}.get(batch.status, batch.status) }}{% if batch.error %} · {{ batch.error }}{% endif %}</td></tr>{% endfor %}
+        </tbody></table></div>
+        {% if not batches %}<p class="muted">还没有批次。</p>{% endif %}
+    {% else %}
+        <form class="toolbar" method="get"><input type="hidden" name="view" value="{{ view }}"><input name="q" value="{{ query }}" placeholder="搜索词条{{ '或解释' if view == 'glossary' }}" style="flex:1" maxlength="200">{% if view == 'pending' %}<label style="margin:0">至少提及 <input name="min_mentions" type="number" min="1" max="1000000" value="{{ min_mentions }}" style="width:80px"> 条</label>{% endif %}<button>筛选</button></form>
+        {% if view == 'pending' %}<p class="muted">按已记录提及条数从多到少排序；同一消息重复写同一词只计一次。次数由可查原文和后续消息累计，过期原文无法补计。填写2可只看重复出现的词。</p>{% endif %}
+        <p class="muted">{{ pagination.total }}个词条</p>
+        {% for item in pagination['items'] %}
+        <div class="row">
+            <div class="content"><strong>{{ item.term }}</strong>
+                {% if view == 'glossary' %}<p>{{ item.definition }}</p><span class="muted">{{ '保留原词 · ' if item.keep_original }}{{ '结合语境 · ' if item.needs_context }}{{ item.updated_at|chat_time }}</span>
+                {% else %}<p>模型猜测：{{ item.guess or '不确定' }}</p><span class="muted">群 {{ item.group_id }} · 已记录提及 {{ item.mention_count }} 条 · {{ item.last_seen|chat_time }}</span>{% endif %}
+            </div>
+            <div class="actions"><a href="{{ url_for('chat_context.page', view=view, term=item.term, group=item.group_id if view == 'pending' else group_id, min_mentions=min_mentions, q=query, page=pagination.page) }}">{{ '修改' if view == 'glossary' else '解释' }}</a>
+            {% if view == 'pending' %}<form action="{{ url_for('chat_context.dismiss') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="term" value="{{ item.term }}"><input type="hidden" name="group_id" value="{{ item.group_id }}"><button class="secondary">忽略</button></form>{% endif %}
+            </div>
+        </div>
+        {% else %}<p class="muted">暂无匹配词条。</p>{% endfor %}
+        <div class="pager">{% if pagination.page > 1 %}<a href="{{ url_for('chat_context.page', view=view, q=query, min_mentions=min_mentions, page=pagination.page-1) }}">上一页</a>{% endif %}<span>{{ pagination.page }} / {{ pagination.pages }}</span>{% if pagination.page < pagination.pages %}<a href="{{ url_for('chat_context.page', view=view, q=query, min_mentions=min_mentions, page=pagination.page+1) }}">下一页</a>{% endif %}</div>
+    {% endif %}
+    </section>
+    <p class="muted">只有人工保存的解释会加入长期上下文。聊天原文沿用24小时缓存，整理完成后删除批次原文暂存，保留总结和消息ID。</p>
+    {% if term %}<script>
+    (() => {
+        const search = document.getElementById('person-search');
+        const group = document.getElementById('person-group');
+        const list = document.getElementById('people-list');
+        const selected = document.getElementById('selected-qq');
+        const selectedRow = document.getElementById('selected-person');
+        let timer, requestId = 0;
+        function clearSelection() {
+            selected.value = ''; selectedRow.hidden = true;
+            document.getElementById('person-qq').value = '';
+            document.getElementById('person-name').value = '';
+        }
+        function choose(person) {
+            selected.value = person.qq;
+            document.getElementById('person-qq').value = person.qq;
+            document.getElementById('person-name').value = person.name;
+            const definition = document.getElementById('definition');
+            if (!definition.value.trim()) definition.value = '群友' + person.name + '的称呼。';
+            document.getElementById('selected-name').textContent = person.name;
+            const avatar = document.getElementById('selected-avatar');
+            avatar.src = person.avatar; avatar.style.visibility = 'visible';
+            avatar.onerror = () => { avatar.style.visibility = 'hidden'; };
+            selectedRow.hidden = false;
+        }
+        async function refresh() {
+            const current = ++requestId;
+            const url = new URL({{ url_for('chat_context.people')|tojson }}, window.location.origin);
+            url.searchParams.set('group', group.value); url.searchParams.set('q', search.value);
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                if (current !== requestId) return;
+                list.replaceChildren();
+                for (const person of data.people) {
+                    const button = document.createElement('button');
+                    button.type = 'button'; button.className = 'person-choice';
+                    const image = document.createElement('img');
+                    image.src = person.avatar; image.alt = ''; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+                    image.onerror = () => { image.style.visibility = 'hidden'; };
+                    const label = document.createElement('span'); label.textContent = person.name;
+                    const aliases = document.createElement('small');
+                    aliases.textContent = person.aliases.filter(name => name !== person.name).join('、');
+                    label.append(aliases); button.append(image, label);
+                    button.addEventListener('click', () => choose(person)); list.append(button);
+                }
+                if (!data.people.length) list.textContent = '没有匹配的群友，可手动填写。';
+            } catch (_) {
+                if (current === requestId) list.textContent = '暂时无法读取群友，可手动填写。';
+            }
+        }
+        search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+        group.addEventListener('change', () => { clearSelection(); refresh(); });
+        document.getElementById('person-qq').addEventListener('input', () => { selected.value = ''; selectedRow.hidden = true; });
+        document.getElementById('clear-person').addEventListener('click', clearSelection);
+        refresh();
+    })();
+    </script>{% endif %}
+</body>
+</html>

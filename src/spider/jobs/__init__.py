@@ -12,6 +12,7 @@ from src.spider.jobs.lyrics import register_jobs as register_lyrics_jobs
 from src.spider.jobs.fan_club import register_jobs as register_fan_club_jobs
 from src.spider.jobs.event_search import register_jobs as register_event_search_jobs
 from src.spider.jobs.name_history import register_jobs as register_name_history_jobs
+from src.spider.jobs.chat_summary import register_jobs as register_chat_summary_jobs
 
 
 def register_jobs(scheduler: AsyncIOScheduler) -> None:
@@ -25,3 +26,4 @@ def register_jobs(scheduler: AsyncIOScheduler) -> None:
     register_fan_club_jobs(scheduler)
     register_event_search_jobs(scheduler)
     register_name_history_jobs(scheduler)
+    register_chat_summary_jobs(scheduler)

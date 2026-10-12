@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>群聊整理记录 · Libot</title>
+<style>body { font: 16px/1.8 system-ui,sans-serif; max-width: 800px; margin: 32px auto; padding: 0 20px; color: #253248; } a { color: #465ec7; } h1 { font-size: 24px; } h2 { font-size: 18px; margin: 28px 0 6px; } p { white-space: pre-wrap; overflow-wrap: anywhere; } .muted { color: #747d8d; font-size: 13px; }</style></head>
+<body><a href="{{ url_for('chat_context.page', view='batches') }}">← 整理记录</a>
+<h1>{{ batch.start_ts|chat_time }}—{{ batch.end_ts|chat_time }}</h1>
+<p class="muted">群 {{ batch.group_id }} · {{ batch.message_count }}条 · {{ batch.status }} · 上下文版本 {{ batch.context_revision }}</p>
+{% if result %}
+{% for topic in result.topics %}<h2>{{ topic.title }}</h2><p>{{ topic.summary }}</p><p class="muted">消息ID：{{ topic.message_ids|join('、') }}</p>{% endfor %}
+{% if result.terms_to_check %}<h2>本批次待核对词</h2>{% for item in result.terms_to_check %}<p><a href="{{ url_for('chat_context.page', term=item.term, group=batch.group_id) }}">{{ item.term }}</a> · {{ item.possible_meaning }}</p>{% endfor %}{% endif %}
+{% else %}<p>该批次尚未完成。{{ batch.error or '' }}</p>{% endif %}
+</body></html>

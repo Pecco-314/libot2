@@ -2,7 +2,6 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 
 from src.common.utils import ROOT
 
@@ -11,8 +10,8 @@ TTL = 86400
 
 
 @contextmanager
-def connection():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+def connection(db_path=None):
+    conn = sqlite3.connect(db_path or DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
     try:
         with conn:
@@ -43,6 +42,18 @@ def save_message(group, mid, uid, sent_at, nickname, segments):
             VALUES(?,?,?,?,?,?) ON CONFLICT(group_id,message_id) DO UPDATE SET
             sent_at=excluded.sent_at,nickname=excluded.nickname,segments=excluded.segments
         ''', (group,mid,uid,sent_at,nickname,json.dumps(segments,ensure_ascii=False)))
+
+
+def save_history_messages(rows, db_path=None):
+    """补入缺失消息，保留实时缓存、已撤回标记和现有图片信息。"""
+    with connection(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany('''
+            INSERT INTO message(group_id,message_id,user_id,sent_at,nickname,segments)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(group_id,message_id) DO NOTHING
+        ''', [(r['group_id'],r['message_id'],r['user_id'],r['sent_at'],r['nickname'],
+               json.dumps(r['segments'],ensure_ascii=False)) for r in rows])
+        return conn.total_changes-before
 
 
 def mark_recalled(group, mid, uid, timestamp, operator):

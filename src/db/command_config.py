@@ -5,6 +5,8 @@ from pathlib import Path
 
 from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, execute_write, write_transaction
 
+DEFAULT_DISABLED_COMMANDS = frozenset({"在聊什么"})
+
 
 @dataclass(frozen=True)
 class CommandConfig:
@@ -111,12 +113,21 @@ def get_command_config(
             (group_id, command_name),
         ).fetchone()
     if row is None:
-        return CommandConfig()
+        return CommandConfig(enabled=command_name not in DEFAULT_DISABLED_COMMANDS)
     return CommandConfig(
         enabled=bool(row[0]),
         cooldown_seconds=float(row[1]) if row[1] is not None else None,
         cooldown_count=int(row[2]),
     )
+
+
+def enabled_command_groups(command_name: str, db_path: Path = DEFAULT_DB_PATH) -> list[int]:
+    """列出显式开启功能的群，供默认关闭的后台任务使用。"""
+    with connect_sqlite(db_path) as conn:
+        return [int(row[0]) for row in conn.execute(
+            "SELECT group_id FROM command_config WHERE command_name=? AND enabled=1 ORDER BY group_id",
+            (command_name,),
+        )]
 
 
 def set_command_enabled(
@@ -161,12 +172,13 @@ def set_command_cooldown(
             """
             INSERT INTO command_config (
                 group_id, command_name, enabled, cooldown_seconds, updated_by, cooldown_count
-            ) VALUES (?, ?, 1, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(group_id, command_name) DO UPDATE SET
                 cooldown_seconds = excluded.cooldown_seconds,
                 cooldown_count = excluded.cooldown_count,
                 updated_by = excluded.updated_by,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (group_id, command_name, seconds, updated_by, count if seconds else 1),
+            (group_id, command_name, int(command_name not in DEFAULT_DISABLED_COMMANDS),
+             seconds, updated_by, count if seconds else 1),
         )

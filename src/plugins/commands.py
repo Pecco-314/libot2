@@ -67,6 +67,8 @@ from src.spider.wrapper import (
     get_fan_club_num,
 )
 from src.common.utils import ROOT
+from src.render.chat_summary import render_summary_images
+from src.common.chat_summary_service import count_summary, parse_summary_count
 from src.common.push_features import PUSH_FEATURE_ALIASES
 from src.common.blind_box import BLIND_BOX_DATA_START
 from src.common.meme_image import (
@@ -190,6 +192,7 @@ sub_remove_cmd = on_command("删除订阅", aliases={"取消订阅"}, priority=5
 nickname_set_cmd = on_command("设置昵称", priority=5, block=True)
 name_history_cmd = on_command("曾用名", aliases={"查曾用名"}, priority=5, block=True)
 medal_wall_cmd = on_command("查牌子", priority=5, block=True)
+chat_summary_cmd = on_command("在聊什么", priority=5, block=True)
 abbreviation_query_cmd = on_command("查缩写", priority=5, block=True)
 abbreviation_add_cmd = on_command("新增缩写", priority=5, block=True)
 abbreviation_remove_cmd = on_command("删除缩写", priority=5, block=True)
@@ -324,14 +327,14 @@ async def apply_configured_command_cooldown(
     canonical_name = _canonical_command_name(command[0])
     if canonical_name is None:
         return
-
-    setting_key = (group_id, canonical_name)
-    if setting_key not in _COMMAND_CONFIG_CACHE:
-        _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
     # 项目管理员与 NoneBot 超级管理员均不受群命令开关和 CD 限制。
     manager_qq = os.environ.get("MANAGER_QQ", "").strip()
     if (manager_qq and event.get_user_id() == manager_qq) or await SUPERUSER(bot, event):
         return
+
+    setting_key = (group_id, canonical_name)
+    if setting_key not in _COMMAND_CONFIG_CACHE:
+        _COMMAND_CONFIG_CACHE[setting_key] = await asyncio.to_thread(
             get_command_config,
             group_id,
             canonical_name,
@@ -638,6 +641,51 @@ async def _resolve_user_uid(matcher: Matcher, query: str) -> int:
         suffix = "……" if len(matches) > 10 else ""
         await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
     return matches[0]
+
+
+_CHAT_SUMMARY_BUSY: set[int] = set()
+_CHAT_SUMMARY_SLOTS = asyncio.Semaphore(2)
+
+
+@chat_summary_cmd.handle()
+async def handle_chat_summary(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
+    group_id = get_group_id(event)
+    if group_id is None:
+        await matcher.finish("请在要总结的群聊中使用")
+    # 涉及外部模型请求，超级管理员也必须先显式开启本群功能。
+    config = await asyncio.to_thread(get_command_config, group_id, "在聊什么")
+    if not config.enabled:
+        await matcher.finish("本群未开启此功能，请先使用：打开功能 在聊什么")
+    try:
+        count = parse_summary_count(arg.extract_plain_text())
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+    if group_id in _CHAT_SUMMARY_BUSY:
+        await matcher.finish("这个群正在总结，请稍等")
+    _CHAT_SUMMARY_BUSY.add(group_id)
+    try:
+        async def notify_generating():
+            try:
+                await matcher.send("正在总结中，请稍等……")
+            except Exception as exc:
+                logger.warning("群聊总结进度提示发送失败 group=%s error=%s", group_id, type(exc).__name__)
+
+        async with _CHAT_SUMMARY_SLOTS:
+            result = await count_summary(group_id, count, bot_qq=bot.self_id,
+                                         on_generate=notify_generating)
+            paths = await render_summary_images(result)
+    except Exception as exc:
+        logger.warning("群聊总结失败 group=%s error=%s", group_id, type(exc).__name__)
+        detail = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "总结暂时不可用，请稍后再试"
+        await matcher.finish(f"总结失败：{detail}")
+    finally:
+        _CHAT_SUMMARY_BUSY.discard(group_id)
+    nodes = [
+        {"type": "node", "data": {"name": "Libot", "uin": bot.self_id,
+         "content": MessageSegment.image(file=str(path))}}
+        for path in paths
+    ]
+    await send_forward_message(bot, event, nodes)
 
 
 @superchat_cmd.handle()

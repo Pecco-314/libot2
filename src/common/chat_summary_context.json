@@ -1,0 +1,31 @@
+{
+  "notation": {"VRxx7": "VirtuaReal的期生简称，末尾7是固定后缀，不属于期数；可省略VR。197/VR197=19期生，257/VR257=25期生，277/VR277=27期生，287/VR287=28期生，297/VR297=29期生。"},
+  "entities": [
+    {"name": "三理Mit3uri", "aliases": ["三理", "三理理", "理理", "理神", "理姐", "理小妹"], "organization": "VirtuaReal", "generation": "25期生（257/VR257）"},
+    {"name": "哎小呜Awu", "aliases": ["a5", "哎小呜"], "organization": "VirtuaReal", "generation": "19期生（197/VR197）"},
+    {"name": "小松绿Viridis", "aliases": ["xsl", "小松绿"], "organization": "VirtuaReal", "generation": "28期生（287/VR287）"},
+    {"name": "雨纪Ameki", "aliases": ["雨纪", "雨纪ameki"], "organization": "VirtuaReal", "generation": "19期生（197/VR197）"},
+    {"name": "libot", "aliases": ["Libot"], "type": "本群机器人"}
+  ],
+  "terms": [
+    {"term": "嘟群", "meaning": "QQ群605275779的常用称呼。摘要沿用群友称呼“嘟群”。", "keep_original": true},
+    {"term": "主群", "meaning": "程序配置中默认处理群的技术性名称。聊天正文提到“主群”时，需根据说话人的语境判断所属，可能指其他社群的主群；缺少明确依据时保留原称，不自动对应到嘟群。", "needs_context": true},
+    {"term": "ldc", "meaning": "理电池，三理Mit3uri的粉丝，也可指她的粉丝牌。"},
+    {"term": "铝电池", "meaning": "群友Pecco的粉丝牌；也用于指代女理电池，结合当前语境判断。", "needs_context": true},
+    {"term": "幸运乌", "meaning": "夕羽乌的粉丝牌。"},
+    {"term": "wwg", "meaning": "呜呜怪，哎小呜Awu的粉丝牌。"},
+    {"term": "xxlb", "meaning": "谢谢老板。"},
+    {"term": "onp", "meaning": "语气词，哦牛皮。", "keep_original": true},
+    {"term": "yht", "meaning": "雨花糖，雨纪Ameki的粉丝牌。"},
+    {"term": "钢镚", "meaning": "每天一次的2元Superchat（醒目留言）。"},
+    {"term": "nbz", "meaning": "已被解构的调侃词，形容一个男的戏很多；展开缩写会带有攻击性。", "keep_original": true},
+    {"term": "zla", "meaning": "群友祝理安，当前群昵称是今天听理宝歌回，好幸福！"},
+    {"term": "sljt", "meaning": "杀戮尖塔（Slay the Spire）。"}
+  ],
+  "people": [
+    {"group_id": 605275779, "qq": 389894649, "name": "Pecco", "aliases": ["pc", "Pecco"]},
+    {"group_id": 605275779, "qq": 2184924041, "name": "夕羽乌", "aliases": ["xyw", "夕羽乌"]},
+    {"group_id": 605275779, "qq": 1461223462, "name": "nyausicaa", "aliases": ["na处", "nya处", "Azunya", "nyausicaa", "nyausicca"]},
+    {"group_id": 605275779, "qq": 3064296863, "name": "祝理安", "aliases": ["zla", "祝理安", "今天听理宝歌回，好幸福！"]}
+  ]
+}

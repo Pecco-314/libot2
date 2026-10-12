@@ -1,0 +1,18 @@
+[Unit]
+Description=Private local proxy for libot chat summaries
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pecco
+Group=pecco
+WorkingDirectory=/home/pecco/libot2/data/codex_network
+ExecStart=/usr/local/bin/mihomo -d /home/pecco/libot2/data/codex_network -f /home/pecco/libot2/data/codex_network/config.yaml
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

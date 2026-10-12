@@ -287,8 +287,10 @@ def change_password():
     return jsonify({"success": True, "msg": "密码已成功修改"})
 
 from src.web.paste import create_paste_blueprint
+from src.web.chat_context import create_chat_context_blueprint
 
 app.register_blueprint(create_paste_blueprint(ROOT / 'data' / 'paste', login_required))
+app.register_blueprint(create_chat_context_blueprint(login_required, _get_csrf_token))
 
 if __name__ == '__main__':
     socketio.start_background_task(start_tail_tasks)
