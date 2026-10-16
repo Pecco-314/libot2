@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
 from src.db.clip_marker import add_clip_marker, format_clip_marker, list_clip_markers
-from src.db.event import get_latest_live_session
+from src.db.event import get_latest_live_session, list_live_sessions
 from src.db.live_list import (
     add_live_list,
     get_live_list,
@@ -44,18 +45,57 @@ from src.spider.api import get_master_info as _api_get_master_info
 from src.spider.api import get_room_info as _api_get_room_info
 
 
+def _parse_clip_marker_arg(text: str, message_time: int) -> tuple[str, int | None]:
+    """解析末尾的北京时间；仅时间取不晚于消息时间的最近一天。"""
+    text = " ".join(text.split())
+    match = re.search(
+        r"(?:^|\s)(?:(\d{4}-\d{1,2}-\d{1,2})[ T])?(\d{1,2}:\d{1,2}(?::\d{1,2})?)$",
+        text,
+    )
+    if match is None:
+        if re.search(r"(?:^|\s)\d{4}-\d{1,2}-\d{1,2}$", text):
+            raise ValueError("请提供具体时间：YYYY-MM-DD HH:MM[:SS] 或 HH:MM[:SS]（北京时间）")
+        return text, None
+    note = text[:match.start()].strip()
+    date, clock = match.groups()
+    now = datetime.fromtimestamp(message_time, ZoneInfo("Asia/Shanghai"))
+    fmt = "%H:%M:%S" if clock.count(":") == 2 else "%H:%M"
+    date_text = date or now.strftime("%Y-%m-%d")
+    try:
+        target = datetime.strptime(f"{date_text} {clock}", "%Y-%m-%d " + fmt)
+    except ValueError:
+        raise ValueError("时间格式错误，请使用 YYYY-MM-DD HH:MM[:SS] 或 HH:MM[:SS]（北京时间）") from None
+    target = target.replace(tzinfo=now.tzinfo)
+    if date is None and target > now:
+        target -= timedelta(days=1)
+    if target > now:
+        raise ValueError("切片时间不能晚于消息发送时间")
+    return note, int(target.timestamp())
+
+
 @clip_marker_cmd.handle()
 async def handle_clip_marker(matcher: Matcher, event: Event, arg=CommandArg()):
     if not isinstance(event, GroupMessageEvent):
         await matcher.finish("请在群聊中标记切片")
-    note = " ".join(arg.extract_plain_text().split())
+    try:
+        note, specified_time = _parse_clip_marker_arg(arg.extract_plain_text(), int(event.time))
+    except ValueError as exc:
+        await matcher.finish(str(exc))
     if len(note) > 500:
         await matcher.finish("切片备注最多 500 字")
     room_id = get_query_room_id(event)
-    timestamp = int(event.time)
-    session = await asyncio.to_thread(get_latest_live_session, room_id)
-    if not session or not session.get("ongoing"):
-        await matcher.finish("当前没有正在进行的直播")
+    timestamp = int(event.time) if specified_time is None else specified_time
+    if specified_time is None:
+        session = await asyncio.to_thread(get_latest_live_session, room_id)
+        if not session or not session.get("ongoing"):
+            await matcher.finish("当前没有正在进行的直播")
+    else:
+        sessions = await asyncio.to_thread(list_live_sessions, room_id)
+        session = next((s for s in reversed(sessions)
+                        if int(s["start_ts"]) <= timestamp
+                        and (s["end_ts"] is None or timestamp < int(s["end_ts"]))), None)
+        if session is None:
+            await matcher.finish("指定时间没有对应的直播记录")
     start = int(session["start_ts"])
     try:
         await asyncio.to_thread(

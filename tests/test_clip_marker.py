@@ -1,10 +1,11 @@
 import ast
+import re
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 from src.db.clip_marker import add_clip_marker, format_clip_marker, list_clip_markers
@@ -36,6 +37,98 @@ class ClipMarkerTest(unittest.TestCase):
 
 class Finished(Exception):
     pass
+
+
+class ClipMarkerCommandTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        nodes = [node for node in command_tree().body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name in {"_parse_clip_marker_arg", "handle_clip_marker"}]
+        for node in nodes:
+            node.decorator_list = []
+
+        async def inline_thread(function, *args):
+            return function(*args)
+
+        self.now = self.ts("2026-10-14 00:30:00")
+        self.start = self.ts("2026-10-13 23:00:00")
+        self.sessions = [{"start_ts": self.start, "end_ts": self.now - 60, "ongoing": False}]
+        self.add = Mock()
+        self.latest = Mock(return_value=self.sessions[0])
+        self.matcher = SimpleNamespace(finish=AsyncMock(side_effect=Finished))
+        self.event = SimpleNamespace(time=self.now, user_id=10, group_id=20, message_id=30)
+        env = dict(re=re, datetime=datetime, timedelta=timedelta, ZoneInfo=ZoneInfo,
+                   Matcher=object, Event=object, GroupMessageEvent=SimpleNamespace,
+                   CommandArg=lambda: None, asyncio=SimpleNamespace(to_thread=inline_thread),
+                   get_query_room_id=lambda event: 1, get_latest_live_session=self.latest,
+                   list_live_sessions=lambda room: self.sessions, add_clip_marker=self.add,
+                   format_clip_marker=format_clip_marker)
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "clip_marker_handler", "exec"), env)
+        self.parse = env["_parse_clip_marker_arg"]
+        self.handler = env["handle_clip_marker"]
+
+    @staticmethod
+    def ts(value):
+        return int(datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+                   .replace(tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+
+    async def run_handler(self, text):
+        with self.assertRaises(Finished):
+            await self.handler(self.matcher, self.event,
+                               SimpleNamespace(extract_plain_text=lambda: text))
+
+    def test_time_forms_and_previous_day(self):
+        for text, expected in [
+            ("高光 2026-10-13 23:30:12", "2026-10-13 23:30:12"),
+            ("高光 2026-10-13 23:30", "2026-10-13 23:30:00"),
+            ("高光 23:30", "2026-10-13 23:30:00"),
+            ("高光 00:20:12", "2026-10-14 00:20:12"),
+            ("高光 00:30:00", "2026-10-14 00:30:00"),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text, self.now), ("高光", self.ts(expected)))
+        self.assertEqual(self.parse("精彩  多人\n合唱", self.now), ("精彩 多人 合唱", None))
+        self.assertEqual(self.parse("高光 23:59", self.ts("2026-01-01 00:01:00")),
+                         ("高光", self.ts("2025-12-31 23:59:00")))
+
+    async def test_historical_cross_midnight_session(self):
+        await self.run_handler("精彩 合唱 2026-10-14 00:20:00")
+        self.add.assert_called_once_with(1, self.start, self.ts("2026-10-14 00:20:00"),
+                                         10, 20, 30, "精彩 合唱")
+        self.assertIn("(01:20:00)", self.matcher.finish.call_args.args[0])
+
+    async def test_time_only_previous_day(self):
+        await self.run_handler("高光 23:30")
+        self.assertEqual(self.add.call_args.args[2], self.ts("2026-10-13 23:30:00"))
+
+    async def test_no_matching_session_and_end_boundary(self):
+        for text in ["高光 22:00", "高光 00:29:00"]:
+            await self.run_handler(text)
+            self.matcher.finish.assert_awaited_with("指定时间没有对应的直播记录")
+        self.add.assert_not_called()
+
+    async def test_invalid_and_future_times_do_not_write(self):
+        for text in ["高光 25:00", "高光 12:60", "高光 2026-02-30 12:00",
+                     "高光 2026-10-14 23:00", "高光 2026-10-13"]:
+            await self.run_handler(text)
+        self.add.assert_not_called()
+        self.latest.assert_not_called()
+
+    async def test_realtime_requires_ongoing_session(self):
+        await self.run_handler("高光")
+        self.matcher.finish.assert_awaited_with("当前没有正在进行的直播")
+        self.add.assert_not_called()
+        self.latest.return_value = {"start_ts": self.start, "end_ts": None, "ongoing": True}
+        await self.run_handler("高光")
+        self.add.assert_called_once_with(1, self.start, self.now, 10, 20, 30, "高光")
+
+    async def test_note_limit_excludes_time_suffix(self):
+        await self.run_handler("字" * 500 + " 23:30")
+        self.add.assert_called_once()
+        self.add.reset_mock()
+        await self.run_handler("字" * 501 + " 23:30")
+        self.matcher.finish.assert_awaited_with("切片备注最多 500 字")
+        self.add.assert_not_called()
 
 
 class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
