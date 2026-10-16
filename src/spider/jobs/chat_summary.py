@@ -5,7 +5,7 @@ import logging
 import os
 
 from src.common.chat_summary_service import group_ids, stage_ready, process_batch, recover_primary_summary
-from src.common.chat_summary_codex import retry_ready
+from src.common.chat_summary_codex import retry_ready, error_details
 from src.db import chat_summary as db
 
 logger = logging.getLogger(__name__)
@@ -47,10 +47,11 @@ async def recover_chat_summaries():
         if item['group_id'] not in groups:
             continue
         try:
+            logger.info('群聊总结主模型复查开始 batch=%s', item['batch_id'])
             changed = await recover_primary_summary(item['batch_id'])
             logger.info('群聊总结主模型重分析 batch=%s changed=%s', item['batch_id'], changed)
         except Exception as exc:
-            logger.warning('群聊总结主模型仍不可用 batch=%s error=%s', item['batch_id'], type(exc).__name__)
+            logger.warning('群聊总结主模型仍不可用 batch=%s %s', item['batch_id'], error_details(exc))
         break  # 每轮至多重分析一个批次，优先保障新消息处理。
 
 

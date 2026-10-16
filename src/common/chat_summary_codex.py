@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import ssl
 import time
@@ -17,9 +18,57 @@ import httpx
 from src.common.utils import ROOT
 from src.common.chat_summary_images import ImageCatalog, MAX_PER_CALL
 
+logger = logging.getLogger(__name__)
+
+_ERROR_KINDS = {
+    'contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
+    'rateLimitExceeded', 'flexUnavailable', 'serverOverloaded', 'cyberPolicy',
+    'misalignmentPolicyViolation', 'tooManyDenials', 'httpConnectionFailed',
+    'responseStreamConnectionFailed', 'internalServerError', 'unauthorized',
+    'badRequest', 'threadRollbackFailed', 'sandboxError', 'responseStreamDisconnected',
+    'responseTooManyFailedAttempts', 'activeTurnNotSteerable', 'other',
+}
+
 
 class CodexUnavailable(RuntimeError):
     """连接、认证或模型调用失败，可使用备用模型。"""
+
+    def __init__(self, message='Codex不可用', *, stage='unknown', kind='other',
+                 http_status=None, rpc_code=None, cause=None):
+        super().__init__(message)
+        self.stage = stage
+        self.kind = kind if kind in _ERROR_KINDS else 'other'
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+        self.rpc_code = rpc_code if type(rpc_code) is int else None
+        self.cause = cause
+
+    def details(self):
+        """只记录受控元数据，不记录上游错误原文、请求正文或认证信息。"""
+        fields = {'stage': self.stage, 'kind': self.kind, 'http_status': self.http_status,
+                  'rpc_code': self.rpc_code, 'cause': self.cause}
+        return ' '.join(f'{key}={value}' for key, value in fields.items() if value is not None)
+
+    @classmethod
+    def from_error(cls, error, *, stage):
+        error = error if isinstance(error, dict) else {}
+        data = error.get('data')
+        info = error.get('codexErrorInfo')
+        if info is None and isinstance(data, dict):
+            info = data.get('codexErrorInfo')
+        kind, status = 'other', None
+        if isinstance(info, str):
+            kind = info
+        elif isinstance(info, dict):
+            for name, value in info.items():
+                if name in _ERROR_KINDS:
+                    kind = name
+                    status = value.get('httpStatusCode') if isinstance(value, dict) else None
+                    break
+        return cls(stage=stage, kind=kind, http_status=status, rpc_code=error.get('code'))
+
+
+def error_details(error):
+    return error.details() if isinstance(error, CodexUnavailable) else f'cause={type(error).__name__}'
 
 
 def response_schema(*, image_requests=False):
@@ -109,37 +158,35 @@ class CodexClient:
         self.start_lock = asyncio.Lock()
         self.write_lock = asyncio.Lock()
         self.retry_after = 0.0
+        self.active_calls = 0
+        self.restart_when_idle = False
 
     def available_for_retry(self):
         return time.monotonic() >= self.retry_after
 
     async def check_network(self, env, bridge, proxy):
-        """匿名探测实际出口，不调用模型；401表示已连接到需要认证的后端。"""
+        """探测实际出口的连通性；401表示后端可达，不证明鉴权有效。"""
         bundle = env.get('SSL_CERT_FILE')
         verify = ssl.create_default_context(cafile=bundle) if bundle else True
         path = '/backend-api/codex/models?client_version=0.160.1'
 
-        async def probe(url, proxy_url=None):
-            async with httpx.AsyncClient(proxy=proxy_url, trust_env=False,
-                                         timeout=10, verify=verify) as client:
-                response = await client.get(url)
-                if response.status_code not in {200, 400, 401}:
-                    raise CodexUnavailable("Codex出口不可用")
-
         try:
-            # PC模式同时检查普通HTTP代理和Codex后端转发，避免仅监听仍在被当成在线。
+            url = ('http://127.0.0.1:17891' if bridge else 'https://chatgpt.com') + path
             async with asyncio.timeout(10):
-                if bridge:
-                    await asyncio.gather(probe('http://127.0.0.1:17891' + path),
-                                         probe('https://chatgpt.com' + path, proxy))
-                else:
-                    await probe('https://chatgpt.com' + path, proxy or None)
-        except (httpx.HTTPError, TimeoutError):
-            raise CodexUnavailable("Codex出口不可达") from None
+                async with httpx.AsyncClient(proxy=None if bridge else proxy or None,
+                                             trust_env=False, timeout=10, verify=verify) as client:
+                    # 响应头足以判断连通性，无需等待模型目录正文传完。
+                    async with client.stream('GET', url) as response:
+                        if response.status_code not in {200, 400, 401}:
+                            raise CodexUnavailable('Codex出口探测失败', stage='preflight',
+                                                   http_status=response.status_code)
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise CodexUnavailable('Codex出口探测失败', stage='preflight',
+                                   cause=type(exc).__name__) from None
 
     async def _send(self, message):
         if not self.process or self.process.returncode is not None:
-            raise CodexUnavailable("Codex连接未运行")
+            raise CodexUnavailable("Codex连接未运行", stage='transport')
         async with self.write_lock:
             self.process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
             await self.process.stdin.drain()
@@ -152,6 +199,13 @@ class CodexClient:
         try:
             await self._send({"id": request_id, "method": method, "params": params})
             return await asyncio.wait_for(future, timeout)
+        except CodexUnavailable as exc:
+            if exc.stage == 'rpc':
+                exc.stage = method
+            raise
+        except Exception as exc:
+            raise CodexUnavailable('Codex RPC请求失败', stage=method,
+                                   cause=type(exc).__name__) from None
         finally:
             self.pending.pop(request_id, None)
 
@@ -165,7 +219,7 @@ class CodexClient:
                     if future and not future.done():
                         if "error" in message:
                             # 上游错误可能带请求正文或身份信息，不转发原始错误文本。
-                            future.set_exception(CodexUnavailable("Codex RPC请求失败"))
+                            future.set_exception(CodexUnavailable.from_error(message['error'], stage='rpc'))
                         else:
                             future.set_result(message.get("result", {}))
                 elif "id" in message:
@@ -176,35 +230,43 @@ class CodexClient:
                     queue = self.events.get(params.get("threadId"))
                     if queue:
                         queue.put_nowait(message)
-        except (asyncio.CancelledError, Exception):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning('Codex读取连接失败 stage=transport cause=%s', type(exc).__name__)
         finally:
             for future in self.pending.values():
                 if not future.done():
-                    future.set_exception(CodexUnavailable("Codex连接已断开"))
+                    future.set_exception(CodexUnavailable("Codex连接已断开", stage='transport'))
             for queue in self.events.values():
                 queue.put_nowait({"method": "connection/closed"})
 
     async def ensure_started(self):
         async with self.start_lock:
             if not self.available_for_retry():
-                raise CodexUnavailable("Codex等待恢复")
-            args, env, bridge, proxy = process_config()
-            # 每次生成前都检查；常驻进程存活不能证明PC没有休眠或SSH链路没有断开。
-            await self.check_network(env, bridge, proxy)
+                raise CodexUnavailable("Codex等待恢复", stage='cooldown')
             if self.process and self.process.returncode is None and self.reader and not self.reader.done():
+                _, env, bridge, proxy = process_config()
+                await self.check_network(env, bridge, proxy)
                 return
             if self.process:
                 await self._close()
+            args, env, bridge, proxy = process_config()
+            await self.check_network(env, bridge, proxy)
             workdir = ROOT / "data" / "chat_summary_codex"
             workdir.mkdir(mode=0o700, exist_ok=True)
             self.process = await asyncio.create_subprocess_exec(
                 *args, cwd=workdir, env=env, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=32 * 1024 * 1024)
             self.reader = asyncio.create_task(self._read())
-            await self.request("initialize", {"clientInfo": {
-                "name": "libot_chat_summary", "version": "0.1.0"}})
-            await self._send({"method": "initialized"})
+            try:
+                await self.request("initialize", {"clientInfo": {
+                    "name": "libot_chat_summary", "version": "0.1.0"}})
+                await self._send({"method": "initialized"})
+            except BaseException:
+                # 尚未初始化的子进程没有会话，可在启动锁内安全清理。
+                await self._close()
+                raise
 
     async def close(self):
         async with self.start_lock:
@@ -231,14 +293,28 @@ class CodexClient:
         self.process = self.reader = None
 
     async def _run_turn(self, thread_id, inputs, *, effort, tier, image_requests):
-        await self.request("turn/start", {
+        response = await self.request("turn/start", {
             "threadId": thread_id, "model": os.environ.get("AI_CODEX_MODEL", "gpt-6.1-sol"),
             "effort": effort, "serviceTier": tier, "input": inputs,
             "outputSchema": response_schema(image_requests=image_requests),
             "approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly", "networkAccess": False}})
+        turn_id = response.get('turn', {}).get('id')
+        finished = False
+        try:
+            result = await self._consume_turn(thread_id, turn_id)
+            finished = True
+            return result
+        finally:
+            # 各批次共享stdio进程；超时或取消只中断自己的轮次。
+            if not finished and turn_id and self.process and self.process.returncode is None:
+                with contextlib.suppress(Exception):
+                    await self.request('turn/interrupt', {'threadId': thread_id, 'turnId': turn_id}, timeout=5)
+
+    async def _consume_turn(self, thread_id, turn_id):
         final, tokens = None, {}
         queue = self.events[thread_id]
         while True:
+            # 没有事件可能是正常推理；仅出口探测失败时提前结束。
             try:
                 event = await asyncio.wait_for(queue.get(), 30)
             except asyncio.TimeoutError:
@@ -247,39 +323,54 @@ class CodexClient:
                 continue
             method, params = event["method"], event.get("params", {})
             if method == "connection/closed":
-                raise CodexUnavailable("Codex连接已断开")
+                raise CodexUnavailable("Codex连接已断开", stage='transport')
+            event_turn = params.get('turnId') or params.get('turn', {}).get('id')
+            if turn_id and event_turn and event_turn != turn_id:
+                continue
             if method == 'error':
-                raise CodexUnavailable('Codex响应流失败')
+                error = CodexUnavailable.from_error(params.get('error'), stage='turn')
+                if params.get('willRetry') is True:
+                    logger.warning('Codex上游请求失败，交由后台重试 %s', error.details())
+                raise error
             if method in {"item/started", "item/completed"}:
                 item = params.get("item", {})
                 if item.get("type") in {"commandExecution", "fileChange", "mcpToolCall",
                                         "dynamicToolCall", "webSearch", "imageGeneration"}:
-                    raise CodexUnavailable("总结会话出现不允许的工具调用")
+                    raise CodexUnavailable("总结会话出现不允许的工具调用", stage='tool_policy')
                 if method == "item/completed" and item.get("type") == "agentMessage":
                     if item.get("phase") in {None, "final_answer", "finalAnswer"}:
                         final = item.get("text")
             elif method == "thread/tokenUsage/updated":
                 tokens = params.get("tokenUsage", {}).get("last", {})
             elif method == "turn/completed":
-                if params.get("turn", {}).get("status") != "completed" or not final:
-                    raise CodexUnavailable("Codex未完成总结")
+                turn = params.get('turn', {})
+                if turn.get('status') != 'completed':
+                    raise CodexUnavailable.from_error(turn.get('error'), stage='turn')
+                if not final:
+                    raise CodexUnavailable("Codex未返回总结", stage='format')
                 break
-        result = json.loads(final)
+        try:
+            result = json.loads(final)
+        except (ValueError, TypeError) as exc:
+            raise CodexUnavailable('Codex总结格式无效', stage='format', cause=type(exc).__name__) from None
         if not isinstance(result, dict) or any(not isinstance(result.get(key), list)
                                                for key in ('topics', 'terms_to_check')):
-            raise CodexUnavailable('Codex总结格式无效')
+            raise CodexUnavailable('Codex总结格式无效', stage='format')
         return result, tokens
 
     async def complete(self, prompt, packed, *, image_sources=None):
         if not self.available_for_retry():
-            raise CodexUnavailable("Codex等待恢复")
+            raise CodexUnavailable("Codex等待恢复", stage='cooldown')
         model = os.environ.get("AI_CODEX_MODEL", "gpt-6.1-sol")
         effort = os.environ.get("AI_CODEX_EFFORT", "high")
         tier = os.environ.get("AI_CODEX_SERVICE_TIER", "fast")
         catalog = ImageCatalog(image_sources) if image_sources else None
         thread_id = None
+        stage, started_at = 'startup', time.monotonic()
+        self.active_calls += 1
         try:
             await self.ensure_started()
+            stage = 'thread/start'
             params = {
                 "model": model, "ephemeral": True, "sandbox": "read-only",
                 "approvalPolicy": "never", "baseInstructions": prompt,
@@ -298,12 +389,14 @@ class CodexClient:
             async with asyncio.timeout(timeout):
                 for round_index in range(4):
                     requests_allowed = can_request and round_index < 3
+                    stage = 'turn'
                     result, tokens = await self._run_turn(thread_id, inputs, effort=effort,
                                                           tier=tier, image_requests=requests_allowed)
                     costs.append(tokens)
                     requested = result.pop('image_requests', [])
                     if not requests_allowed or not requested:
                         break
+                    stage = 'image_read'
                     images = await asyncio.to_thread(catalog.read, {'image_ids': requested})
                     can_request = images['success']
                     inputs = [{"type": "text", "text": "以下是你请求的图片读取结果。结合本会话原消息完成总结，"
@@ -312,6 +405,7 @@ class CodexClient:
                     for content in images['contentItems']:
                         inputs.append({"type": "image", "url": content['imageUrl']} if content['type'] == 'inputImage'
                                       else {"type": "text", "text": content['text']})
+            self.retry_after = 0.0
             return result, {
                 "backend": "codex", "model": model,
                 "reasoning_effort": effort, "service_tier": tier,
@@ -324,18 +418,38 @@ class CodexClient:
                 "prompt_tokens_details": {"cached_tokens": sum(t.get("cachedInputTokens", 0) for t in costs)},
                 "reasoning_tokens": sum(t.get("reasoningOutputTokens", 0) for t in costs)}
         except asyncio.CancelledError:
-            await self.close()
             raise
-        except Exception:
-            self.retry_after = time.monotonic() + float(os.environ.get("AI_CODEX_RETRY_SECONDS", "300"))
-            await self.close()
-            raise CodexUnavailable("Codex不可用，等待网络或认证恢复") from None
+        except Exception as exc:
+            error = exc if isinstance(exc, CodexUnavailable) else CodexUnavailable(
+                stage=stage, cause=type(exc).__name__)
+            # 等待启动锁的请求可能遇到另一批次刚设置的冷却，不延后已有恢复时间。
+            if error.stage != 'cooldown':
+                self.retry_after = time.monotonic() + float(os.environ.get("AI_CODEX_RETRY_SECONDS", "300"))
+            if error.stage == 'transport' or (
+                error.stage in {'initialize', 'thread/start', 'turn/start'}
+                and error.cause in {'TimeoutError', 'BrokenPipeError', 'ConnectionResetError'}
+            ):
+                self.restart_when_idle = True
+            logger.warning('Codex总结失败 elapsed=%.1fs %s', time.monotonic() - started_at, error.details())
+            raise error from None
         finally:
-            if thread_id:
-                if self.process and self.process.returncode is None:
+            try:
+                if thread_id and self.process and self.process.returncode is None:
                     with contextlib.suppress(Exception):
                         await self.request("thread/unsubscribe", {"threadId": thread_id}, timeout=5)
+            finally:
                 self.events.pop(thread_id, None)
+                self.active_calls -= 1
+                if self.restart_when_idle and self.active_calls == 0:
+                    async with self.start_lock:
+                        if self.active_calls == 0:
+                            # 本地RPC失联的进程在全部批次结束后回收；HTTP错误保留长连接。
+                            self.restart_when_idle = False
+                            try:
+                                await self._close()
+                            except Exception as exc:
+                                self.restart_when_idle = True
+                                logger.warning('Codex空闲连接清理失败 cause=%s', type(exc).__name__)
 
 
 _clients = weakref.WeakKeyDictionary()

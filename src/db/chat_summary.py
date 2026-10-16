@@ -777,6 +777,7 @@ def _retain_fallback(conn, batch_id, rows, result):
 
 
 def recovery_candidates(db_path=DB_PATH, *, now=None):
+    """按上次尝试时间轮转，未尝试批次按创建时间排队；旧原文仍遵守24小时上限。"""
     now = int(time.time()) if now is None else now
     with connection(db_path) as conn:
         conn.execute("DELETE FROM chat_summary_recovery WHERE expires_at<=?", (now,))
@@ -786,7 +787,7 @@ def recovery_candidates(db_path=DB_PATH, *, now=None):
             "SELECT r.batch_id,b.group_id FROM chat_summary_recovery r "
             "JOIN chat_summary_batch b ON b.id=r.batch_id "
             "WHERE r.retry_after<=? AND r.claim_token IS NULL AND b.status='complete' "
-            "ORDER BY b.end_ts DESC LIMIT 20", (now,))]
+            "ORDER BY COALESCE(r.claimed_at,b.created_at),r.expires_at,b.id LIMIT 20", (now,))]
 
 
 def claim_recovery(batch_id, db_path=DB_PATH):

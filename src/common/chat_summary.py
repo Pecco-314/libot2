@@ -1,4 +1,4 @@
-"""群聊消息匿名化、结构化总结及实验用北京时间窗口解析。"""
+"""群聊消息匿名化、结构化总结和北京时间窗口解析。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from src.db.chat_summary import BATCH_SIZE, QUERY_THRESHOLD, load_context
+from src.db.chat_summary import BATCH_SIZE, QUERY_THRESHOLD, RAW_TTL, load_context
 from src.common.chat_summary_commands import (
     command_context,
     identify_command,
@@ -21,7 +21,7 @@ from src.common.chat_summary_images import message_image_files, prepare_image_ca
 
 TZ = ZoneInfo("Asia/Shanghai")
 logger = logging.getLogger(__name__)
-USAGE = "实验时间参数：30分钟/2小时/02:00 03:00/2026-10-10T01:00 2026-10-10T03:00，最多最近6小时"
+USAGE = "时间用法：在聊什么 30分钟 / 2小时 / 08:00 / 2026-10-13 08:00 / 08:00 10:00；可查最近24小时，每次最多5000条"
 
 
 def parse_period(text, now=None):
@@ -31,19 +31,14 @@ def parse_period(text, now=None):
         start, end = now - timedelta(hours=1), now
     elif match := re.fullmatch(r"(?:最近|近)?(\d+(?:\.\d+)?)\s*(小时|分钟)", text):
         seconds = float(match[1]) * (3600 if match[2] == "小时" else 60)
-        if not 0 < seconds <= 21600:
-            raise ValueError("只能总结最近6小时内的有效区间")
+        if not 0 < seconds <= RAW_TTL:
+            raise ValueError("时间查询可使用最近24小时内的消息缓存")
         start, end = now - timedelta(seconds=seconds), now
     else:
         text = re.sub(r"(?<=\d)\s*-\s*(?=\d{1,2}:)", "~", text)
+        text = re.sub(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)", r"\1T\2", text)
         parts = re.split(r"\s*(?:~|～|至|到)\s*|\s+", text)
-        if (
-            len(parts) == 4
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[0])
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[2])
-        ):
-            parts = [parts[0] + "T" + parts[1], parts[2] + "T" + parts[3]]
-        if len(parts) != 2:
+        if len(parts) not in (1, 2):
             raise ValueError(USAGE)
 
         def point(value):
@@ -51,23 +46,30 @@ def parse_period(text, now=None):
                 fmt = "%H:%M:%S" if value.count(":") == 2 else "%H:%M"
                 t = datetime.strptime(value, fmt)
                 return now.replace(hour=t.hour, minute=t.minute, second=t.second)
-            return datetime.fromisoformat(value).replace(tzinfo=TZ)
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?", value):
+                raise ValueError(USAGE)
+            fmt = "%Y-%m-%dT%H:%M:%S" if value.count(":") == 2 else "%Y-%m-%dT%H:%M"
+            return datetime.strptime(value, fmt).replace(tzinfo=TZ)
 
         try:
-            start, end = map(point, parts)
-            if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", parts[1]) and end > now:
+            start = point(parts[0])
+            end = point(parts[1]) if len(parts) == 2 else now
+            if len(parts) == 1 and "T" not in parts[0] and start > now:
+                start -= timedelta(days=1)
+            if len(parts) == 2 and re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", parts[1]) and end > now:
                 end -= timedelta(days=1)
                 start -= timedelta(days=1)
-            if start >= end and all("T" not in p and "-" not in p for p in parts):
+            if len(parts) == 2 and start >= end and all("T" not in p for p in parts):
                 start -= timedelta(days=1)
         except ValueError:
             raise ValueError(USAGE) from None
-    if not now - timedelta(hours=6) <= start < end <= now:
-        raise ValueError("只能总结最近6小时内的有效区间，不能查询未来或超过6小时")
+    if not now - timedelta(seconds=RAW_TTL) <= start < end <= now:
+        raise ValueError("时间查询仅支持最近24小时，起始时间须早于结束时间且不能查询未来")
+    end_format = "%H:%M" if start.date() == end.date() else "%m-%d %H:%M"
     return (
         int(start.timestamp()),
         int(end.timestamp()) + 1,
-        f"{start:%m-%d %H:%M}—{end:%H:%M}",
+        f"{start:%m-%d %H:%M}—{end.strftime(end_format)}",
     )
 
 
@@ -221,7 +223,7 @@ previous_summary只用于衔接上一轮话题的指代；本轮没有新消息�
 散乱、无主题的闲聊直接略过。问候、复读、单句感想、贴表情、随口玩梗和互不相关的生活片段，不因消息多或多人参与就成为主题。
 不要把不相关的片段拼成“日常闲聊”“群友生活分享”“其他话题”“杂谈与互动”等兜底主题；一个主题内也不要附带无关闲聊或例行机器人调用。
 持续讨论的日常话题可以保留，例如多人围绕同一种食物的口味、价格或体验来回交流；筛选依据是讨论是否连贯、是否有具体内容。
-按讨论量和相关性整理最多6个有效主题，标题简短，每项用1到2句、尽量不超过120字说明内容和观点，省略套话和反复解释。允许只有1个、2个主题，完全没有有效主题时返回topics空列表；重复主题合并，不为凑数量补内容。
+按讨论量和相关性整理最多12个有效主题，标题简短，每项用1到2句、尽量不超过120字说明内容和观点，省略套话和反复解释。允许只有1个、2个主题，完全没有有效主题时返回topics空列表；重复主题合并，不为凑数量补内容。
 主题标题和正文直接陈述有依据的讨论、观点、进展或结论，优先使用肯定式表述。避免“未见xxx”“xxx未识别成功”“不是xxx”“没有证据表明xxx”等否定式核查说明，不向读者汇报缺失信息、识别状态或排除过程。需要澄清指代时直接写清实际主体和内容；依据不足的细节略过，影响理解的未知词仅列入terms_to_check。准确保留群友实际表达的观点，不通过机械删除否定词改变原意。
 nearby_unread_image为true说明该发言者两分钟内贴过分析开始前尚未解析的图片、转发或其他媒体；指代不明的数据可能来自该内容，需结合已读取的图片判断，未读取时不能归属于附近提及的主播。
 游戏名、主播名、群内简称等不能确认时保留原词，并列入待核对术语；不要因为不熟悉就编造解释。
@@ -247,11 +249,11 @@ async def _complete(payload, *, primary_only=False):
             result, usage = await complete(SYSTEM_PROMPT, packed,
                                            **({'image_sources': image_sources} if image_sources else {}))
             return restore_evidence(result, identities), usage
-        except CodexUnavailable:
+        except CodexUnavailable as exc:
             if primary_only:
                 raise
             fallback = True
-            logger.warning("群聊总结Codex不可用，使用Flash兜底")
+            logger.warning("群聊总结Codex不可用，使用Flash兜底 %s", exc.details())
     return await _qwen_complete(packed, identities, fallback=fallback)
 
 
@@ -260,7 +262,7 @@ async def _qwen_complete(packed, identities, *, fallback=False):
     if fallback:
         model = os.environ.get("AI_FALLBACK_MODEL", "qwen3.8-flash")
     timeout = float(os.environ.get("AI_TIMEOUT_SECONDS", "600"))
-    output_limit = int(os.environ.get('AI_MAX_OUTPUT_TOKENS', '4000'))
+    output_limit = int(os.environ.get('AI_MAX_OUTPUT_TOKENS', '8000'))
     if not 1000 <= output_limit <= 12000:
         raise ValueError('AI_MAX_OUTPUT_TOKENS需在1000—12000之间')
     async with httpx.AsyncClient(
@@ -289,6 +291,16 @@ async def _qwen_complete(packed, identities, *, fallback=False):
         result = response.json()
     choice = result["choices"][0]
     if choice.get("finish_reason") == "length":
+        message = choice.get('message', {})
+        content = message.get('content') or ''
+        reasoning = message.get('reasoning_content') or ''
+        usage = result.get('usage', {})
+        logger.warning(
+            'Flash输出截断 limit=%s completion_tokens=%s content_chars=%s reasoning_chars=%s '
+            'repeated_tail=%s fallback=%s',
+            output_limit, usage.get('completion_tokens'), len(content), len(reasoning),
+            len(content) >= 400 and content[-200:] == content[-400:-200], fallback,
+        )
         raise RuntimeError("AI结果超过输出上限，请稍后重试")
     content = choice["message"]["content"].strip()
     if content.startswith("```"):
@@ -433,7 +445,7 @@ def validate_result(result, valid_ids):
                 str(mid) for mid in item["message_ids"] if str(mid) in valid_ids
             ]
         result[key] = [item for item in result[key] if item["message_ids"]]
-        result[key] = result[key][: 6 if key == "topics" else 12]
+        result[key] = result[key][:12]
     correct_generation_labels(result)
 
 

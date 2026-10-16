@@ -12,6 +12,7 @@ from datetime import datetime
 
 from src.common.chat_summary import (
     TZ,
+    parse_period,
     _complete,
     prepare_messages,
     summarize,
@@ -40,6 +41,14 @@ def parse_summary_count(argument=""):
     if not 500 <= count <= 5000:
         raise ValueError("消息条数范围为500—5000，按完整缓存批次取整")
     return count
+
+
+def parse_summary_query(argument="", *, now=None):
+    """空参数和整数查询完整批次；时间参数查询严格区间。"""
+    text = argument.strip()
+    if not text or re.fullmatch(r"[0-9]+(?:条)?", text):
+        return parse_summary_count(text)
+    return parse_period(text, now)
 
 
 async def cached_count_summary(group_id, count=500, *, db_path=db.DB_PATH, cache_path=None, bot_qq=None):
@@ -402,23 +411,37 @@ def cache_key(namespace, group_id, rev, rows):
 
 
 async def query_summary(
-    group_id, start, end, label, *, db_path=db.DB_PATH, cache_path=None, bot_qq=""
+    group_id, start, end, label, *, db_path=db.DB_PATH, cache_path=None, bot_qq="",
+    on_generate=None,
 ):
-    await asyncio.to_thread(db.init_db, db_path)
     rows = await asyncio.to_thread(
         chat_context.list_messages, group_id, start, end, cache_path
     )
     rows = counted_rows(rows, bot_qq)
+    if len(rows) > 5000:
+        raise ValueError(f"该区间有{len(rows)}条消息，超过5000条上限，请缩短时间区间")
     if not rows:
         raise ValueError("该区间没有已缓存的群聊消息")
+    await asyncio.to_thread(db.init_db, db_path)
     await asyncio.to_thread(chat_context.observe_names, group_id, rows, db_path)
     rev = await asyncio.to_thread(db.revision, db_path)
     key = cache_key("query", group_id, rev, rows)
     cached = await asyncio.to_thread(db.query_cache_get, key, db_path)
     if cached:
+        if cached.get('participants_version') != 1:
+            people = await asyncio.to_thread(chat_context.list_people, group_id, db_path)
+            attach_participants(cached, rows, people, bot_qq)
         cached["cache_hit"] = True
         cached["period"] = label
         return cached
+    notified = False
+
+    async def notify():
+        nonlocal notified
+        if not notified and on_generate is not None:
+            await on_generate()
+        notified = True
+
     ids = {r["message_id"] for r in rows}
     batches = []
     covered = set()
@@ -436,7 +459,7 @@ async def query_summary(
     tail = [r for r in rows if r["message_id"] not in covered]
     people = await asyncio.to_thread(chat_context.list_people, group_id, db_path)
     context = {
-        **await asyncio.to_thread(db.load_context, db_path),
+        **await asyncio.to_thread(db.load_context, db_path, group_id),
         "bot_commands": command_context(),
     }
     chunk_cached_count = 0
@@ -449,6 +472,7 @@ async def query_summary(
             if part:
                 chunk_cached_count += len(chunk)
             else:
+                await notify()
                 part = await summarize(
                     messages, names, label, review=False, context=context
                 )
@@ -460,13 +484,14 @@ async def query_summary(
         result = dict(partials[0])
     else:
         # 旧批次只用已保存的结论重新解释，不重新发送整批原文。
+        await notify()
         result, cost = await _complete(
             {
                 "period": label,
                 "context": context,
                 "people": prepare_messages(rows, people, bot_qq)[1],
                 "partial_summaries": [summary_for_model(part) for part in partials],
-                "task": "合并这些按消息批次生成的总结，使用当前名词解释纠正简称，合并重复话题，最多6个主要主题。"
+                "task": "合并这些按消息批次生成的总结，使用当前名词解释纠正简称，合并重复话题，最多12个主要主题。"
                 "略过散乱、无主题的闲聊，不拼凑日常闲聊或其他话题等兜底主题；没有有效讨论时允许topics为空。"
                 "若上下文有修改，以当前定义为准。证据id只能来自给定总结，不引入新事实。",
             }
@@ -484,10 +509,12 @@ async def query_summary(
         period=label,
         message_count=len(prepare_messages(rows, people, bot_qq)[0]),
         raw_message_count=len(rows),
+        image_message_count=sum(bool(m.get('image_files')) for m in prepare_messages(rows, people, bot_qq)[0]),
         cached_message_count=len(covered) + chunk_cached_count,
         context_revision=rev,
         cache_hit=False,
     )
+    attach_participants(result, rows, people, bot_qq)
     await asyncio.to_thread(
         db.record_unknown_terms, group_id, result, None, db_path, rows=rows
     )

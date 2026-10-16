@@ -10,7 +10,7 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image
 
 from src.common.chat_summary import attach_participants, summary_for_model
-from src.common.chat_summary_service import parse_summary_count
+from src.common.chat_summary_service import parse_summary_query
 from src.render.chat_summary import _display_text, render_summary
 from tests.command_sources import command_tree
 
@@ -97,7 +97,7 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
                     "CommandArg": lambda: SimpleNamespace(extract_plain_text=lambda: ''),
                     "asyncio": asyncio,
                     "get_command_config": lambda *args: SimpleNamespace(enabled=True),
-                    "parse_summary_count": parse_summary_count,
+                    "parse_summary_query": parse_summary_query,
                     "get_group_id": lambda event: 1,
                     "_CHAT_SUMMARY_BUSY": set(),
                     "_CHAT_SUMMARY_SLOTS": asyncio.Semaphore(2),

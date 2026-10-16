@@ -8,7 +8,7 @@ from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
-from src.common.chat_summary_service import count_summary, parse_summary_count
+from src.common.chat_summary_service import count_summary, parse_summary_query, query_summary
 from src.db.command_config import get_command_config
 from src.plugins.command_registry import chat_summary_cmd
 from src.plugins.command_support import logger
@@ -33,7 +33,7 @@ async def handle_chat_summary(
     if not config.enabled:
         await matcher.finish("本群未开启此功能，请先使用：打开功能 在聊什么")
     try:
-        count = parse_summary_count(arg.extract_plain_text())
+        selection = parse_summary_query(arg.extract_plain_text())
     except ValueError as exc:
         await matcher.finish(str(exc))
     if group_id in _CHAT_SUMMARY_BUSY:
@@ -52,9 +52,14 @@ async def handle_chat_summary(
                 )
 
         async with _CHAT_SUMMARY_SLOTS:
-            result = await count_summary(
-                group_id, count, bot_qq=bot.self_id, on_generate=notify_generating
-            )
+            if isinstance(selection, int):
+                result = await count_summary(
+                    group_id, selection, bot_qq=bot.self_id, on_generate=notify_generating
+                )
+            else:
+                result = await query_summary(
+                    group_id, *selection, bot_qq=bot.self_id, on_generate=notify_generating
+                )
             paths = await render_summary_images(result)
     except Exception as exc:
         logger.warning("群聊总结失败 group=%s error=%s", group_id, type(exc).__name__)

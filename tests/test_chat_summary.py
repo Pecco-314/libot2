@@ -14,6 +14,7 @@ from src.common.chat_summary import (
     api_config,
     summarize,
     correct_generation_labels,
+    validate_result,
 )
 from src.db import chat_context
 from src.common.chat_summary_commands import command_context, identify_command
@@ -48,14 +49,38 @@ class ChatPeriodTests(unittest.TestCase):
         )
         for raw in (
             "0分钟",
-            "7小时",
+            "25小时",
             "9" * 400 + "小时",
             "00:00 04:00",
             "错误",
-            "2026-10-09T12:00 2026-10-09T13:00",
+            "2026-10-08T12:00 2026-10-08T13:00",
         ):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 parse_period(raw, self.now)
+
+    def test_single_start_times_and_longer_durations(self):
+        now = datetime(2026, 10, 13, 16, 30, tzinfo=TZ)
+        expected = int(now.replace(hour=8, minute=0).timestamp())
+        for text in ('08:00', '2026-10-13 08:00', '2026-10-13T08:00', '2026-10-13 8:00'):
+            with self.subTest(text=text):
+                start, end, label = parse_period(text, now)
+                self.assertEqual(start, expected)
+                self.assertEqual(end, int(now.timestamp()) + 1)
+                self.assertEqual(label, '10-13 08:00—16:30')
+        self.assertEqual(parse_period('12小时', now)[0], int(now.timestamp()) - 43200)
+        self.assertEqual(parse_period('24小时', now)[0], int(now.timestamp()) - 86400)
+        with self.assertRaises(ValueError):
+            parse_period('2026-10-13 17:00', now)
+
+    def test_bare_clock_uses_latest_occurrence_and_labels_both_dates(self):
+        start, end, label = parse_period('08:00', self.now)
+        self.assertEqual(start, int(datetime(2026, 10, 9, 8, 0, tzinfo=TZ).timestamp()))
+        self.assertEqual(label, '10-09 08:00—10-10 03:00')
+        self.assertEqual(end, int(self.now.timestamp()) + 1)
+        for text in ('2026-10-09 23:30 2026-10-10 01:30',
+                     '2026-10-09 23:30至2026-10-10 01:30', '23:30~01:30'):
+            self.assertEqual(parse_period(text, self.now)[:2],
+                             parse_period('23:30 01:30', self.now)[:2])
 
     def test_endpoint_and_no_credentials_in_url(self):
         with patch.dict(os.environ, {"API_HOST": "example.com", "API_KEY": "test"}):
@@ -75,6 +100,13 @@ class ChatPeriodTests(unittest.TestCase):
 
 
 class ChatContextTests(unittest.TestCase):
+    def test_topic_prompt_allows_twelve_without_filling_quota(self):
+        from src.common.chat_summary import SYSTEM_PROMPT
+
+        self.assertIn('最多12个有效主题', SYSTEM_PROMPT)
+        self.assertIn('允许只有1个、2个主题', SYSTEM_PROMPT)
+        self.assertIn('不为凑数量补内容', SYSTEM_PROMPT)
+
     def test_reader_summary_omits_negative_recognition_reports(self):
         from src.common.chat_summary import SYSTEM_PROMPT
 
@@ -235,6 +267,35 @@ class ChatContextTests(unittest.TestCase):
 
 
 class SummaryEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generation_retains_twelve_separate_topics(self):
+        messages = [{'id': str(i), 'text': f'讨论{i}'} for i in range(1, 14)]
+        value = {
+            'topics': [
+                {'title': f'话题{i}', 'summary': f'内容{i}', 'message_ids': [str(i)]}
+                for i in range(1, 14)
+            ],
+            'terms_to_check': [],
+        }
+        with patch('src.common.chat_summary._complete', AsyncMock(return_value=(value, {}))):
+            result = await summarize(messages, {}, '测试', review=False, context={'terms': []})
+        self.assertEqual([topic['title'] for topic in result['topics']],
+                         [f'话题{i}' for i in range(1, 13)])
+
+    def test_invalid_topics_do_not_use_valid_topic_slots(self):
+        value = {
+            'topics': [
+                {'title': '无依据', 'summary': '内容', 'message_ids': ['unknown']},
+                *[
+                    {'title': f'话题{i}', 'summary': '内容', 'message_ids': [str(i)]}
+                    for i in range(1, 13)
+                ],
+            ],
+            'terms_to_check': [],
+        }
+        validate_result(value, {str(i) for i in range(1, 13)})
+        self.assertEqual(len(value['topics']), 12)
+        self.assertEqual(value['topics'][-1]['title'], '话题12')
+
     def test_generation_labels_only_correct_known_notation(self):
         value = {'topics': [{'title': 'VR287期生与277期生',
                              'summary': '257期生和VR197期生，297期生；277条弹幕、1277期生。'}]}
