@@ -1,0 +1,22 @@
+[Unit]
+Description=Independent libot online heartbeat and email watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pecco
+WorkingDirectory=/home/pecco/libot2
+ExecStart=/home/pecco/libot2/.venv/bin/python -m src.service_watchdog
+Environment=TZ=Asia/Shanghai
+Environment=NO_PROXY=*
+Environment=no_proxy=*
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=full
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

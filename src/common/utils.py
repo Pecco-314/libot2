@@ -62,7 +62,7 @@ def send_notification_email(subject: str, content: str) -> None:
     message["To"] = Header(receiver)
     message["Subject"] = Header(subject, "utf-8")
 
-    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+    with smtplib.SMTP_SSL(smtp_server, int(smtp_port or 465), timeout=20) as server:
         server.login(sender, auth_code)
         server.sendmail(sender, [receiver], message.as_string())
 
