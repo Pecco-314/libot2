@@ -19,7 +19,9 @@ from src.spider.wrapper import get_name_by_uid
 
 
 @name_history_cmd.handle()
-async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
+async def handle_name_history(
+    matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()
+):
     query = arg.extract_plain_text().strip()
     if not query:
         await matcher.finish("用法：/曾用名 <UID/用户名>")
@@ -35,7 +37,38 @@ async def handle_name_history(matcher: Matcher, event: Event, arg=CommandArg()):
             logger.warning(f"查询用户 {entry['uid']} 的当前名称失败")
             current_name = names[-1]
         result += f"{i}. {current_name} ({', '.join(names)})\n"
-    await matcher.finish(result)
+    if len(result) <= 300 and len(history) <= 5:
+        await matcher.finish(MessageSegment.text(result))
+
+    # 保留完整结果及原有顺序，并限制单个转发节点的文字长度。
+    chunks = []
+    chunk = ""
+    for line in result.splitlines(keepends=True):
+        if chunk and len(chunk) + len(line) > 1500:
+            chunks.append(chunk)
+            chunk = ""
+        while len(line) > 1500:
+            chunks.append(line[:1500])
+            line = line[1500:]
+        chunk += line
+    if chunk:
+        chunks.append(chunk)
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": "Libot",
+                "uin": bot.self_id,
+                "content": MessageSegment.text(chunk),
+            },
+        }
+        for chunk in chunks
+    ]
+    try:
+        await send_forward_message(bot, event, nodes)
+    except Exception:
+        logger.exception("发送曾用名合并转发失败")
+        await matcher.finish("曾用名结果发送失败，请稍后再试")
 
 
 @medal_wall_cmd.handle()
