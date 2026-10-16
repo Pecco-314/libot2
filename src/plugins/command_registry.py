@@ -77,6 +77,10 @@ abbreviation_remove_cmd = on_command("删除缩写", priority=5, block=True)
 
 choose_cmd = on_command("抉择", aliases={"choose"}, priority=5, block=True)
 
+good_news_cmd = on_command("喜报", priority=5, block=True)
+bad_news_cmd = on_command("悲报", priority=5, block=True)
+sold_out_cmd = on_command("卖掉了", priority=5, block=True)
+
 
 meme_add_cmd = on_command("新增梗", aliases={"addmeme"}, priority=5, block=True)
 

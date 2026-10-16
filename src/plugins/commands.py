@@ -9,6 +9,7 @@ from . import command_policy, command_registry, command_support
 _HANDLER_MODULES = (
     import_module("src.plugins.command_handlers.misc"),
     import_module("src.plugins.command_handlers.memes"),
+    import_module("src.plugins.command_handlers.meme_templates"),
     import_module("src.plugins.command_handlers.summary"),
     import_module("src.plugins.command_handlers.settings"),
     import_module("src.plugins.command_handlers.users"),

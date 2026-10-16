@@ -97,7 +97,7 @@ class CommandArchitectureTests(unittest.TestCase):
 
             matchers = [value for value in vars(registry).values()
                         if isinstance(value, type) and issubclass(value, Matcher)]
-            assert len(matchers) == 57
+            assert len(matchers) == 60
             assert all(matcher.handlers for matcher in matchers)
             assert all(matcher.module_name == registry.COMMAND_MODULE_NAME for matcher in matchers)
             for matcher in matchers:
@@ -106,6 +106,8 @@ class CommandArchitectureTests(unittest.TestCase):
                 assert len(checks) == 1
                 assert checks[0].force_whitespace is True
             assert registry._canonical_command_name("choose") == "抉择"
+            for name in ("喜报", "悲报", "卖掉了"):
+                assert registry._canonical_command_name(name) == name
             assert registry._canonical_command_name("/查大航海") == "查舰长"
             assert registry._canonical_command_name("粉丝团列表") == "粉丝团"
             assert registry._canonical_command_name("抽老婆") is None
