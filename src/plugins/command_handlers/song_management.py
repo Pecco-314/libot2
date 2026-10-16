@@ -6,7 +6,7 @@ import asyncio
 import re
 from datetime import datetime, timedelta
 
-from nonebot.adapters.onebot.v11 import Event, GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message
 from nonebot.params import CommandArg
 
 from src.db.song_list import add_new_song, add_song_record, search_songs_by_title
@@ -132,7 +132,7 @@ async def handle_generate_list(event: GroupMessageEvent, arg: Message = CommandA
 
 
 @cmd_update_list.handle()
-async def handle_update_list(event: GroupMessageEvent, arg: Message = CommandArg()):
+async def handle_update_list(bot: Bot, event: GroupMessageEvent, arg: Message = CommandArg()):
     text = arg.extract_plain_text().strip()
 
     if event.reply:
@@ -174,4 +174,21 @@ async def handle_update_list(event: GroupMessageEvent, arg: Message = CommandArg
     else:
         msg = "更新成功！"
 
+    # 仅撤回本次回复的机器人歌单草稿；保留未匹配项和提交失败的内容以便修正。
+    if not errors and added_records and event.reply:
+        draft = event.reply.message.extract_plain_text().strip()
+        sender_id = getattr(event.reply.sender, 'user_id', None)
+        draft_lines = [line.strip() for line in draft.splitlines() if line.strip()]
+        if (
+            str(sender_id) == str(bot.self_id)
+            and draft_lines
+            and re.fullmatch(r'\[\d{4}-\d{2}-\d{2}\]', draft_lines[0])
+            and len(draft_lines) > 1
+            and all(re.match(r'^\d+\s*#', line) for line in draft_lines[1:])
+        ):
+            try:
+                await bot.delete_msg(message_id=event.reply.message_id)
+            except Exception as exc:
+                logger.warning('歌单已提交，草稿撤回失败 message_id=%s error=%s',
+                               event.reply.message_id, type(exc).__name__)
     await cmd_update_list.finish(msg)
