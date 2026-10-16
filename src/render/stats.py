@@ -1,6 +1,7 @@
 import json
 import os
 import datetime
+import hashlib
 import numpy as np
 from PIL import Image
 import matplotlib
@@ -109,8 +110,10 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
         ticks[-1].label1.set_horizontalalignment('right')
     
     plt.tight_layout()
-    filename = f"{label}_{times[0].strftime('%Y%m%d%H%M%S')}_{times[-1].strftime('%Y%m%d%H%M%S')}.png"
+    digest = hashlib.sha256(f"{title}|{list(zip(times, values))}".encode()).hexdigest()[:16]
+    filename = f"{label}_{times[0].strftime('%Y%m%d%H%M%S')}_{times[-1].strftime('%Y%m%d%H%M%S')}_{digest}.png"
     save_path = ROOT / "data" / "images" / "stats" / filename
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path, format='png', dpi=120)
     plt.close(fig)
 
@@ -124,27 +127,28 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
     }
     
 
-async def render_fans_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
-    data = list_stats(room_id, days)
+def _render_stats_trend(
+    room_id: int, days: int | None, room_name: str,
+    column: str, label: str, color: str, title_name: str,
+    *, start_ts: int | None = None, end_ts: int | None = None,
+    period_label: str | None = None,
+) -> dict[str, Any] | None:
+    data = list_stats(room_id, days, start_ts=start_ts, end_ts=end_ts)
     if not data:
         return None
     times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
-    values = [d['fans_num'] for d in data]
-    times, values = _filter_invalid_data(times, values)
-    return _base_render(times, values, "粉丝数", "#E54D4D", f"{room_name} 粉丝数趋势 (近{days}天)")
+    values = [d[column] for d in data]
+    period_label = period_label or f"近{days}天"
+    return _base_render(times, values, label, color, f"{room_name} {title_name}趋势 ({period_label})")
 
-async def render_guards_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
-    data = list_stats(room_id, days)
-    if not data:
-        return None
-    times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
-    values = [d['guard_num'] for d in data]
-    return _base_render(times, values, "舰长数", "#E2B52B", f"{room_name} 大航海数趋势 (近{days}天)")
 
-async def render_fan_club_trend(room_id: int, days: int, room_name: str) -> dict[str, Any] | None:
-    data = list_stats(room_id, days)
-    if not data:
-        return None
-    times = [datetime.datetime.strptime(d['created_at'], "%Y-%m-%d %H:%M:%S") for d in data]
-    values = [d['fan_club_num'] for d in data]
-    return _base_render(times, values, "粉丝团", "#427D9E", f"{room_name} 粉丝团人数趋势 (近{days}天)")
+async def render_fans_trend(room_id: int, days: int | None, room_name: str, **period) -> dict[str, Any] | None:
+    return _render_stats_trend(room_id, days, room_name, "fans_num", "粉丝数", "#E54D4D", "粉丝数", **period)
+
+
+async def render_guards_trend(room_id: int, days: int | None, room_name: str, **period) -> dict[str, Any] | None:
+    return _render_stats_trend(room_id, days, room_name, "guard_num", "舰长数", "#E2B52B", "大航海数", **period)
+
+
+async def render_fan_club_trend(room_id: int, days: int | None, room_name: str, **period) -> dict[str, Any] | None:
+    return _render_stats_trend(room_id, days, room_name, "fan_club_num", "粉丝团", "#427D9E", "粉丝团人数", **period)

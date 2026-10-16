@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from src.db.sqlite import connect_sqlite, execute_write, write_transaction
+from src.db.sqlite import DEFAULT_DB_PATH, connect_sqlite, execute_write, write_transaction
 
 
 def _table_columns(conn, table_name: str) -> set[str]:
@@ -74,38 +75,27 @@ def insert_stats(
         )
 
 
-def list_stats(room_id: int, limit: int = 50) -> list[dict[str, Any]]:
-    with connect_sqlite() as conn:
-        rows = conn.execute(
-            """
-            SELECT room_id, uid, uname, fans_num, guard_num, fan_club_num, created_at, id
-            FROM stats
-            WHERE room_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ?
-            """,
-            (room_id, limit),
-        ).fetchall()
-    return [
-        {
-            "room_id": int(row[0]),
-            "uid": int(row[1]),
-            "uname": str(row[2]),
-            "fans_num": int(row[3]),
-            "guard_num": int(row[4]),
-            "fan_club_num": int(row[5]),
-            "created_at": str(row[6]) if row[6] is not None else "",
-            "id": int(row[7]),
-        }
-        for row in rows
-    ]
+def list_stats(
+    room_id: int,
+    days: int | None = None,
+    *,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> list[dict[str, Any]]:
+    """按 UTC 时间索引读取 [start_ts, end_ts)，输出北京时间供绘图。"""
+    if start_ts is None and end_ts is None:
+        if days is None or days <= 0:
+            raise ValueError("查询天数必须为正数")
+        now = datetime.now(timezone.utc)
+        start_ts = int((now - timedelta(days=days)).timestamp())
+        end_ts = int(now.timestamp()) + 1
+    if start_ts is None or end_ts is None or start_ts >= end_ts:
+        raise ValueError("统计时间范围无效")
+    start_utc = datetime.fromtimestamp(start_ts, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    end_utc = datetime.fromtimestamp(end_ts, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-
-def list_stats(room_id: int, days: int) -> list[dict[str, Any]]:
-    now_local = datetime.now()
-    start_local = (now_local - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-    
-    with connect_sqlite() as conn:
+    with connect_sqlite(db_path) as conn:
         rows = conn.execute(
             """
             SELECT 
@@ -114,10 +104,10 @@ def list_stats(room_id: int, days: int) -> list[dict[str, Any]]:
                 fan_club_num, 
                 datetime(created_at, '+8 hours') as local_time
             FROM stats
-            WHERE room_id = ? AND local_time >= ?
-            ORDER BY local_time ASC
+            WHERE room_id = ? AND created_at >= ? AND created_at < ?
+            ORDER BY created_at ASC, id ASC
             """,
-            (room_id, start_local),
+            (room_id, start_utc, end_utc),
         ).fetchall()
         
     return [

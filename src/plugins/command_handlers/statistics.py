@@ -12,6 +12,7 @@ from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
 from src.common.blind_box import BLIND_BOX_DATA_START
+from src.common.stats_period import TZ as STATS_TZ, parse_stats_period
 from src.db.event import list_heart_blind_box_events, list_online_counts
 from src.db.fan_club import (
     latest_complete_snapshot,
@@ -58,38 +59,41 @@ async def _handle_stats_query(
 ):
     room_id = get_query_room_id(event)
 
-    # 提取参数中的天数，如果没写默认查过去 1 天
-    query_text = arg.extract_plain_text().strip().rstrip("天日")
-    days = 1
-    if query_text.isdigit():
-        days = int(query_text)
-    stat_start_date = get_stat_start_date(room_id, stat_type)
-    days_since_stat_start = (datetime.now() - stat_start_date).days
+    try:
+        period = parse_stats_period(arg.extract_plain_text())
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+        return
+    stat_start_date = await asyncio.to_thread(get_stat_start_date, room_id, stat_type)
 
     uname = await get_name_by_roomid(room_id) or str(room_id)
 
     current_value: int | None = None
-    try:
-        uid = await get_uid_by_roomid(room_id)
-        if stat_type == "fans":
-            current_value = await get_fans_num(uid)
-        elif stat_type == "guards":
-            current_value = await get_guard_num(room_id, uid)
-        else:
-            current_value = await get_fan_club_num(uid)
-    except Exception as exc:
-        logger.warning("查询实时%s数据失败: %s", stat_type, exc)
+    if period.use_current:
+        try:
+            uid = await get_uid_by_roomid(room_id)
+            if stat_type == "fans":
+                current_value = await get_fans_num(uid)
+            elif stat_type == "guards":
+                current_value = await get_guard_num(room_id, uid)
+            else:
+                current_value = await get_fan_club_num(uid)
+            if current_value is not None and current_value < 0:
+                current_value = None
+        except Exception as exc:
+            logger.warning("查询实时%s数据失败: %s", stat_type, exc)
 
-    # 路由到对应的渲染逻辑
+    range_args = dict(start_ts=period.start_ts, end_ts=period.end_ts, period_label=period.label)
     if stat_type == "fans":
-        data = await render_fans_trend(room_id, days, uname)
+        data = await render_fans_trend(room_id, period.days, uname, **range_args)
     elif stat_type == "guards":
-        data = await render_guards_trend(room_id, days, uname)
+        data = await render_guards_trend(room_id, period.days, uname, **range_args)
     else:
-        data = await render_fan_club_trend(room_id, days, uname)
+        data = await render_fan_club_trend(room_id, period.days, uname, **range_args)
 
     if not data:
-        await matcher.finish("数据不足，生成失败")
+        await matcher.finish(f"{period.label}内有效记录不足两条，无法生成趋势图")
+        return
 
     recorded_value = data["end_value"]
     image_path = data["path"]
@@ -104,7 +108,8 @@ async def _handle_stats_query(
     display_value = current_value if current_value is not None else recorded_value
     delta = display_value - data["begin_value"]
     text = f"{uname}的{stat_name}数：{display_value} ({delta:+})"
-    if days > days_since_stat_start:
+    query_start = datetime.fromtimestamp(period.start_ts, STATS_TZ).replace(tzinfo=None)
+    if query_start < stat_start_date:
         text += f"\n（数据从{stat_start_date.strftime('%Y-%m-%d')}开始）"
 
     message = Message(
