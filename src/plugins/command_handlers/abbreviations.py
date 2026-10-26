@@ -23,7 +23,7 @@ from src.plugins.command_registry import (
     abbreviation_remove_cmd,
 )
 from src.plugins.command_support import logger
-from src.plugins.utils import send_forward_message
+from src.plugins.utils import send_foldable_message
 from src.spider.nbnhhsh import NbnhhshError, guess_abbreviation, submit_translation
 
 
@@ -159,18 +159,8 @@ async def handle_abbreviation_query(
         await matcher.finish(f"没有查到“{query}”的释义")
     if remote_failed:
         text += "\n\n（远程接口暂时不可用，以上为本地结果）"
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "Libot",
-                "uin": bot.self_id,
-                "content": MessageSegment.text(text),
-            },
-        }
-    ]
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, text, force=True)
     except Exception as exc:
         logger.error("发送缩写查询合并转发失败: %s", exc)
         await matcher.finish("缩写查询发送失败，请稍后再试")

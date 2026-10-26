@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from tests.command_sources import command_tree
+from tests.command_sources import command_tree, text_sender
 
 
 class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
@@ -71,16 +71,15 @@ class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
             "get_name_by_uid": AsyncMock(side_effect=["新名一", "新名二"]),
         }
         exec(compile(ast.Module(body=[node], type_ignores=[]), "<history>", "exec"), env)
-        class Finished(Exception):
-            pass
-        finish = AsyncMock(side_effect=Finished)
-        with self.assertRaises(Finished):
-            await env["handle_name_history"](
-                SimpleNamespace(finish=finish), SimpleNamespace(self_id="123"), object(),
-                SimpleNamespace(extract_plain_text=lambda: "用户"),
-            )
+        finish = AsyncMock()
+        direct = AsyncMock()
+        env['send_foldable_message'] = text_sender(env['send_forward_message'], direct)
+        await env["handle_name_history"](
+            SimpleNamespace(finish=finish), SimpleNamespace(self_id="123"), object(),
+            SimpleNamespace(extract_plain_text=lambda: "用户"),
+        )
         lookup.assert_called_once_with("用户")
-        message = finish.call_args.args[0]
+        message = direct.call_args.args[0]
         self.assertIn("找到2个用户", message)
         self.assertIn("新名一", message)
         self.assertIn("新名二", message)
@@ -102,6 +101,7 @@ class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
             "MessageSegment": SimpleNamespace(text=lambda text: text),
             "send_forward_message": AsyncMock(), "logger": Mock(),
         }
+        env['send_foldable_message'] = text_sender(env['send_forward_message'], AsyncMock())
         exec(compile(ast.Module(body=[node], type_ignores=[]), "<history>", "exec"), env)
         return env
 

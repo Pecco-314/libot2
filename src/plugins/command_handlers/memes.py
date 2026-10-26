@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.plugins.utils import send_foldable_message
+
 import asyncio
 
 from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment
@@ -175,21 +177,8 @@ async def _handle_meme_query(
         await matcher.finish(prefix + MessageSegment.image(file=str(image_path)))
 
     content = str(record["content"])
-    if len(content) <= 30:
-        await matcher.finish(prefix + MessageSegment.text(content))
-
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "Libot",
-                "uin": bot.self_id,
-                "content": prefix + MessageSegment.text(content),
-            },
-        }
-    ]
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, content, threshold=30, prefix=prefix)
     except Exception as exc:
         logger.error("发送梗内容合并转发失败: %s", exc)
         await matcher.finish("内容发送失败，请稍后再试")
@@ -231,21 +220,8 @@ async def handle_meme_rank(
         f"{index}. {item['name']}（{item['count']}条）"
         for index, item in enumerate(items, 1)
     )
-    if len(content) <= 30:
-        await matcher.finish(content)
-
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "Libot",
-                "uin": bot.self_id,
-                "content": MessageSegment.text(content),
-            },
-        }
-    ]
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, content, threshold=30)
     except Exception as exc:
         logger.error("发送meme排行合并转发失败: %s", exc)
         await matcher.finish("排行发送失败，请稍后再试")

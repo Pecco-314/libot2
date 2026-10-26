@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.common.time_args import is_date_arg, parse_date, normalize_date
+
 import asyncio
 import re
 from datetime import datetime
@@ -61,11 +63,11 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
             room_id, datetime.now(), chunk_size=40
         )
         empty_message = "今天没有找到醒目留言"
-    elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", query):
+    elif is_date_arg(query):
         try:
-            day = datetime.strptime(query, "%Y-%m-%d")
-        except ValueError:
-            await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+            day = parse_date(query)
+        except ValueError as exc:
+            await matcher.finish(str(exc))
         images = await get_daily_superchat_images(room_id, day, chunk_size=40)
         empty_message = f"{query} 没有找到醒目留言"
     else:
@@ -158,10 +160,10 @@ def _parse_events_args(text: str) -> tuple[str | None, str | None, int | None]:
             continue
 
         try:
-            datetime.strptime(param, "%Y-%m-%d")
+            param = normalize_date(param)
         except ValueError as exc:
             raise ValueError(
-                "参数格式错误，请输入正确的数量或日期(YYYY-MM-DD)"
+                "参数格式错误，请输入数量或日期（如2026-10-26、昨天）"
             ) from exc
         if date_str is not None:
             raise ValueError("日期和数量各只能填写一次")
@@ -278,13 +280,13 @@ def _parse_content_search_args(
             limit_seen = True
             keyword = parts[0].strip()
             continue
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        if is_date_arg(candidate):
             if date_str is not None:
                 raise ValueError("日期和数量各只能填写一次")
             try:
-                datetime.strptime(candidate, "%Y-%m-%d")
+                candidate = normalize_date(candidate)
             except ValueError as exc:
-                raise ValueError("日期格式错误，正确格式：YYYY-MM-DD") from exc
+                raise ValueError(str(exc)) from exc
             date_str = candidate
             keyword = parts[0].strip()
             continue

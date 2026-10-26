@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
+from src.common.time_args import is_date_arg, calendar_span, beijing_now
 
 TZ = ZoneInfo("Asia/Shanghai")
 USAGE = "用法：弹幕榜 [日期] [场次]，或 弹幕榜 2026 / 2026-08 / 近1月 / 起始日期 结束日期"
@@ -12,31 +13,20 @@ USAGE = "用法：弹幕榜 [日期] [场次]，或 弹幕榜 2026 / 2026-08 / �
 
 def parse_rank_period(text: str, now: datetime | None = None) -> tuple[int, int, str] | None:
     """单个日期及日期加场次交给直播场次解析；近N月按N×30天（含今天）。"""
-    parts = text.split()
+    parts = re.sub(r"[至~～]", " ", text).split()
     if not parts:
         return None
     if len(parts) > 2:
         raise ValueError(USAGE)
-    day_pattern = r"\d{4}-\d{1,2}-\d{1,2}"
-    if re.fullmatch(day_pattern, parts[0]) and (
+    if is_date_arg(parts[0]) and (
         len(parts) == 1 or re.fullmatch(r"\d{1,3}", parts[1])
     ):
         return None
-    now = now or datetime.now(TZ)
-    now = now.replace(tzinfo=TZ) if now.tzinfo is None else now.astimezone(TZ)
+    now = beijing_now(now)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def calendar_period(value: str) -> tuple[datetime, datetime]:
-        if re.fullmatch(r"\d{4}", value):
-            year = int(value)
-            return datetime(year, 1, 1, tzinfo=TZ), datetime(year + 1, 1, 1, tzinfo=TZ)
-        if re.fullmatch(r"\d{4}-\d{1,2}", value):
-            start = datetime.strptime(value, "%Y-%m").replace(tzinfo=TZ)
-            return start, (start + timedelta(days=32)).replace(day=1)
-        if re.fullmatch(day_pattern, value):
-            start = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=TZ)
-            return start, start + timedelta(days=1)
-        raise ValueError(USAGE)
+        return calendar_span(value, now=now)
 
     try:
         if len(parts) == 2:
@@ -44,17 +34,9 @@ def parse_rank_period(text: str, now: datetime | None = None) -> tuple[int, int,
             last_start, end = calendar_period(parts[1])
             if last_start < start:
                 raise ValueError(USAGE)
-        elif match := re.fullmatch(r"近([1-9]\d{0,3})(天|月)", parts[0]):
+        elif match := re.fullmatch(r"近?([1-9]\d{0,3})(天|月)", parts[0]):
             days = int(match[1]) * (30 if match[2] == "月" else 1)
             start, end = today - timedelta(days=days - 1), today + timedelta(days=1)
-        elif parts[0] in {"本月", "今年", "上月"}:
-            start = today.replace(day=1)
-            if parts[0] == "今年":
-                start = start.replace(month=1)
-            if parts[0] == "上月":
-                start, end = (start - timedelta(days=1)).replace(day=1), start
-            else:
-                end = today + timedelta(days=1)
         else:
             start, end = calendar_period(parts[0])
     except (ValueError, OverflowError):

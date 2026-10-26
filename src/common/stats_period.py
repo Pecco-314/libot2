@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from src.common.danmaku_rank import TZ, parse_rank_period
+from src.common.time_args import is_date_arg
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ def parse_stats_period(text: str, now: datetime | None = None) -> StatsPeriod:
         return StatsPeriod(int(start.timestamp()), int(now.timestamp()) + 1, f"近{days}天", days)
 
     text = re.sub(r"[至~～]", " ", text)
-    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", text):
+    if is_date_arg(text):
         text = f"{text} {text}"
     try:
         period = parse_rank_period(text, now)

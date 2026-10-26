@@ -97,7 +97,11 @@ class CommandArchitectureTests(unittest.TestCase):
 
             matchers = [value for value in vars(registry).values()
                         if isinstance(value, type) and issubclass(value, Matcher)]
-            assert len(matchers) == 60
+            assert len(matchers) == 59
+            activity_rules = [checker.call for checker in registry.activity_list_cmd.rule.checkers
+                              if isinstance(checker.call, CommandRule)]
+            assert len(activity_rules) == 1
+            assert set(activity_rules[0].cmds) == {("查动态",), ("生成动态",)}
             assert all(matcher.handlers for matcher in matchers)
             assert all(matcher.module_name == registry.COMMAND_MODULE_NAME for matcher in matchers)
             for matcher in matchers:

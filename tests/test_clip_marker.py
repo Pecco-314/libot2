@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 from src.db.clip_marker import add_clip_marker, format_clip_marker, list_clip_markers
-from tests.command_sources import command_tree
+from tests.command_sources import command_tree, text_sender
+from src.common.time_args import parse_datetime, parse_date_index
 
 
 class ClipMarkerTest(unittest.TestCase):
@@ -57,7 +58,7 @@ class ClipMarkerCommandTest(unittest.IsolatedAsyncioTestCase):
         self.latest = Mock(return_value=self.sessions[0])
         self.matcher = SimpleNamespace(finish=AsyncMock(side_effect=Finished))
         self.event = SimpleNamespace(time=self.now, user_id=10, group_id=20, message_id=30)
-        env = dict(re=re, datetime=datetime, timedelta=timedelta, ZoneInfo=ZoneInfo,
+        env = dict(re=re, datetime=datetime, timedelta=timedelta, ZoneInfo=ZoneInfo, parse_datetime=parse_datetime,
                    Matcher=object, Event=object, GroupMessageEvent=SimpleNamespace,
                    CommandArg=lambda: None, asyncio=SimpleNamespace(to_thread=inline_thread),
                    get_query_room_id=lambda event: 1, get_latest_live_session=self.latest,
@@ -144,10 +145,12 @@ class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
         self.start = 1_800_000_000
         self.markers = []
         self.forward = AsyncMock()
+        self.direct = AsyncMock()
         self.matcher = SimpleNamespace(finish=AsyncMock(side_effect=Finished))
         self.bot = SimpleNamespace(self_id=123)
         self.event = object()
         env = dict(Matcher=object, Bot=object, Event=object, CommandArg=lambda: None,
+                   parse_date_index=parse_date_index, send_foldable_message=text_sender(self.forward, self.direct),
                    datetime=datetime, asyncio=SimpleNamespace(to_thread=inline_thread),
                    MessageSegment=SimpleNamespace(text=lambda text: text),
                    get_query_room_id=lambda event: 1,
@@ -168,7 +171,7 @@ class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_short_document_direct(self):
         await self.run_handler(["高光"] * 5)
-        self.matcher.finish.assert_awaited_once()
+        self.direct.assert_awaited_once()
         self.forward.assert_not_awaited()
 
     async def test_six_markers_fold_even_with_short_notes(self):
@@ -183,12 +186,12 @@ class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_character_threshold(self):
         await self.run_handler(["字"])
-        baseline = len(self.matcher.finish.call_args.args[0]) - 1
-        self.matcher.finish.reset_mock()
+        baseline = len(self.direct.call_args.args[0]) - 1
+        self.direct.reset_mock()
         await self.run_handler(["字" * (300 - baseline)])
-        self.matcher.finish.assert_awaited_once()
+        self.direct.assert_awaited_once()
         self.forward.assert_not_awaited()
-        self.matcher.finish.reset_mock()
+        self.direct.reset_mock()
         await self.run_handler(["字" * (301 - baseline)])
         self.matcher.finish.assert_not_awaited()
         self.forward.assert_awaited_once()
@@ -201,7 +204,7 @@ class ClipDocumentTest(unittest.IsolatedAsyncioTestCase):
         contents = [node["data"]["content"] for node in nodes]
         self.assertTrue(all(len(text) <= 1500 for text in contents))
         expected = [format_clip_marker(m["timestamp"], self.start, m["note"]) for m in self.markers]
-        self.assertEqual("\n".join(contents).splitlines()[3:], expected)
+        self.assertEqual("".join(contents).splitlines()[3:], expected)
 
     async def test_empty_document_direct(self):
         await self.run_handler([])

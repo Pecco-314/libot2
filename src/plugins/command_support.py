@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
 from nonebot.adapters.onebot.v11 import Event
 from nonebot.matcher import Matcher
@@ -15,6 +14,7 @@ from src.db.event import (
     list_uids_by_uname,
 )
 from src.plugins.utils import is_group_manager
+from src.common.time_args import normalize_date, parse_date_index
 
 logger = logging.getLogger("libot.commands")
 
@@ -39,14 +39,7 @@ async def _resolve_user_uid(matcher: Matcher, query: str) -> int:
 
 
 def _parse_concurrent_args(text: str) -> tuple[str | None, int | None]:
-    parts = [p for p in text.strip().split() if p]
-    if not parts:
-        return None, None
-    date_str = parts[0]
-    session_index = None
-    if len(parts) > 1 and parts[1].isdigit():
-        session_index = int(parts[1])
-    return date_str, session_index
+    return parse_date_index(text)
 
 
 def _resolve_live_session(
@@ -60,10 +53,7 @@ def _resolve_live_session(
         session_label = "当前直播" if ongoing else "最近直播"
         return target_session, session_label, ongoing
 
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        raise ValueError("日期格式错误，正确格式：YYYY-MM-DD")
+    date_str = normalize_date(date_str)
 
     sessions = list_live_sessions_by_date(room_id, date_str)
     if not sessions:

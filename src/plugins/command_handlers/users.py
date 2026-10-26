@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.plugins.utils import send_foldable_message
+
 import asyncio
 
 from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment
@@ -37,35 +39,8 @@ async def handle_name_history(
             logger.warning(f"查询用户 {entry['uid']} 的当前名称失败")
             current_name = names[-1]
         result += f"{i}. {current_name} ({', '.join(names)})\n"
-    if len(result) <= 300 and len(history) <= 5:
-        await matcher.finish(MessageSegment.text(result))
-
-    # 保留完整结果及原有顺序，并限制单个转发节点的文字长度。
-    chunks = []
-    chunk = ""
-    for line in result.splitlines(keepends=True):
-        if chunk and len(chunk) + len(line) > 1500:
-            chunks.append(chunk)
-            chunk = ""
-        while len(line) > 1500:
-            chunks.append(line[:1500])
-            line = line[1500:]
-        chunk += line
-    if chunk:
-        chunks.append(chunk)
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "Libot",
-                "uin": bot.self_id,
-                "content": MessageSegment.text(chunk),
-            },
-        }
-        for chunk in chunks
-    ]
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, result, force=len(history) > 5)
     except Exception:
         logger.exception("发送曾用名合并转发失败")
         await matcher.finish("曾用名结果发送失败，请稍后再试")

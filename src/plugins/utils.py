@@ -14,6 +14,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 from nonebot.matcher import Matcher
+from src.common.long_message import split_text, needs_forward, DEFAULT_THRESHOLD, DEFAULT_MAX_LINES
 
 from src.db.subscription import (
     get_subscription,
@@ -63,6 +64,42 @@ async def send_forward_message(
         user_id=int(event.get_user_id()),
         messages=messages,
     )
+
+
+async def send_foldable_message(
+    bot: Bot, event: Event, content: str | Message | MessageSegment, *,
+    threshold: int = DEFAULT_THRESHOLD, max_lines: int = DEFAULT_MAX_LINES, force: bool = False,
+    prefix: Message | None = None,
+):
+    """短消息直发，长消息合并转发；保留 @、图片等消息段及发送结果。"""
+    message = Message(MessageSegment.text(content)) if isinstance(content, str) else Message(content)
+    text = message.extract_plain_text()
+    folded = force or needs_forward(text, threshold, max_lines)
+    if not folded:
+        return await bot.send(event, (prefix or Message()) + message)
+    chunks = []
+    current = Message()
+    for segment in message:
+        if segment.type != "text":
+            current.append(segment)
+            continue
+        pieces = split_text(segment.data["text"])
+        for index, piece in enumerate(pieces):
+            if index or (current and len(current.extract_plain_text()) + len(piece) > 1500):
+                chunks.append(current)
+                current = Message()
+            current.append(MessageSegment.text(piece))
+    if current:
+        chunks.append(current)
+    if not chunks:
+        chunks = [Message()]
+    if prefix:
+        chunks[0] = prefix + chunks[0]
+    nodes = [{"type": "node", "data": {"name": "Libot", "uin": bot.self_id, "content": chunk}} for chunk in chunks]
+    results = []
+    for index in range(0, len(nodes), 50):
+        results.append(await send_forward_message(bot, event, nodes[index:index + 50]))
+    return results[0] if len(results) == 1 else results
 
 
 def _parse_room_id(arg: Message) -> int | None:

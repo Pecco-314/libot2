@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.common.time_args import parse_month, calendar_span, parse_date, beijing_now
+
 import asyncio
 import re
 import shlex
@@ -233,9 +235,8 @@ async def handle_concurrent(matcher: Matcher, event: Event, arg=CommandArg()):
     room_id = get_query_room_id(event)
 
     raw = arg.extract_plain_text()
-    date_str, session_index = _parse_concurrent_args(raw)
-
     try:
+        date_str, session_index = _parse_concurrent_args(raw)
         target_session, session_label, ongoing = _resolve_live_session(
             room_id, date_str, session_index
         )
@@ -282,50 +283,21 @@ def _resolve_blind_box_range(
     raw_arg: str,
 ) -> tuple[int, int, str]:
     raw_arg = raw_arg.strip()
-    now = datetime.now()
-    data_start = datetime.strptime(BLIND_BOX_DATA_START, "%Y-%m-%d")
-
-    if re.fullmatch(r"\d{4}", raw_arg):
-        year = int(raw_arg)
-        period_start = datetime(year, 1, 1)
-        period_end = datetime(year + 1, 1, 1)
+    now = beijing_now()
+    data_start = parse_date(BLIND_BOX_DATA_START)
+    is_year = bool(re.fullmatch(r"\d{4}", raw_arg)) or raw_arg == "今年"
+    is_month = bool(re.fullmatch(r"\d{4}[-/]?\d{1,2}", raw_arg)) or raw_arg in {"本月", "上月"}
+    if is_year or is_month:
+        period_start, period_end = calendar_span(raw_arg, now=now)
         query_start = max(period_start, data_start)
         query_end = min(period_end, now)
         if query_start >= query_end:
-            raise ValueError(
-                f"没有可查询的数据，心动盲盒数据始于 {BLIND_BOX_DATA_START}"
-            )
-        label = f"{year}年"
+            raise ValueError(f"没有可查询的数据，心动盲盒数据始于 {BLIND_BOX_DATA_START}")
+        label = period_start.strftime("%Y年" if is_year else "%Y年%m月")
         if query_start > period_start:
             label += f"（统计始于{query_start:%m-%d}）"
-        end_ts = int(query_end.timestamp())
-        if query_end == period_end:
-            end_ts -= 1
+        end_ts = int(query_end.timestamp()) - int(query_end == period_end)
         return int(query_start.timestamp()), end_ts, label
-
-    month_match = re.fullmatch(r"(\d{4})-?(\d{2})", raw_arg)
-    if month_match:
-        year, month = map(int, month_match.groups())
-        if not 1 <= month <= 12:
-            raise ValueError("月份格式错误，正确格式：YYYY-MM")
-        period_start = datetime(year, month, 1)
-        period_end = (
-            datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
-        )
-        query_start = max(period_start, data_start)
-        query_end = min(period_end, now)
-        if query_start >= query_end:
-            raise ValueError(
-                f"没有可查询的数据，心动盲盒数据始于 {BLIND_BOX_DATA_START}"
-            )
-        label = f"{year}年{month:02d}月"
-        if query_start > period_start:
-            label += f"（统计始于{query_start:%m-%d}）"
-        end_ts = int(query_end.timestamp())
-        if query_end == period_end:
-            end_ts -= 1
-        return int(query_start.timestamp()), end_ts, label
-
     date_str, session_index = _parse_concurrent_args(raw_arg)
     target_session, session_label, _ongoing = _resolve_live_session(
         room_id, date_str, session_index
@@ -403,12 +375,12 @@ async def handle_dc(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()):
                 filter_type = "all"
         elif re.match(r"^20\d{2}$", a):  # 例如 2026
             time_args.append(a)
-        elif re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", a):  # 例如 2026-06
-            time_args.append(a)
-        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", a):  # 兼容 202606 这种连续格式
-            time_args.append(f"{a[:4]}-{a[4:]}")
         else:
-            await matcher.finish("用法：/斗虫 [VR/PSP/ALL] [月份/年份] [结束月份]")
+            try:
+                year, month = parse_month(a)
+                time_args.append(f"{year:04d}-{month:02d}")
+            except ValueError:
+                await matcher.finish("用法：/斗虫 [VR/PSP/ALL] [月份/年份] [结束月份]")
 
     if len(time_args) > 2:
         await matcher.finish("斗虫最多填写起始、结束两个月份")

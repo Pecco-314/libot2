@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.common.time_args import parse_duration
+
 import asyncio
 import os
 import re
@@ -28,23 +30,10 @@ def _parse_duration(text: str) -> float | None:
     normalized = re.sub(r"\s+", "", text).casefold()
     if normalized in {"无限制", "不限", "关闭", "取消", "0", "0秒"}:
         return 0.0
-    if not re.fullmatch(r"(?:\d+(?:\.\d+)?(?:秒|分钟|分|小时|时|天))+", normalized):
+    try:
+        seconds = parse_duration(normalized)
+    except ValueError:
         return None
-
-    unit_seconds = {
-        "秒": 1,
-        "分钟": 60,
-        "分": 60,
-        "小时": 3600,
-        "时": 3600,
-        "天": 86400,
-    }
-    seconds = sum(
-        float(value) * unit_seconds[unit]
-        for value, unit in re.findall(
-            r"(\d+(?:\.\d+)?)(分钟|小时|秒|分|时|天)", normalized
-        )
-    )
     return seconds if seconds > 0 else None
 
 

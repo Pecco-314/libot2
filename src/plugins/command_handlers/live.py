@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from src.plugins.utils import send_foldable_message
+from src.common.time_args import parse_month, parse_datetime, parse_date_index
+
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, MessageSegment
@@ -49,7 +52,7 @@ def _parse_clip_marker_arg(text: str, message_time: int) -> tuple[str, int | Non
     """解析末尾的北京时间；仅时间取不晚于消息时间的最近一天。"""
     text = " ".join(text.split())
     match = re.search(
-        r"(?:^|\s)(?:(\d{4}-\d{1,2}-\d{1,2})[ T])?(\d{1,2}:\d{1,2}(?::\d{1,2})?)$",
+        r"(?:^|\s)(?:(今天|今日|昨天|昨日|前天|(?:\d{4}[-/.])?\d{1,2}[-/.]\d{1,2})[ T])?(\d{1,2}:\d{1,2}(?::\d{1,2})?)$",
         text,
     )
     if match is None:
@@ -59,15 +62,7 @@ def _parse_clip_marker_arg(text: str, message_time: int) -> tuple[str, int | Non
     note = text[:match.start()].strip()
     date, clock = match.groups()
     now = datetime.fromtimestamp(message_time, ZoneInfo("Asia/Shanghai"))
-    fmt = "%H:%M:%S" if clock.count(":") == 2 else "%H:%M"
-    date_text = date or now.strftime("%Y-%m-%d")
-    try:
-        target = datetime.strptime(f"{date_text} {clock}", "%Y-%m-%d " + fmt)
-    except ValueError:
-        raise ValueError("时间格式错误，请使用 YYYY-MM-DD HH:MM[:SS] 或 HH:MM[:SS]（北京时间）") from None
-    target = target.replace(tzinfo=now.tzinfo)
-    if date is None and target > now:
-        target -= timedelta(days=1)
+    target = parse_datetime(f"{date} {clock}" if date else clock, now=now, past_clock=True)
     if target > now:
         raise ValueError("切片时间不能晚于消息发送时间")
     return note, int(target.timestamp())
@@ -117,13 +112,9 @@ async def handle_clip_marker(matcher: Matcher, event: Event, arg=CommandArg()):
 async def handle_clip_document(
     matcher: Matcher, bot: Bot, event: Event, arg=CommandArg()
 ):
-    parts = arg.extract_plain_text().strip().split()
-    if len(parts) > 2 or (len(parts) == 2 and not parts[1].isdigit()):
-        await matcher.finish("用法：/切片文档 [YYYY-MM-DD] [直播场次]")
-    date = parts[0] if parts else None
-    index = int(parts[1]) if len(parts) == 2 else None
     room_id = get_query_room_id(event)
     try:
+        date, index = parse_date_index(arg.extract_plain_text())
         session, label, _ = await asyncio.to_thread(
             _resolve_live_session, room_id, date, index
         )
@@ -142,26 +133,7 @@ async def handle_clip_document(
         f"切片文档 · {label}\n开播：{started}（北京时间）\n[北京时间] (开播后时间) 备注"
     )
     lines = [format_clip_marker(m["timestamp"], start, m["note"]) for m in markers]
-    chunks = [header]
-    for line in lines:
-        if len(chunks[-1]) + len(line) + 1 > 1500:
-            chunks.append(line)
-        else:
-            chunks[-1] += "\n" + line
-    if len(chunks) == 1 and len(chunks[0]) <= 300 and len(lines) <= 5:
-        await matcher.finish(MessageSegment.text(chunks[0]))
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "Libot",
-                "uin": bot.self_id,
-                "content": MessageSegment.text(chunk),
-            },
-        }
-        for chunk in chunks
-    ]
-    await send_forward_message(bot, event, nodes)
+    await send_foldable_message(bot, event, header + "\n" + "\n".join(lines), force=len(lines) > 5)
 
 
 @live_list_add_cmd.handle()
@@ -342,33 +314,8 @@ async def handle_live_list_tag_members(
         f"{room.get('uname') or room['room_id']}（{room['room_id']}）" for room in rooms
     ]
     header = f"标签 [{tag}] 下的直播间（{len(lines)} 个）"
-    chunk_size = 25
-    if len(lines) <= 5:
-        await matcher.finish(f"{header}\n" + "\n".join(lines))
-
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "LiBot",
-                "uin": event.self_id,
-                "content": header,
-            },
-        }
-    ]
-    for start in range(0, len(lines), chunk_size):
-        nodes.append(
-            {
-                "type": "node",
-                "data": {
-                    "name": "LiBot",
-                    "uin": event.self_id,
-                    "content": "\n".join(lines[start : start + chunk_size]),
-                },
-            }
-        )
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, header + "\n" + "\n".join(lines), force=len(lines) > 5)
     except Exception as exc:
         logger.error("发送标签直播间列表失败: %s", exc)
         await matcher.finish("发送列表失败，请稍后再试。")
@@ -380,18 +327,11 @@ async def handle_live_sessions(matcher: Matcher, event: Event, arg=CommandArg())
 
     arg_str = arg.extract_plain_text().strip()
 
-    if not arg_str:
-        month_str = datetime.now().strftime("%Y%m")
-    else:
-        if re.match(r"^20\d{2}-(0[1-9]|1[0-2])$", arg_str):
-            month_str = arg_str.replace("-", "")
-        elif re.match(r"^20\d{2}(0[1-9]|1[0-2])$", arg_str):
-            month_str = arg_str
-        elif re.match(r"^(0[1-9]|1[0-2])$", arg_str):
-            month_str = f"{datetime.now().year}{arg_str}"
-        else:
-            await matcher.finish("月份格式错误，请使用如 202509 或 2025-09 的格式")
-
+    try:
+        year, month = parse_month(arg_str, short=True)
+        month_str = f"{year:04d}{month:02d}"
+    except ValueError as exc:
+        await matcher.finish(str(exc))
     try:
         image_path = await render_live_sessions_image(room_id, month_str)
     except Exception as e:

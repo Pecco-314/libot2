@@ -7,6 +7,7 @@ import os
 import re
 import logging
 from datetime import datetime, timedelta
+from src.common.time_args import parse_datetime, parse_duration, beijing_now
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -25,31 +26,24 @@ USAGE = "时间用法：在聊什么 30分钟 / 2小时 / 08:00 / 2026-10-13 08:
 
 
 def parse_period(text, now=None):
-    now = (now or datetime.now(TZ)).astimezone(TZ).replace(microsecond=0)
+    now = beijing_now(now).replace(microsecond=0)
     text = text.strip()
     if not text:
         start, end = now - timedelta(hours=1), now
-    elif match := re.fullmatch(r"(?:最近|近)?(\d+(?:\.\d+)?)\s*(小时|分钟)", text):
-        seconds = float(match[1]) * (3600 if match[2] == "小时" else 60)
+    elif re.fullmatch(r"(?:最近|近)?(?:\d+(?:\.\d+)?\s*(?:分钟|小时|秒|分|时|天|日|周))+", text):
+        seconds = parse_duration(re.sub(r"^(最近|近)", "", text))
         if not 0 < seconds <= RAW_TTL:
             raise ValueError("时间查询可使用最近24小时内的消息缓存")
         start, end = now - timedelta(seconds=seconds), now
     else:
         text = re.sub(r"(?<=\d)\s*-\s*(?=\d{1,2}:)", "~", text)
-        text = re.sub(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)", r"\1T\2", text)
+        text = re.sub(r"(今天|今日|昨天|昨日|前天|(?:\d{4}[-/.])?\d{1,2}[-/.]\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)", r"\1T\2", text)
         parts = re.split(r"\s*(?:~|～|至|到)\s*|\s+", text)
         if len(parts) not in (1, 2):
             raise ValueError(USAGE)
 
         def point(value):
-            if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", value):
-                fmt = "%H:%M:%S" if value.count(":") == 2 else "%H:%M"
-                t = datetime.strptime(value, fmt)
-                return now.replace(hour=t.hour, minute=t.minute, second=t.second)
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?", value):
-                raise ValueError(USAGE)
-            fmt = "%Y-%m-%dT%H:%M:%S" if value.count(":") == 2 else "%Y-%m-%dT%H:%M"
-            return datetime.strptime(value, fmt).replace(tzinfo=TZ)
+            return parse_datetime(value, now=now)
 
         try:
             start = point(parts[0])

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.common.time_args import normalize_date, parse_month, parse_date_index
+
 import asyncio
 import re
 from datetime import datetime
@@ -16,7 +18,7 @@ from src.db.activity import (
     list_activities_by_date,
     list_activities_by_month,
 )
-from src.plugins.command_registry import activity_generate_cmd, activity_list_cmd
+from src.plugins.command_registry import activity_list_cmd
 from src.plugins.command_support import logger
 from src.plugins.utils import get_query_room_id, send_forward_message
 from src.render.activity import render_bilibili_card
@@ -24,19 +26,10 @@ from src.render.activity_list import render_activity_list
 
 
 def _parse_activity_month(text: str) -> tuple[int, int] | None:
-    value = text.strip()
-    if not value:
-        now = datetime.now()
-        return now.year, now.month
-
-    match = re.fullmatch(r"(20\d{2})-?(0[1-9]|1[0-2])", value)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-
-    match = re.fullmatch(r"0?([1-9]|1[0-2])", value)
-    if match:
-        return datetime.now().year, int(match.group(1))
-    return None
+    try:
+        return parse_month(text, short=True)
+    except ValueError:
+        return None
 
 
 @activity_list_cmd.handle()
@@ -50,7 +43,8 @@ async def handle_activity_list(
 
     target_month = _parse_activity_month(arg.extract_plain_text())
     if target_month is None:
-        await matcher.finish("月份格式错误，请使用如 202607、2026-07 或 7 的格式")
+        await handle_activity_generate(matcher, bot, event, arg)
+        return
     year, month = target_month
     activities = list_activities_by_month(room_id, year, month)
     if not activities:
@@ -88,7 +82,6 @@ async def handle_activity_list(
         await matcher.finish("动态列表发送失败，请稍后再试")
 
 
-@activity_generate_cmd.handle()
 async def handle_activity_generate(
     matcher: Matcher,
     bot: Bot,
@@ -97,27 +90,23 @@ async def handle_activity_generate(
 ):
     room_id = get_query_room_id(event)
 
-    parts = arg.extract_plain_text().strip().split()
-    if len(parts) not in {1, 2}:
-        await matcher.finish("用法：/生成动态 <日期> [序号]")
-    date_text = parts[0]
     try:
-        datetime.strptime(date_text, "%Y-%m-%d")
-    except ValueError:
-        await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+        date_text, index = parse_date_index(arg.extract_plain_text())
+        if date_text is None:
+            raise ValueError("请填写日期")
+        date_text = normalize_date(date_text)
+    except ValueError as exc:
+        await matcher.finish(str(exc))
 
-    if len(parts) == 2:
-        index_text = parts[1]
-        if not index_text.isdigit() or int(index_text) < 1:
-            await matcher.finish("序号必须是大于 0 的整数")
+    if index is not None:
         activity = get_activity_by_date_index(
             room_id,
             date_text,
-            int(index_text),
+            index,
         )
         if activity is None:
-            await matcher.finish(f"没有找到 {date_text} 的第 {index_text} 条动态")
-        selected = [(int(index_text), activity)]
+            await matcher.finish(f"没有找到 {date_text} 的第 {index} 条动态")
+        selected = [(index, activity)]
     else:
         activities = list_activities_by_date(room_id, date_text)
         if not activities:

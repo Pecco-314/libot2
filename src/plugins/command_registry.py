@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nonebot import on_command as _on_command
+from src.plugins.message_delivery import install_message_delivery
 
 COMMAND_MODULE_NAME = __name__
 
@@ -10,18 +11,21 @@ COMMAND_MODULE_NAME = __name__
 _COMMAND_CANONICAL_NAMES: dict[str, str] = {}
 
 
-def on_command(command: str, *args, aliases=None, **kwargs):
+def on_command(command: str, *args, aliases=None, fold_long=True, **kwargs):
     alias_set = set(aliases or ())
     canonical_name = command.strip()
     for name in {canonical_name, *alias_set}:
         _COMMAND_CANONICAL_NAMES[name.casefold()] = canonical_name
-    return _on_command(
+    matcher = _on_command(
         command,
         *args,
         aliases=alias_set,
         force_whitespace=True,
         **kwargs,
     )
+    if fold_long:
+        install_message_delivery(matcher)
+    return matcher
 
 
 help_cmd = on_command("帮助", priority=5)
@@ -190,16 +194,14 @@ clip_marker_cmd = on_command("切片", priority=5, block=True)
 clip_document_cmd = on_command("切片文档", priority=5, block=True)
 
 
-activity_list_cmd = on_command("查动态", priority=5, block=True)
-
-
-activity_generate_cmd = on_command("生成动态", priority=5, block=True)
+activity_list_cmd = on_command("查动态", aliases={"生成动态"}, priority=5, block=True)
 
 
 cmd_add_song = on_command("新增歌曲", priority=5, block=True)
 
 
-cmd_generate_list = on_command("生成歌单", priority=5, block=True)
+# 歌单草稿供直接回复提交，须保留可读取的原消息文本。
+cmd_generate_list = on_command("生成歌单", priority=5, block=True, fold_long=False)
 
 
 cmd_update_list = on_command("提交歌单", aliases={"提交"}, priority=5, block=True)
