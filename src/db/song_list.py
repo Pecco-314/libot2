@@ -503,78 +503,26 @@ def batch_upsert_songs(songs: list[dict[str, Any]]) -> None:
 
 
 def search_songs_by_title(keyword: str, limit: int = 5, singer: str | None = None) -> list[dict[str, Any]]:
-    clean_keyword = keyword.strip()
-    like_query = f"%{clean_keyword}%"
-
+    from src.common.song_search import forms, rank_songs
+    if not keyword.strip() or len(keyword) > 200 or limit <= 0:
+        return []
     with connect_sqlite() as conn:
-        if singer:
-            clean_singer = singer.strip()
-            singer_query = f"%{clean_singer}%"
-            query = """
-                SELECT id, title, title_trans, original_singer, 
-                       (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                       (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
-                FROM song_info
-                WHERE (title LIKE ? OR title_trans LIKE ?)
-                  AND original_singer LIKE ?
-                ORDER BY 
-                    (CASE 
-                        WHEN title = ? THEN 0
-                        WHEN title_trans = ? THEN 1
-                        WHEN title LIKE ? THEN 2
-                        ELSE 3 
-                    END),
-                    count DESC
-                LIMIT ?
-            """
-            params = (
-                like_query, like_query,
-                singer_query,
-                clean_keyword, clean_keyword,
-                f"{clean_keyword}%",
-                limit
-            )
-        else:
-            query = """
-                SELECT id, title, title_trans, original_singer, 
-                       (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
-                       (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count
-                FROM song_info
-                WHERE title LIKE ? OR title_trans LIKE ?
-                ORDER BY 
-                    (CASE 
-                        WHEN title = ? THEN 0
-                        WHEN title_trans = ? THEN 1
-                        WHEN title LIKE ? THEN 2
-                        ELSE 3 
-                    END),
-                    count DESC
-                LIMIT ?
-            """
-            params = (
-                like_query, like_query,
-                clean_keyword, clean_keyword,
-                f"{clean_keyword}%",
-                limit
-            )
-        
-        rows = conn.execute(query, params).fetchall()
-        
-    results = []
-    for row in rows:
-        try:
-            records_list = json.loads(row[4]) if row[4] and row[4] != '[]' else []
-        except (json.JSONDecodeError, TypeError):
-            records_list = []
-            
-        results.append({
-            "id": row[0],
-            "title": row[1],
-            "title_trans": row[2],
-            "original_singer": row[3],
-            "records": records_list,
-            "count": row[5]
-        })
+        rows = conn.execute('SELECT id,title,title_trans,original_singer FROM song_info').fetchall()
+        counts = dict(conn.execute('SELECT song_id,COUNT(*) FROM song_record GROUP BY song_id'))
+        singer_names = singer_query_names(resolve_singer_alias(singer, conn=conn)) if singer else set()
+        targets = [forms(name)[2] for name in singer_names]
+        songs = []
+        for sid, title, translation, artist in rows:
+            if singer_names:
+                artists = [forms(name)[2] for name in [artist or '', *split_singers(artist)]]
+                if not any(q and q in a for q in targets for a in artists):
+                    continue
+            songs.append(dict(id=sid,title=title,title_trans=translation,original_singer=artist,
+                              count=counts.get(sid,0)))
+        results = rank_songs(keyword, songs)[:limit]
+        for song in results:
+            song['records'] = [r[0] for r in conn.execute(
+                'SELECT record_date FROM song_record WHERE song_id=? ORDER BY id', (song['id'],))]
     return results
 
 
@@ -1135,6 +1083,21 @@ def add_new_song(title: str, singer: str = "", language: str = "", title_trans: 
             (title, singer, language, title_trans)
         )
         return cursor.lastrowid
+
+
+def submit_song_list(text: str, db_path: Path = DEFAULT_DB_PATH) -> int:
+    """全量核对歌曲身份后原子写入，保留同曲多次演唱及输入顺序。"""
+    from src.common.song_submission import parse_song_submission
+
+    record_date, entries = parse_song_submission(text)
+    with write_transaction(db_path) as conn:
+        for number, (song_id, label) in enumerate(entries, 2):
+            song = conn.execute('SELECT title, original_singer FROM song_info WHERE id=?', (song_id,)).fetchone()
+            if song is None or label != f'{song[0]} - {song[1]}':
+                raise ValueError(f'第{number}行歌曲ID、歌名或歌手不匹配，请重新生成歌单')
+        conn.executemany('INSERT INTO song_record (song_id, record_date) VALUES (?, ?)',
+                         [(song_id, record_date) for song_id, _ in entries])
+    return len(entries)
 
 
 def add_song_record(song_id: int, record_date: str) -> None:
