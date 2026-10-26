@@ -181,7 +181,11 @@
     </div>
 
     <script>
-        const socket = io();
+        const csrfToken = {{ csrf_token|tojson }};
+        const socket = io({auth: {csrf_token: csrfToken}});
+        socket.on('connect_error', () => {
+            document.getElementById('log-container').textContent = '连接未授权或已断开，请刷新页面重新登录。';
+        });
         const container = document.getElementById('log-container');
 
         let currentFile = '';
@@ -255,7 +259,7 @@
 
             fetch('/api/change_password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
                 body: JSON.stringify({ new_password: newPwd, confirm_password: confirmPwd })
             })
                 .then(res => {
@@ -270,8 +274,7 @@
                     if (!data) return;
                     alert(data.msg);
                     if (data.success) {
-                        document.getElementById('new_pwd').value = '';
-                        document.getElementById('confirm_pwd').value = '';
+                        window.location.reload();
                     }
                 })
                 .catch(err => {
@@ -354,7 +357,7 @@
         function triggerRestart() {
             const serviceName = document.getElementById('restart-btn').dataset.service;
             if (confirm(`确定要执行 libotctl restart ${serviceName} 吗？`)) {
-                socket.emit('restart_service', { service: serviceName });
+                socket.emit('restart_service', { service: serviceName, csrf_token: csrfToken });
             }
         }
 

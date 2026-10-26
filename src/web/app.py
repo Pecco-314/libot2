@@ -23,6 +23,7 @@ from src.db.meme import (
     review_meme,
 )
 from src.common.log_parser import LogStreamParser, parse_log_iterable
+from src.web.security import WebSecurity, safe_next
 
 load_env_file()
 
@@ -48,7 +49,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY")
 if not app.secret_key:
     raise ValueError("FLASK_SECRET_KEY 未设置")
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+socketio = SocketIO(app, async_mode='gevent')
 
 init_state_db()
 init_meme_db()
@@ -56,10 +57,12 @@ if get_state("web_password") is None:
     initial_password = os.environ.get("FLASK_INITIAL_PASSWORD")
     set_state("web_password", generate_password_hash(initial_password))
 
+security = WebSecurity(app, socketio, lambda: get_state('web_password'))
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
+        if not security.authenticated():
             # 如果是 API 请求，返回 JSON 而不是重定向，防止前端解析 HTML 出错
             if request.path.startswith('/api/'):
                 return jsonify({"error": "unauthorized"}), 401
@@ -70,11 +73,14 @@ def login_required(f):
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
     if request.method == 'POST':
+        if not security.allow_attempt():
+            response = app.make_response((render_template('login.html', error='尝试过于频繁，请10分钟后再试'), 429))
+            response.headers['Retry-After'] = '600'
+            return response
         if check_password_hash(get_state("web_password"), request.form.get('password', '')):
-            session.permanent = True
-            session['logged_in'] = True
+            security.login()
             logger.info(f"用户已登录: {request.headers.get('X-Forwarded-For', request.remote_addr)}")
-            return redirect(request.args.get('next') or url_for('index'))
+            return redirect(safe_next(request.args.get('next')))
         return render_template('login.html', error="密码错误")
     return render_template('login.html')
 
@@ -86,6 +92,7 @@ def index():
         'index.html',
         log_files=log_files,
         pending_meme_count=count_pending_memes(),
+        csrf_token=_get_csrf_token(),
     )
 
 
@@ -166,10 +173,12 @@ def api_review_meme(record_id: int):
     })
 
 @app.route('/qrcode')
+@login_required
 def qrcode_page():
     return render_template('qrcode.html')
 
 @app.route('/get_qrcode_img')
+@login_required
 def get_qrcode_img():
     if QRCODE_PATH.exists():
         return send_file(QRCODE_PATH, mimetype='image/png', download_name='qrcode.png', max_age=0)
@@ -209,26 +218,27 @@ def api_get_history(filename):
 
 @socketio.on('restart_service')
 def handle_restart(data):
-    if not session.get('logged_in'): return
+    if not security.authenticated() or not isinstance(data, dict) or not security.csrf_valid(data.get('csrf_token')):
+        return
     
     # 获取前端传来的服务名
     service_name = data.get('service')
 
     if service_name == 'web':
         logger.warning(f"检测到非法请求：尝试从 API 重启 web 服务。")
-        socketio.emit('system_msg', {'data': '操作被拒绝：Web 服务不支持在线重启。'})
+        socketio.emit('system_msg', {'data': '操作被拒绝：Web 服务不支持在线重启。'}, to=request.sid)
         return
 
     # 严格的安全校验：只允许字母、数字、短横线或下划线
-    if not service_name.replace('_', '').replace('-', '').isalnum():
+    if service_name not in {'libot', 'spider', 'monitor', 'capture', 'napcat', 'lyrics'}:
         logger.warning(f"拦截到非法的重启服务名: {service_name}")
         return
         
-    command = f"{ROOT}/libotctl restart {service_name}"
+    command = [str(ROOT / 'libotctl'), 'restart', service_name]
     logger.info(f"执行动态重启指令: {command}")
     
     try:
-        subprocess.run(command, shell=True, check=True)
+        subprocess.run(command, check=True)
     except Exception as e:
         logger.error(f"重启 {service_name} 失败: {e}")
 
@@ -249,13 +259,13 @@ def tail_single_file(file_path):
                     partial_line = ""
                     if parsed:
                         parsed['filename'] = file_path.name
-                        socketio.emit('log_event', parsed)
+                        security.emit_log(parsed)
             else:
                 if not partial_line:
                     parsed = parser.flush()
                     if parsed:
                         parsed['filename'] = file_path.name
-                        socketio.emit('log_event', parsed)
+                        security.emit_log(parsed)
                 socketio.sleep(0.1)
 
 def start_tail_tasks():
@@ -266,7 +276,7 @@ def start_tail_tasks():
 
 @app.route('/logout')
 def logout():
-    session.clear()
+    security.logout()
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     logger.info(f"用户已登出: {ip}")
     return redirect(url_for('login_page'))
@@ -285,6 +295,8 @@ def change_password():
         return jsonify({"success": False, "msg": "密码为空或两次输入不一致"}), 400
     
     set_state("web_password", generate_password_hash(new_pwd))
+    security.invalidate_sockets()
+    security.login()
     logger.info("用户修改了 Web 密码")
     return jsonify({"success": True, "msg": "密码已成功修改"})
 
