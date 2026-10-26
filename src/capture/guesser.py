@@ -1,4 +1,6 @@
 from bisect import bisect_left, bisect_right
+import hashlib
+import json
 import time
 from typing import Any
 
@@ -92,6 +94,7 @@ def _guess_from_texts(
         final_results.append(
             {
                 "title": data["info"]["title"],
+                "title_trans": data["info"].get("title_trans") or "",
                 "singer": data["info"]["original_singer"],
                 "asr_score": final_score,
                 "final_score": final_score,
@@ -119,6 +122,7 @@ def guess_song_timeline(
     *,
     window: int = 60,
     step: int = 60,
+    window_cache: dict | None = None,
 ) -> list[dict[str, Any]]:
     """按低重叠窗口批量运行与 ``guess_song`` 相同的评分逻辑。"""
     if end_ts < start_ts:
@@ -153,16 +157,22 @@ def guess_song_timeline(
             str(row["content"])
             for row in reversed(recent_rows)
         ]
+        cache_key = f"{window_start}:{window_end}"
+        signature = hashlib.sha256(json.dumps(texts, ensure_ascii=False).encode()).hexdigest()
+        cached = window_cache.get(cache_key) if window_cache is not None else None
+        if cached is not None and cached.get('signature') == signature:
+            results = cached['results']
+        else:
+            results = _guess_from_texts(texts, search_cache=search_cache)
+            if window_cache is not None:
+                window_cache[cache_key] = {'signature': signature, 'results': results}
         timeline.append(
             {
                 # 时间轴使用识别窗口中点，而不是窗口末端。
                 "timestamp": window_start + (window_end - window_start) // 2,
                 "window_start": window_start,
                 "window_end": window_end,
-                "results": _guess_from_texts(
-                    texts,
-                    search_cache=search_cache,
-                ),
+                "results": results,
             }
         )
     return timeline
@@ -172,16 +182,23 @@ def collapse_song_timeline(
     timeline: list[dict[str, Any]],
     *,
     min_score: float = 0.0,
+    inclusive: bool = False,
+    max_gap_seconds: int = 0,
 ) -> list[dict[str, Any]]:
-    """取每个窗口的第一候选，只合并连续且相同的歌曲。"""
+    """合并相同歌曲的相邻有效窗口，允许短空缺；其他达标歌曲会断开段落。"""
+    if max_gap_seconds < 0:
+        raise ValueError('max_gap_seconds must be non-negative')
     entries: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    gap_start: int | None = None
+    last_window_end: int | None = None
 
     for point in timeline:
         timestamp = int(point["timestamp"])
         results = list(point.get("results") or [])
         if not results:
-            current = None
+            if current is not None and gap_start is None:
+                gap_start = last_window_end if last_window_end is not None else int(point.get('window_start', timestamp))
             continue
 
         top = results[0]
@@ -189,11 +206,19 @@ def collapse_song_timeline(
         singer = str(top.get("singer") or "未知")
         key = (title.casefold(), singer.casefold())
         score = float(top.get("final_score") or 0.0)
-        if score <= min_score:
-            current = None
+        if score < min_score or (score == min_score and not inclusive):
+            if current is not None and gap_start is None:
+                gap_start = last_window_end if last_window_end is not None else int(point.get('window_start', timestamp))
             continue
 
-        if current is not None and current["key"] == key:
+        window_start = int(point.get('window_start', timestamp))
+        # 使用窗口边界计量空缺，两个60秒空窗口恰好是120秒。
+        boundary = gap_start if gap_start is not None else last_window_end
+        gap = max(0, window_start - boundary) if boundary is not None else 0
+        can_merge = gap <= max_gap_seconds and (gap_start is None or max_gap_seconds > 0)
+        gap_start = None
+        last_window_end = int(point['window_end']) if 'window_end' in point else None
+        if current is not None and current["key"] == key and can_merge:
             current["last_ts"] = timestamp
             current["max_score"] = max(current["max_score"], score)
             current["sample_count"] += 1

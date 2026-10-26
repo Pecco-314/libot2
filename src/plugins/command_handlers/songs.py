@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from src.plugins.utils import send_foldable_message
+
+from src.common.time_args import is_date_arg, parse_date
+
 import asyncio
 import re
 from datetime import datetime
@@ -10,7 +14,9 @@ from nonebot.adapters.onebot.v11 import Bot, Event, Message, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
-from src.capture.guesser import collapse_song_timeline, guess_song, guess_song_timeline
+from src.capture.guesser import guess_song
+from src.common.song_time import parse_song_query_time
+from src.common.song_preview import parse_preview_args, preview_cache, format_preview
 from src.db.singer_alias import add_singer_alias
 from src.plugins.command_registry import (
     now_playing_cmd,
@@ -110,13 +116,13 @@ async def handle_song_list(
             mode = value
             seen_mode = True
             continue
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        if is_date_arg(value):
             if target_date is not None:
                 await matcher.finish("只能指定一个日期")
             try:
-                target_date = datetime.strptime(value, "%Y-%m-%d").date()
-            except ValueError:
-                await matcher.finish("日期格式错误，正确格式：YYYY-MM-DD")
+                target_date = parse_date(value).date()
+            except ValueError as exc:
+                await matcher.finish(str(exc))
             continue
         await matcher.finish("用法：/查歌单 [日期] [按歌手/按语言/按歌名/按次数]")
 
@@ -256,16 +262,11 @@ async def handle_random_song(matcher: Matcher, arg=CommandArg()):
 async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
     room_id = get_query_room_id(event)
 
-    time_str = arg.extract_plain_text().strip()
-    if time_str:
-        try:
-            target_ts = int(
-                datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").timestamp()
-            )
-        except ValueError:
-            await matcher.finish("日期时间格式错误，正确格式：YYYY-MM-DD HH:MM:SS")
-    else:
-        target_ts = int(datetime.now().timestamp())
+    try:
+        target_ts = parse_song_query_time(arg.extract_plain_text())
+    except ValueError as exc:
+        await matcher.finish(str(exc))
+        return
     try:
         results = guess_song(room_id, target_ts)
     except Exception as e:
@@ -275,12 +276,13 @@ async def handle_now_playing(matcher: Matcher, event: Event, arg=CommandArg()):
         await matcher.finish("未找到匹配的歌曲")
     message = "当前可能在唱的歌曲：\n"
     for i, res in enumerate(results, start=1):
-        message += f"{i}. {res['title']} - {res['singer']} ({res['final_score']:.2%})\n"
+        translation = (res.get("title_trans") or "").strip()
+        title = f"{res['title']}（{translation}）" if translation else res['title']
+        message += f"{i}. {title} - {res['singer']} ({res['final_score']:.2%})\n"
     await matcher.finish(message)
 
 
 @song_preview_cmd.handle()
-@group_manager_required
 async def handle_song_preview(
     matcher: Matcher,
     bot: Bot,
@@ -288,12 +290,8 @@ async def handle_song_preview(
     arg=CommandArg(),
 ):
     room_id = get_query_room_id(event)
-    parts = [part for part in arg.extract_plain_text().strip().split() if part]
-    if len(parts) > 2 or (len(parts) == 2 and not parts[1].isdigit()):
-        await matcher.finish("用法：/预览歌单 [日期] [场次]")
-    date_str = parts[0] if parts else None
-    session_index = int(parts[1]) if len(parts) == 2 else None
     try:
+        date_str, session_index, threshold = parse_preview_args(arg.extract_plain_text())
         target_session, session_label, _ongoing = _resolve_live_session(
             room_id,
             date_str,
@@ -301,84 +299,40 @@ async def handle_song_preview(
         )
     except ValueError as exc:
         await matcher.finish(str(exc))
+        return
 
     start_ts = int(target_session["start_ts"])
     end_ts = target_session["end_ts"]
-    if end_ts is None:
-        end_ts = int(datetime.now().timestamp())
-    end_ts = int(end_ts)
-
-    await matcher.send(f"正在粗略识别{session_label}的歌单……")
+    await matcher.send(
+        f"正在粗略识别{session_label}的歌单……\n"
+        f"置信度≥{threshold * 100:g}%，请核对后生成。"
+    )
     try:
-        timeline = await asyncio.to_thread(
-            guess_song_timeline,
+        preview = await asyncio.to_thread(
+            preview_cache.get,
             room_id,
             start_ts,
             end_ts,
+            threshold,
         )
-        if not timeline:
-            await matcher.finish("该场直播没有 ASR 记录")
-
-        uname = await get_name_by_roomid(room_id) or str(room_id)
-        entries = collapse_song_timeline(timeline, min_score=0.9)
     except Exception as exc:
         logger.exception("生成预览歌单失败: %s", exc)
         await matcher.finish("预览歌单生成失败")
+        return
+
+    if preview['pending']:
+        await matcher.finish("直播刚开始，等待至少2分钟的ASR记录后再试")
+    if not preview['has_asr']:
+        await matcher.finish("该场直播在可查询时段内没有 ASR 记录")
+    entries = preview['entries']
 
     if not entries:
         await matcher.finish("该场直播没有识别到可能的歌曲")
 
-    start_dt = datetime.fromtimestamp(start_ts)
-    end_dt = datetime.fromtimestamp(end_ts)
-    lines = [
-        f"{uname} · {session_label}",
-        f"{start_dt:%Y-%m-%d %H:%M:%S} — {end_dt:%Y-%m-%d %H:%M:%S}",
-        f"粗略识别到 {len(entries)} 段歌曲：",
-        "",
-    ]
-    for entry in entries:
-        detected_at = datetime.fromtimestamp(int(entry["first_ts"]))
-        lines.append(
-            f"{detected_at:%Y-%m-%d %H:%M:%S}  {entry['title']} - {entry['singer']}"
-        )
-    lines.extend(
-        [
-            "",
-            "ASR 粗略识别；仅保留置信度>90%的结果。60 秒窗口互不重叠，"
-            "仅合并相邻相同结果，无法区分放歌与演唱。",
-        ]
-    )
+    lines = format_preview(start_ts, entries)
 
-    chunks: list[str] = []
-    current_lines: list[str] = []
-    current_length = 0
-    for line in lines:
-        added_length = len(line) + (1 if current_lines else 0)
-        if current_lines and current_length + added_length > 3000:
-            chunks.append("\n".join(current_lines))
-            current_lines = []
-            current_length = 0
-        current_lines.append(line)
-        current_length += len(line) + (1 if len(current_lines) > 1 else 0)
-    if current_lines:
-        chunks.append("\n".join(current_lines))
-
-    if len(chunks) == 1:
-        await matcher.finish(chunks[0])
-
-    nodes = [
-        {
-            "type": "node",
-            "data": {
-                "name": "LiBot",
-                "uin": bot.self_id,
-                "content": MessageSegment.text(chunk),
-            },
-        }
-        for chunk in chunks
-    ]
     try:
-        await send_forward_message(bot, event, nodes)
+        await send_foldable_message(bot, event, "\n".join(lines))
     except Exception as exc:
         logger.error("发送预览歌单合并转发失败: %s", exc)
         await matcher.finish("预览歌单发送失败，请稍后再试")
