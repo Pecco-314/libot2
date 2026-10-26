@@ -28,9 +28,20 @@ downloads = asyncio.Semaphore(4)
 tasks = set()
 
 
+def allowed_image_url(url):
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    return parsed.scheme == 'https' and (
+        host == 'multimedia.nt.qq.com.cn'
+        or host.endswith('.qq.com')
+        or host.endswith('.qpic.cn')
+    )
+
+
 async def download(url, filename, sent_at):
-    host = (urlparse(url).hostname or '').lower()
-    if urlparse(url).scheme != 'https' or not (host.endswith('.qq.com') or host.endswith('.qpic.cn')):
+    if not allowed_image_url(url):
+        logger.warning('撤回图片下载跳过 file=%s reason=unsupported_url host=%s',
+                       filename, urlparse(url).hostname or '')
         return
     path = ASSETS / filename
     try:
@@ -48,7 +59,9 @@ async def download(url, filename, sent_at):
             if time.time()-sent_at < db.TTL:
                 await asyncio.to_thread(path.write_bytes,content)
     except Exception as exc:
-        logger.warning('撤回图片缓存失败 file=%s error=%s',filename,type(exc).__name__)
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.warning('撤回图片缓存失败 file=%s error=%s status=%s',
+                       filename, type(exc).__name__, status)
 
 
 @capture.handle()
