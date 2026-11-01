@@ -109,7 +109,8 @@ class WebSecurity:
         if not self.authenticated() or not isinstance(auth, dict) or not self.csrf_valid(auth.get('csrf_token')):
             return False
         self.sockets[request.sid] = {'login_id': session['login_id']}
-        join_room(self.LOG_ROOM)
+        if auth.get('logs', True):
+            join_room(self.LOG_ROOM)
 
     def disconnected(self, reason=None):
         self.sockets.pop(request.sid, None)

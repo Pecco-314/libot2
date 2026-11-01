@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>等开播</title>
+<style>
+body{margin:0;background:#f4f1fa;color:#292238;font:16px system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}
+main{box-sizing:border-box;width:min(560px,94vw);padding:36px;background:white;border-radius:28px;box-shadow:0 12px 50px #51407018}
+h1{margin:0 0 12px}p{line-height:1.7}select,button{font:inherit;border-radius:12px;padding:14px;border:1px solid #d7cfe4}
+select{width:100%;background:white}#start{width:100%;margin-top:24px;padding:32px 12px;background:#7856ad;color:white;border:0;font-size:25px;cursor:pointer}
+.tools{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}button{cursor:pointer}small{color:#776e80;line-height:1.8;display:block}a{color:#7856ad}#state{min-height:3em}#heart{font-variant-numeric:tabular-nums}
+</style>
+<main>
+<a href="/">← 管理页</a><h1>等开播</h1>
+<p>选一个直播间，开播时响铃。</p>
+<label for="room">正在监控的直播间</label>
+<select id="room">{% for room in rooms %}<option value="{{ room.room_id }}" {% if room.room_id == 1967216004 %}selected{% endif %}>{{ room.name }} · {{ room.room_id }}</option>{% endfor %}</select>
+<button id="start" {% if not rooms %}disabled{% endif %}>开始等待开播</button>
+<p id="state" role="status" aria-live="polite">点击按钮启用声音和实时连接。已开播的房间会立即响铃。</p>
+<small id="heart">尚未连接</small>
+<div class="tools"><button id="sound">测试声音</button><button id="test" disabled>模拟开播</button><button id="mute">停止响铃</button></div>
+<small>请保持页面打开、设备联网和音量开启。休眠或浏览器冻结会中断监听；恢复连接后会校准状态。模拟开播只作用于当前页面。</small>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+const csrf = {{ csrf_token|tojson }};
+const room = document.getElementById('room'), start = document.getElementById('start');
+const state = document.getElementById('state'), heart = document.getElementById('heart');
+const test = document.getElementById('test');
+let active=false, live=null, audio=null, ringing=null, lastAck=0, lastBili=0, wake=null;
+const socket=io({autoConnect:false,transports:['websocket'],auth:{csrf_token:csrf,logs:false},reconnection:true,reconnectionDelay:1000,reconnectionDelayMax:15000});
+function text(message){state.textContent=message;}
+async function unlock(){audio=audio||new (window.AudioContext||window.webkitAudioContext)();await audio.resume();}
+function tone(){
+ if(!audio || audio.state!=='running'){text('已开播，但声音被浏览器暂停；请点击测试声音。');return;}
+ for(let i=0;i<3;i++){const o=audio.createOscillator(),g=audio.createGain(),t=audio.currentTime+i*.3;
+ o.frequency.value=i%2?880:660;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.18,t+.02);g.gain.exponentialRampToValueAtTime(.001,t+.25);
+ o.connect(g);g.connect(audio.destination);o.start(t);o.stop(t+.27);}
+}
+function silence(){clearInterval(ringing);ringing=null;}
+function ring(simulated=false){silence();text((simulated?'【测试】':'')+room.selectedOptions[0].textContent+' 开播了！');tone();ringing=setInterval(tone,2500);}
+function subscribe(){if(!active||!socket.connected)return;socket.emit('alarm_subscribe',{room_id:Number(room.value)},reply=>{
+ if(!active)return;
+ if(!reply?.ok){text(reply?.error||'订阅失败');return;}
+ test.disabled=false;lastAck=Date.now();
+});}
+async function keepAwake(){try{if(active&&navigator.wakeLock&&document.visibilityState==='visible')wake=await navigator.wakeLock.request('screen');}catch(e){/* 系统省电策略可能拒绝屏幕常亮。 */}}
+start.onclick=async()=>{
+ if(active){active=false;silence();socket.emit('alarm_stop');socket.disconnect();wake?.release();room.disabled=false;test.disabled=true;start.textContent='开始等待开播';text('已停止等待');heart.textContent='尚未连接';return;}
+ try{await unlock();}catch(e){text('无法启用声音，请检查浏览器权限');return;}
+ active=true;live=null;lastBili=0;lastAck=Date.now();room.disabled=true;start.textContent='停止等待';text('正在连接…');socket.connect();keepAwake();
+};
+socket.on('connect',()=>{if(active){text('已连接网页，正在连接直播间…');subscribe();}});
+socket.on('disconnect',()=>{test.disabled=true;if(active)text('网页连接断开，正在重连…');});
+socket.on('connect_error',()=>{if(active)text('连接失败，正在重试；若已退出登录，请刷新并重新登录。');});
+socket.on('alarm_event',event=>{
+ if(!active||event.room_id!==Number(room.value))return;
+ if(event.kind==='test'){ring(true);return;}
+ if(event.kind==='state'){const was=live;live=event.live;if(live&&was!==true)ring();else if(!live){silence();text('尚未开播，等待实时信号…');}}
+ if(event.kind==='heartbeat'){lastBili=Date.now();heart.textContent='B站心跳 '+new Date().toLocaleTimeString();}
+ if(event.kind==='reconnecting'||event.kind==='connecting'){lastBili=0;text('正在连接B站…');}
+ if(event.kind==='warning')text(event.message);
+});
+setInterval(()=>{
+ if(!active||!socket.connected)return;
+ socket.emit('alarm_heartbeat',reply=>{lastAck=Date.now();if(!reply?.ok){text('登录已失效，请刷新');socket.disconnect();}else if(!reply.subscribed)subscribe();});
+ if(Date.now()-lastAck>45000){text('网页心跳超时，正在重连…');socket.disconnect();socket.connect();}
+ if(lastBili&&Date.now()-lastBili>75000)heart.textContent='B站心跳暂时中断，等待重连';
+},15000);
+document.getElementById('sound').onclick=async()=>{try{await unlock();tone();}catch(e){text('浏览器未允许声音');}};
+test.onclick=()=>socket.emit('alarm_test');
+document.getElementById('mute').onclick=silence;
+document.addEventListener('visibilitychange',keepAwake);
+window.addEventListener('pagehide',()=>{socket.disconnect();});
+window.addEventListener('pageshow',()=>{if(active&&!socket.connected)socket.connect();});
+</script>
+</html>

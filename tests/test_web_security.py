@@ -81,3 +81,11 @@ class WebSecurityTests(unittest.TestCase):
     def test_cross_origin_handshake_rejected(self):
         response = self.client.get('/socket.io/?EIO=4&transport=polling', headers={'Origin':'https://evil.test'})
         self.assertEqual(response.status_code, 400)
+
+    def test_non_log_page_does_not_receive_log_stream(self):
+        self.login()
+        client = self.socket.test_client(self.app, flask_test_client=self.client,
+                                         auth={'csrf_token': 'csrf', 'logs': False})
+        self.assertTrue(client.is_connected())
+        self.security.emit_log({'message': 'log only'})
+        self.assertEqual(client.get_received(), [])

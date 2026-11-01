@@ -302,9 +302,11 @@ def change_password():
 
 from src.web.paste import create_paste_blueprint
 from src.web.chat_context import create_chat_context_blueprint
+from src.web.live_alarm import register_live_alarm
 
 app.register_blueprint(create_paste_blueprint(ROOT / 'data' / 'paste', login_required))
 app.register_blueprint(create_chat_context_blueprint(login_required, _get_csrf_token))
+live_alarm_hub = register_live_alarm(app, socketio, security, _get_csrf_token)
 
 if __name__ == '__main__':
     socketio.start_background_task(start_tail_tasks)
