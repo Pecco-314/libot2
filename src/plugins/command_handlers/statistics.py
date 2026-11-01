@@ -154,17 +154,26 @@ async def handle_fan_club_list(
     if len(queries) > 5:
         await matcher.finish("一次最多查询5个粉丝团的交集")
 
-    selected_targets: list[dict] = []
+    from itertools import product
+    from src.plugins.user_query_batch import run_user_batch
+
+    candidate_sets = []
     for target_query in queries:
         matches = resolve_target(target_query)
         if not matches:
             await matcher.finish(f"没有找到粉丝团抓取对象：{target_query}")
-        if len(matches) > 1:
-            choices = "、".join(
-                f"{target['full_name']}（{target['uid']}）" for target in matches
-            )
-            await matcher.finish(f"名称对应多个主播，请改用UID：{choices}")
-        selected_targets.append(matches[0])
+        if len(matches) > 5:
+            await matcher.finish(f"名称“{target_query}”对应超过5个用户，请使用UID查询")
+        candidate_sets.append(matches)
+
+    if any(len(matches) > 1 for matches in candidate_sets):
+        combinations = list(product(*candidate_sets))
+        if len(combinations) > 5:
+            await matcher.finish("同名主播展开后超过5组查询，请使用UID缩小范围")
+        targets = [' '.join(str(t['uid']) for t in group) for group in combinations]
+        await run_user_batch(bot, event, query, targets, handle_fan_club_list)
+        await matcher.finish()
+    selected_targets = [matches[0] for matches in candidate_sets]
 
     target_uids = [int(target["uid"]) for target in selected_targets]
     if len(target_uids) != len(set(target_uids)):

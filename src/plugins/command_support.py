@@ -24,17 +24,20 @@ async def _check_modify_permission(info: dict, event: Event) -> bool:
     return user_id == info["adder_uid"] or await is_group_manager(event)
 
 
-async def _resolve_user_uid(matcher: Matcher, query: str) -> int:
-    """同名用户必须通过 UID 消歧，数字输入不依赖名字索引。"""
+async def _resolve_user_uid(matcher: Matcher, query: str, *, batch=None) -> int:
+    """最多五个同名UID交给批量查询；数字输入不依赖名字索引。"""
     if query.isdigit():
         return int(query)
     matches = await asyncio.to_thread(list_uids_by_uname, query)
     if not matches:
         await matcher.finish(f"未找到用户：{query}")
+    if len(matches) > 5:
+        await matcher.finish(f"名称“{query}”对应超过5个用户，请使用UID查询")
     if len(matches) > 1:
-        choices = "、".join(f"{query}（{uid}）" for uid in matches[:10])
-        suffix = "……" if len(matches) > 10 else ""
-        await matcher.finish(f"名称对应多个用户，请改用UID：{choices}{suffix}")
+        if batch is None:
+            await matcher.finish("名称对应多个用户，请使用UID查询")
+        await batch(matches)
+        await matcher.finish()
     return matches[0]
 
 

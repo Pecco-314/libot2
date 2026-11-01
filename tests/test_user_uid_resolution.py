@@ -32,16 +32,22 @@ class UserUidResolutionTests(unittest.IsolatedAsyncioTestCase):
             await resolve(matcher, "不存在")
         self.assertIn("未找到用户", finish.call_args.args[0])
         lookup.return_value = [11, 22]
+        batch = AsyncMock()
         with self.assertRaises(Finished):
-            await resolve(matcher, "用户")
-        message = finish.call_args.args[0]
-        self.assertIn("请改用UID", message)
-        self.assertIn("用户（11）", message)
-        self.assertIn("用户（22）", message)
-        lookup.return_value = list(range(1, 15))
+            await resolve(matcher, "用户", batch=batch)
+        batch.assert_awaited_once_with([11, 22])
+        finish.assert_awaited_with()
+        lookup.return_value = list(range(1, 6))
+        batch.reset_mock()
         with self.assertRaises(Finished):
-            await resolve(matcher, "用户")
-        self.assertTrue(finish.call_args.args[0].endswith("……"))
+            await resolve(matcher, "用户", batch=batch)
+        batch.assert_awaited_once_with([1, 2, 3, 4, 5])
+        lookup.return_value = list(range(1, 7))
+        batch.reset_mock()
+        with self.assertRaises(Finished):
+            await resolve(matcher, "用户", batch=batch)
+        self.assertIn("超过5个用户", finish.call_args.args[0])
+        batch.assert_not_called()
 
     def test_user_query_commands_use_shared_resolver(self):
         tree = command_tree()

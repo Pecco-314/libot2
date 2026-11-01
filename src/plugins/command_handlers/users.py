@@ -18,6 +18,7 @@ from src.plugins.utils import send_forward_message
 from src.render.fan_club import render_member_medals
 from src.spider.medal_wall import MedalWallError, get_public_medal_wall
 from src.spider.wrapper import get_name_by_uid
+from src.plugins.user_query_batch import run_user_batch
 
 
 @name_history_cmd.handle()
@@ -58,7 +59,8 @@ async def handle_medal_wall(
         await matcher.finish("用法：/查牌子 <UID/用户名>")
 
     fallback_name = query
-    member_uid = await _resolve_user_uid(matcher, query)
+    member_uid = await _resolve_user_uid(matcher, query, batch=lambda uids: run_user_batch(
+        bot, event, query, uids, handle_medal_wall))
     matches = await asyncio.to_thread(list_name_history_by_name_or_uid, str(member_uid))
     if matches:
         names = [

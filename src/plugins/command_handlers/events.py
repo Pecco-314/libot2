@@ -40,6 +40,7 @@ from src.render.danmaku_logs import render_event_pages
 from src.render.danmaku_rank import render_danmaku_rank
 from src.render.superchat import get_daily_superchat_images, get_user_superchat_images
 from src.spider.wrapper import get_name_by_roomid, get_name_by_uid
+from src.plugins.user_query_batch import run_user_batch
 
 _CONTENT_SEARCH_REVEAL_WORD = "reveal"
 
@@ -71,7 +72,8 @@ async def handle_superchat(matcher: Matcher, bot: Bot, event: Event, arg=Command
         images = await get_daily_superchat_images(room_id, day, chunk_size=40)
         empty_message = f"{query} 没有找到醒目留言"
     else:
-        uid = await _resolve_user_uid(matcher, query)
+        uid = await _resolve_user_uid(matcher, query, batch=lambda uids: run_user_batch(
+            bot, event, query, uids, handle_superchat))
 
         user_name = await get_name_by_uid(uid) or query
         images = await get_user_superchat_images(
@@ -183,7 +185,10 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
     if query_user is None:
         await matcher.finish("用法：/查弹幕 <UID/用户名> [日期/数量] [日期/数量]")
 
-    uid = await _resolve_user_uid(matcher, query_user)
+    tail = arg.extract_plain_text().strip().split(maxsplit=1)
+    suffix = ' ' + tail[1] if len(tail) > 1 else ''
+    uid = await _resolve_user_uid(matcher, query_user, batch=lambda uids: run_user_batch(
+        bot, event, query_user, uids, handle_events, lambda uid: str(uid) + suffix))
 
     start_ts = None
     end_ts = None
@@ -208,7 +213,8 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         title_suffix = date_str or ""
 
     if limit is not None:
-        events = list_recent_events_by_uid(
+        events = await asyncio.to_thread(
+            list_recent_events_by_uid,
             room_id,
             uid,
             limit,
@@ -216,7 +222,7 @@ async def handle_events(matcher: Matcher, bot: Bot, event: Event, arg=CommandArg
         )
     else:
         assert start_ts is not None and end_ts is not None
-        events = list_events_by_uid(room_id, uid, start_ts, end_ts)
+        events = await asyncio.to_thread(list_events_by_uid, room_id, uid, start_ts, end_ts)
 
     if not events:
         await matcher.finish("暂无记录")
