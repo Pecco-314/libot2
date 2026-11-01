@@ -1,4 +1,5 @@
 import tempfile
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -43,9 +44,26 @@ class PreviewWindowCacheTests(unittest.TestCase):
             second.catalog = 'v2'
             second(1, 1000, 1060)
             self.assertEqual(guess.call_count, 2)
-            Path(folder, '1_1000.json').write_text('broken')
+            with sqlite3.connect(second.path) as conn:
+                conn.execute("UPDATE preview_window SET results='broken'")
             second(1, 1000, 1060)
             self.assertEqual(guess.call_count, 3)
+
+    def test_interrupted_computation_keeps_committed_prefix(self):
+        rows = [{'id': 1, 'timestamp': 1010, 'content': '歌词'}]
+        with tempfile.TemporaryDirectory() as folder, patch('src.capture.guesser.list_transcripts_in_range', return_value=rows):
+            cache = PersistentPreviewRecognizer(folder)
+            cache.catalog = 'v1'
+            with patch('src.capture.guesser._guess_from_texts', side_effect=[[], RuntimeError('interrupted')]):
+                with self.assertRaises(RuntimeError):
+                    cache(1, 1000, 1120)
+            with sqlite3.connect(cache.path) as conn:
+                self.assertEqual(conn.execute('SELECT count(*) FROM preview_window').fetchone()[0], 1)
+            restored = PersistentPreviewRecognizer(folder)
+            restored.catalog = 'v1'
+            with patch('src.capture.guesser._guess_from_texts', return_value=[]) as guess:
+                restored(1, 1000, 1120)
+                self.assertEqual(guess.call_count, 1)
 
     def test_source_revision_invalidates_memory_and_filtered_results(self):
         recognize = Mock(return_value=[])

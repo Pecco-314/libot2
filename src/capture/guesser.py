@@ -6,6 +6,7 @@ from typing import Any
 
 from src.db.transcript import get_recent_transcripts, list_transcripts_in_range
 from src.capture.fuzzy import LyricsMatcher
+from src.common.lyrics_text import search_text
 
 _matcher = LyricsMatcher()
 
@@ -14,7 +15,7 @@ def refresh_now_playing_matcher():
     _matcher.refresh()
 
 def _calc_combined_probability(evidences: list[float], top_n: int = 3) -> float:
-    """独立证据累加：1 - (1-p1)*(1-p2)..."""
+    """合并最强片段的启发式匹配分；相邻ASR有重叠，分数不作概率解释。"""
     if not evidences:
         return 0.0
     # 降序排列，只取前 N 个最强的证据，防止大量低分垃圾信息无限“水滴石穿”
@@ -34,7 +35,7 @@ def _score_text(text: str) -> list[tuple[int, dict[str, Any], float]]:
     if not text:
         return []
 
-    effective_length = len(text.replace(" ", ""))
+    effective_length = len(search_text(text))
     if effective_length < 2:
         return []
     weight = (
@@ -57,16 +58,18 @@ def _guess_from_texts(
     *,
     search_cache: dict[str, list[tuple[int, dict[str, Any], float]]]
     | None = None,
+    detailed: bool = False,
 ) -> list[dict[str, Any]]:
     _ensure_matcher()
     song_scores_map: dict[int, dict[str, Any]] = {}
     seen_texts: set[str] = set()
 
-    for raw_text in texts:
+    for text_index, raw_text in enumerate(texts):
         text = raw_text.strip()
-        if not text or text in seen_texts:
+        normalized = search_text(text)
+        if not normalized or normalized in seen_texts:
             continue
-        seen_texts.add(text)
+        seen_texts.add(normalized)
 
         if search_cache is None:
             scored = _score_text(text)
@@ -79,9 +82,11 @@ def _guess_from_texts(
         for song_id, info, evidence in scored:
             entry = song_scores_map.setdefault(
                 song_id,
-                {"info": info, "evidences": []},
+                {"info": info, "evidences": [], "matches": []},
             )
             entry["evidences"].append(evidence)
+            if detailed:
+                entry['matches'].append((text_index, text, evidence))
 
     final_results: list[dict[str, Any]] = []
     for data in song_scores_map.values():
@@ -100,12 +105,20 @@ def _guess_from_texts(
                 "final_score": final_score,
             }
         )
+        if detailed:
+            from src.common.song_evidence import window_evidence
+            final_results[-1].update(window_evidence(texts, data['matches'], data['info'].get('lyrics_cleaned')))
+            # 追踪保留原窗口证据，覆盖指标只作辅助，不提前淘汰低质量ASR。
+            observations = [(i, search_text(t)) for i,t,s in data['matches']
+                            if s >= .4 and len(search_text(t)) >= 6]
+            final_results[-1]['observation_texts'] = sorted({t for _,t in observations})
+            final_results[-1]['observation_indices'] = [i for i,_ in observations]
 
     final_results.sort(
         key=lambda item: item["final_score"],
         reverse=True,
     )
-    return final_results[:3]
+    return final_results[:5 if detailed else 3]
 
 def guess_song(room_id: int, target_ts: int | None = None, window: int = 60) -> list[dict[str, Any]]:
     if not target_ts:
@@ -158,12 +171,18 @@ def guess_song_timeline(
             for row in reversed(recent_rows)
         ]
         cache_key = f"{window_start}:{window_end}"
-        signature = hashlib.sha256(json.dumps(texts, ensure_ascii=False).encode()).hexdigest()
+        signature = hashlib.sha256(json.dumps([(r['timestamp'], r['content']) for r in recent_rows], ensure_ascii=False).encode()).hexdigest()
         cached = window_cache.get(cache_key) if window_cache is not None else None
         if cached is not None and cached.get('signature') == signature:
             results = cached['results']
+            if hasattr(window_cache, 'hits'):
+                window_cache.hits += 1
         else:
-            results = _guess_from_texts(texts, search_cache=search_cache)
+            results = _guess_from_texts(texts, search_cache=search_cache, detailed=True)
+            evidence_rows = list(reversed(recent_rows))
+            for result in results:
+                result['evidence_times'] = [int(evidence_rows[i]['timestamp']) for i in result.pop('matched_indices', [])]
+                result['observation_times'] = [int(evidence_rows[i]['timestamp']) for i in result.pop('observation_indices', [])]
             if window_cache is not None:
                 window_cache[cache_key] = {'signature': signature, 'results': results}
         timeline.append(

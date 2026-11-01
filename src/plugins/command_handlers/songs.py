@@ -305,7 +305,7 @@ async def handle_song_preview(
     end_ts = target_session["end_ts"]
     await matcher.send(
         f"正在粗略识别{session_label}的歌单……\n"
-        f"置信度≥{threshold * 100:g}%，请核对后生成。"
+        f"匹配分≥{threshold * 100:g}%，结合歌词覆盖与连续性筛选，请核对后生成。"
     )
     try:
         preview = await asyncio.to_thread(

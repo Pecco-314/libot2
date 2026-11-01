@@ -18,7 +18,7 @@ class LyricsMatcherRefreshTest(unittest.TestCase):
             conn.executescript("""
                 CREATE TABLE song_info (
                     id INTEGER PRIMARY KEY, title TEXT, title_trans TEXT,
-                    original_singer TEXT, lyrics_cleaned TEXT,
+                    original_singer TEXT, lyrics_cleaned TEXT, lyrics TEXT,
                     updated_at TEXT DEFAULT '2026-10-02 00:00:00'
                 );
                 CREATE TABLE song_record (song_id INTEGER, record_date TEXT);
@@ -72,6 +72,12 @@ class LyricsMatcherRefreshTest(unittest.TestCase):
         self.advance()
         result = self.matcher.search("森林深处")[0]
         self.assertEqual((result["title"], result["original_singer"]), ("新歌名", "歌手乙"))
+
+    def test_raw_lyrics_change_refreshes_line_based_search(self):
+        self.matcher.search('森林深处')
+        self.write("UPDATE song_info SET lyrics='[00:00]作曲：某人\n[00:02]海洋深处有一座小木屋'")
+        self.advance()
+        self.assertEqual(self.matcher.search('海洋深处有一座小木屋')[0]['score'],100)
 
     def test_deleted_or_cleared_lyrics_disappear(self):
         for sql in ("DELETE FROM song_info", "UPDATE song_info SET lyrics_cleaned=''"):

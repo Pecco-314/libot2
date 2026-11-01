@@ -7,15 +7,21 @@ from src.common.song_preview import SongPreviewCache, parse_preview_args, format
 
 
 def point(timestamp, title, score):
-    return {'timestamp': timestamp, 'results': [{'title': title, 'singer': '歌手', 'final_score': score}]}
+    return {'timestamp': timestamp, 'results': [{'title': title, 'singer': '歌手', 'final_score': score,
+            'support_count': 4, 'asr_coverage': .8, 'lyrics_length': 100, 'lyric_spans': [[0, 30]],
+            'matched_texts': ['一句', '二句', '三句', '四句'], 'evidence_times': [timestamp-20, timestamp+20],
+            'preview_quality': .9}]}
 
 
 class SongPreviewTests(unittest.TestCase):
     def test_short_gaps_merge_but_other_songs_and_long_gaps_split(self):
         def window(index, title=None, score=.99, singer='歌手'):
+            results = point(1030 + index * 60, title, score)['results'] if title else []
+            if results:
+                results[0]['singer'] = singer
             return {'timestamp': 1030 + index * 60, 'window_start': 1000 + index * 60,
                     'window_end': 1060 + index * 60,
-                    'results': [] if title is None else [{'title': title, 'singer': singer, 'final_score': score}]}
+                    'results': results}
         cases = [
             ([window(0, 'A'), window(1), window(2, 'A')], ['A']),
             ([window(0, 'A'), window(1), window(2), window(3, 'A')], ['A']),
@@ -35,10 +41,10 @@ class SongPreviewTests(unittest.TestCase):
                     self.assertEqual(entries[0]['last_ts'], timeline[-1]['timestamp'])
 
     def test_arguments(self):
-        for text, expected in [('', (None, None, .95)), ('98%', (None, None, .98)),
+        for text, expected in [('', (None, None, .85)), ('98%', (None, None, .98)),
                                ('0.98', (None, None, .98)),
                                ('昨天 98%', ('昨天', None, .98)),
-                               ('2026-10-24 2', ('2026-10-24', 2, .95)),
+                               ('2026-10-24 2', ('2026-10-24', 2, .85)),
                                ('2026-10-24 2 98', ('2026-10-24', 2, .98)),
                                ('2026-10-24 2 0.98', ('2026-10-24', 2, .98))]:
             self.assertEqual(parse_preview_args(text), expected)
@@ -85,7 +91,7 @@ class SongPreviewTests(unittest.TestCase):
         entries = [{'title':'歌A', 'singer':'甲', 'first_ts': start},
                    {'title':'歌B', 'singer':'乙', 'first_ts': start + 3600},
                    {'title':'歌A', 'singer':'甲', 'first_ts': start + 7200}]
-        self.assertEqual(format_preview(start, entries), ['生成歌单 2026-10-24', '歌A | 甲 #23:00:00', '歌B | 乙 #00:00:00', '歌A | 甲 #01:00:00'])
+        self.assertEqual(format_preview(start, entries), ['生成歌单 2026-10-24', '歌A | 甲 #23:00', '歌B | 乙 #00:00', '歌A | 甲 #01:00'])
 
     def test_threshold_is_inclusive(self):
         cache = SongPreviewCache(Mock(return_value=[point(1030, 'A', .95), point(1090, 'B', .949)]))

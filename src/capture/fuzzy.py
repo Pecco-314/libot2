@@ -1,29 +1,19 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from typing import Any
 
 from rapidfuzz import fuzz
 from src.db.sqlite import connect_sqlite
-
-
-def _has_hangul(text: str) -> bool:
-    return bool(text and re.search(r"[\uAC00-\uD7A3]", text))
-
-
-def _normalize_korean_spacing(text: str) -> str:
-    return re.sub(r"\s+", "", text) if text else ""
+from src.common.lyrics_text import search_text, lyric_lines
 
 
 def _score(keyword: str, text: str) -> float:
+    keyword, text = search_text(keyword), search_text(text)
     if not keyword or not text:
         return 0.0
-    if _has_hangul(keyword) or _has_hangul(text):
-        keyword = _normalize_korean_spacing(keyword)
-        text = _normalize_korean_spacing(text)
     if keyword in text:
         return 100.0
     return float(fuzz.partial_ratio(keyword, text))
@@ -36,13 +26,18 @@ class LyricsSearchIndex:
             lyrics_cleaned = row[6]
             if not lyrics_cleaned:
                 continue
+            lines = lyric_lines(row[7] if len(row) > 7 and row[7] else lyrics_cleaned)
+            text = '\n'.join(lines)
             entries.append(
                 {
                     "row": row,
-                    "text": str(lyrics_cleaned),
+                    "text": text,
+                    "normalized": search_text(text),
+                    "words": search_text(text, compact=False),
                 }
             )
         self._entries = entries
+        self._lyrics = {entry['row'][0]: entry['text'] for entry in entries}
 
     @classmethod
     def from_rows(cls, rows: list[tuple[Any, ...]]) -> "LyricsSearchIndex":
@@ -58,8 +53,15 @@ class LyricsSearchIndex:
             return []
 
         ranked: list[tuple[float, tuple[Any, ...]]] = []
+        normalized = search_text(keyword)
+        if not normalized:
+            return []
+        words = search_text(keyword, compact=False)
         for entry in self._entries:
-            score = _score(keyword, entry["text"])
+            score = float(fuzz.partial_ratio(normalized, entry['normalized']))
+            # 拉丁字母文本同时保留词边界，字符视图兼容粘连与断词。
+            if normalized.isascii():
+                score = max(score, float(fuzz.partial_ratio(words, entry['words'])))
             ranked.append((score, entry["row"]))
 
         if not ranked:
@@ -82,6 +84,7 @@ class LyricsSearchIndex:
                     "records": records_list,
                     "count": row[5],
                     "score": score,
+                    "lyrics_cleaned": self._lyrics[row[0]],
                 }
             )
         return results
@@ -128,7 +131,7 @@ class LyricsMatcher:
             conn.execute("BEGIN")
             snapshot = conn.execute(
                 """
-                SELECT id, title, title_trans, original_singer, lyrics_cleaned
+                SELECT id, title, title_trans, original_singer, lyrics_cleaned, lyrics
                 FROM song_info
                 WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
                 ORDER BY id
@@ -146,7 +149,7 @@ class LyricsMatcher:
                     original_singer, 
                     (SELECT json_group_array(record_date) FROM song_record WHERE song_id = song_info.id) AS records, 
                     (SELECT COUNT(1) FROM song_record WHERE song_id = song_info.id) AS count, 
-                    lyrics_cleaned
+                    lyrics_cleaned, lyrics
                 FROM song_info
                 WHERE lyrics_cleaned IS NOT NULL AND lyrics_cleaned != ''
                 ORDER BY id

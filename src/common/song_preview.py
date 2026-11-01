@@ -8,10 +8,11 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
-from src.capture.guesser import collapse_song_timeline, guess_song_timeline
+from src.capture.guesser import guess_song_timeline
 from src.common.time_args import parse_date_index
+from src.common.song_evidence import select_preview_entries
 
-DEFAULT_THRESHOLD = .95
+DEFAULT_THRESHOLD = .85
 ASR_DELAY = 120
 CACHE_TTL = 300
 USAGE = '用法：预览歌单 [日期] [场次] [门槛]，例如：预览歌单 98% 或 预览歌单 2026-10-24 2 0.98'
@@ -70,9 +71,7 @@ class SongPreviewCache:
             timeline = self.raw[key][1]
             filtered_key = (*key, threshold)
             if filtered_key not in self.filtered:
-                self.filtered[filtered_key] = collapse_song_timeline(
-                    timeline, min_score=threshold, inclusive=True, max_gap_seconds=120,
-                )
+                self.filtered[filtered_key] = select_preview_entries(timeline, threshold)
             self.filtered.move_to_end(filtered_key)
             result = deepcopy(self.filtered[filtered_key])
             while len(self.raw) > 16:
@@ -94,5 +93,5 @@ def format_preview(start_ts, entries):
     lines = [f'生成歌单 {date}']
     for item in entries:
         detected = datetime.fromtimestamp(item['first_ts'], ZoneInfo('Asia/Shanghai'))
-        lines.append(f"{item['title']} | {item['singer']} #{detected:%H:%M:%S}")
+        lines.append(f"{item['title']} | {item['singer']} #{detected:%H:%M}")
     return lines
