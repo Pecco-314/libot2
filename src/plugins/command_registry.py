@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from nonebot import on_command as _on_command
+from nonebot.params import CommandArg, CommandWhitespace
+from nonebot.rule import Rule
 from src.plugins.message_delivery import install_message_delivery
 
 COMMAND_MODULE_NAME = __name__
@@ -11,7 +13,7 @@ COMMAND_MODULE_NAME = __name__
 _COMMAND_CANONICAL_NAMES: dict[str, str] = {}
 
 
-def on_command(command: str, *args, aliases=None, fold_long=True, **kwargs):
+def on_command(command: str, *args, aliases=None, fold_long=True, force_whitespace=True, **kwargs):
     alias_set = set(aliases or ())
     canonical_name = command.strip()
     for name in {canonical_name, *alias_set}:
@@ -20,7 +22,7 @@ def on_command(command: str, *args, aliases=None, fold_long=True, **kwargs):
         command,
         *args,
         aliases=alias_set,
-        force_whitespace=True,
+        force_whitespace=force_whitespace,
         **kwargs,
     )
     if fold_long:
@@ -139,7 +141,12 @@ events_cmd = on_command("查弹幕", priority=5, block=True)
 content_search_cmd = on_command("有谁说过", aliases={"谁说过"}, priority=5, block=True)
 
 
-song_search_cmd = on_command("查歌曲", priority=5, block=True)
+async def _song_query_boundary(arg=CommandArg(), whitespace=CommandWhitespace()):
+    return not arg or whitespace is not None or arg.extract_plain_text().startswith('#')
+
+
+song_search_cmd = on_command("查歌曲", priority=5, block=True,
+                             force_whitespace=None, rule=Rule(_song_query_boundary))
 
 
 song_singer_cmd = on_command("查歌手", priority=5, block=True)

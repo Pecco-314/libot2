@@ -111,7 +111,7 @@ def _partition_by_height(
     return groups
 
 
-def draw_song_card(song: dict[str, Any]) -> BuildImage:
+def draw_song_card(song: dict[str, Any], record_limit: int | None = 5) -> BuildImage:
     width = 720
     padding = 44
     content_width = width - padding * 2
@@ -123,7 +123,7 @@ def draw_song_card(song: dict[str, Any]) -> BuildImage:
         except ValueError:
             continue
     records.sort(reverse=True)
-    recent_dates = records[:5]
+    recent_dates = records[:record_limit]
 
     label = _text("歌曲", 18, weight="bold", fill=ACCENT)
     title = _wrapped(str(song["title"]), 42, content_width, weight="bold")
@@ -187,10 +187,10 @@ def draw_song_card(song: dict[str, Any]) -> BuildImage:
     return canvas
 
 
-def save_song_card(song: dict[str, Any]) -> dict[str, Any]:
+def save_song_card(song: dict[str, Any], record_limit: int | None = 5) -> dict[str, Any]:
     save_dir = ROOT / "data" / "images" / "song_list"
     save_dir.mkdir(parents=True, exist_ok=True)
-    canvas = draw_song_card(song)
+    canvas = draw_song_card(song, record_limit)
     save_path = save_dir / f"song_{song['id']}_{uuid.uuid4().hex[:6]}.png"
     canvas.image.convert("RGB").save(save_path, format="PNG", optimize=True)
     return {"image_path": str(save_path), "data": song}
@@ -199,6 +199,7 @@ def save_song_card(song: dict[str, Any]) -> dict[str, Any]:
 async def render_songs_by_keyword(
     keyword: str,
     limit: int = 5,
+    *, record_limit: int | None = 5,
 ) -> list[dict[str, Any]]:
     songs = search_songs_by_title(keyword, limit)
     await prefetch_emoji_assets(
@@ -208,7 +209,7 @@ async def render_songs_by_keyword(
             *(str(song.get("original_singer") or "") for song in songs),
         ]
     )
-    return [save_song_card(song) for song in songs]
+    return [save_song_card(song, record_limit=record_limit) for song in songs]
 
 
 async def render_random_song(limit: int = 3) -> dict[str, Any] | None:

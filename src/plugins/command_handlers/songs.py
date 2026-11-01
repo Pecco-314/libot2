@@ -16,6 +16,7 @@ from nonebot.params import CommandArg
 
 from src.capture.guesser import guess_song
 from src.common.song_time import parse_song_query_time
+from src.common.song_query import parse_song_query
 from src.common.song_preview import parse_preview_args, preview_cache, format_preview
 from src.db.singer_alias import add_singer_alias
 from src.plugins.command_registry import (
@@ -47,12 +48,13 @@ from src.spider.wrapper import get_name_by_roomid
 async def handle_song_search(
     bot: Bot, event: Event, matcher: Matcher, arg=CommandArg()
 ):
-    keyword = arg.extract_plain_text().strip()
-    if not keyword:
-        await matcher.finish("用法：/查歌曲 <歌名>")
+    try:
+        keyword, record_limit = parse_song_query(arg.extract_plain_text())
+    except ValueError as exc:
+        await matcher.finish(str(exc))
 
     try:
-        results = await render_songs_by_keyword(keyword)
+        results = await render_songs_by_keyword(keyword, record_limit=record_limit)
     except Exception as e:
         logger.error(f"渲染歌曲卡片失败: {e}")
         await matcher.finish("图片渲染失败")
@@ -65,10 +67,11 @@ async def handle_song_search(
 
     # 第一条节点：文字汇总提示
     maxsize = 5
-    if len(results) < maxsize:
-        content = f"找到 {len(results)} 首与“{keyword}”相关的歌曲："
+    song_count = len({res['data']['id'] for res in results})
+    if song_count < maxsize:
+        content = f"找到 {song_count} 首与“{keyword}”相关的歌曲："
     else:
-        content = f"找到 {len(results)} 首与“{keyword}”相关的歌曲（已达到搜索上限）："
+        content = f"找到 {song_count} 首与“{keyword}”相关的歌曲（已达到搜索上限）："
     forward_nodes.append(
         {
             "type": "node",
@@ -93,7 +96,8 @@ async def handle_song_search(
         )
 
     try:
-        await send_forward_message(bot, event, forward_nodes)
+        for offset in range(0, len(forward_nodes), 50):
+            await send_forward_message(bot, event, forward_nodes[offset:offset + 50])
     except Exception as e:
         logger.error(f"发送合并转发消息失败: {e}")
 
