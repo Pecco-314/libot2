@@ -51,6 +51,17 @@ _activity_notice_pruned_at = 0.0
 _notification_group_cache: dict[str, tuple[float, set[int] | None]] = {}
 
 
+@scheduler.scheduled_job('interval', seconds=30, id='libot_auto_song_preview',
+                         max_instances=1, coalesce=True, misfire_grace_time=30)
+async def generate_after_live_preview():
+    from src.common.auto_song_preview import auto_song_preview, configured_target
+    config = configured_target()
+    if config is None:
+        return
+    bots = list(get_bots().values())
+    await auto_song_preview.run(bots[0] if bots else None, *config)
+
+
 def _is_mention_all_enabled(group_id: int) -> bool:
     return get_subscription_feature(group_id, "mention_all")
 
