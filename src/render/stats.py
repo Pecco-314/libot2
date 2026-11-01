@@ -8,7 +8,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.font_manager as fm
-from scipy.interpolate import make_interp_spline
+from src.common.trend_curve import smooth_trend
 
 from typing import Any
 
@@ -74,22 +74,9 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
     y_bottom = max(0, y_min - padding)  # 数据底部不能穿透 0
     y_top = y_max + padding
 
-    # 平滑插值与绘图
-    if len(x) > 3:
-        x_smooth = np.linspace(x.min(), x.max(), 300)
-        k = min(3, len(x) - 1)
-        try:
-            spl = make_interp_spline(x, y, k=k)
-            y_smooth = spl(x_smooth)
-            ax.plot(x_smooth, y_smooth, color=color, linewidth=2)
-            # 填充到底部 limit，而不是随意的 0.99
-            ax.fill_between(x_smooth, y_smooth, y_bottom, color=color, alpha=0.1)
-        except:
-            ax.plot(x, y, color=color, linewidth=2)
-            ax.fill_between(x, y, y_bottom, color=color, alpha=0.1)
-    else:
-        ax.plot(x, y, color=color, linewidth=2)
-        ax.fill_between(x, y, y_bottom, color=color, alpha=0.1)
+    x_smooth, y_smooth = smooth_trend(x, y)
+    ax.plot(x_smooth, y_smooth, color=color, linewidth=2)
+    ax.fill_between(x_smooth, y_smooth, y_bottom, color=color, alpha=0.1)
 
     ax.set_ylim(y_bottom, y_top)
     ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
@@ -110,7 +97,7 @@ def _base_render(times: list[datetime.datetime], values: list[int], label: str, 
         ticks[-1].label1.set_horizontalalignment('right')
     
     plt.tight_layout()
-    digest = hashlib.sha256(f"{title}|{list(zip(times, values))}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(f"pchip-v1|{title}|{list(zip(times, values))}".encode()).hexdigest()[:16]
     filename = f"{label}_{times[0].strftime('%Y%m%d%H%M%S')}_{times[-1].strftime('%Y%m%d%H%M%S')}_{digest}.png"
     save_path = ROOT / "data" / "images" / "stats" / filename
     save_path.parent.mkdir(parents=True, exist_ok=True)
